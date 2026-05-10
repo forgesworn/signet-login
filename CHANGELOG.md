@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (2026-05-10)
+
+### Features
+
+- add NostrConnect URI (app-initiated NIP-46) sign-in (modal)
+
+
+
 ## 0.5.0 (2026-05-10)
 
 ### Features
