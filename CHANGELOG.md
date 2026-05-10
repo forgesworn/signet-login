@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 (2026-05-10)
+
+### Features
+
+- NIP-55 Android sign-in via nostrsigner: redirect (amber)
+
+
+
 ## 0.6.0 (2026-05-10)
 
 ### Features
