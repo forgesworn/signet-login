@@ -12,6 +12,7 @@ import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
 import { startRedirect } from './redirect.js';
+import QRCode from 'qrcode';
 
 /**
  * Picker tokens.
@@ -237,9 +238,7 @@ async function runRedirectFlow(
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Sign in with Signet</h2>
     <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Open the link on your phone, or scan the QR if rendered.</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
-      <div id="signet-login-qr" style="width:200px;height:200px;margin:0 auto 12px;background:${dark ? '#1a1a2e' : '#ffffff'};border-radius:6px;display:flex;align-items:center;justify-content:center;color:${muted};font-size:0.8rem;text-align:center;padding:12px;box-sizing:border-box;">
-        QR placeholder<br><span style="font-size:0.7rem;">(bundle qr lib for production)</span>
-      </div>
+      <canvas id="signet-login-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
       <a href="${escapeHtml(authUrl)}" target="_blank" rel="noopener" style="display:block;color:#5b6dff;font-size:0.75rem;word-break:break-all;text-decoration:none;">${escapeHtml(authUrl.slice(0, 80))}…</a>
     </div>
     <p id="signet-login-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">Waiting for approval…</p>
@@ -248,6 +247,22 @@ async function runRedirectFlow(
       <button data-action="cancel" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Cancel</button>
     </div>
   `;
+
+  // Render the auth URL into the QR canvas. Async, but the dialog has already
+  // surfaced the visible link as a fallback so a slow encode doesn't block UX.
+  // M error correction tolerates ~15% damage — comfortable for camera scans.
+  const qrCanvas = refs.dialog.querySelector<HTMLCanvasElement>('#signet-login-qr');
+  if (qrCanvas) {
+    void QRCode.toCanvas(qrCanvas, authUrl, {
+      width: 200,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+      color: { dark: '#0a0418', light: '#ffffff' },
+    }).catch(() => {
+      // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
+      // — the visible link below the canvas still gets the user across.
+    });
+  }
 
   return new Promise<RedirectFlowResult | null>(resolve => {
     let settled = false;
