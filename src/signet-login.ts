@@ -243,9 +243,43 @@ export const handleCallback = handlePopupCallback;
  */
 export async function handleRedirectCallback(): Promise<ConsumeCallbackResult> {
   const result = consumeCallback();
-  if (result.kind === 'session') {
-    persistSession(result.session);
+  if (result.kind !== 'session') return result;
+
+  // Optional redirect-bunker upgrade. signet-app appends a `bunker://` URI
+  // when its NIP-46 server is enabled and the user authorised the redirect
+  // login; this lets us swap the auth-only `EphemeralSigner` for a real
+  // signing `BunkerSigner` in the same round-trip. Best-effort — if the
+  // bunker connect fails (relay unreachable, secret expired, signet-app
+  // tab closed before the connect lands) we fall back to the plain
+  // ephemeral session so the consumer at least gets identity proof.
+  if (result.bunkerUri) {
+    try {
+      const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri });
+      // Sanity: the bunker we connected to must sign as the same pubkey
+      // the redirect callback authenticated. A mismatch here means the
+      // signet-app deployment is misconfigured (or someone tampered with
+      // the URL) — drop back to ephemeral rather than silently swapping
+      // identity under the consumer's feet.
+      if (bunkerSigner.pubkey.toLowerCase() === result.session.pubkey.toLowerCase()) {
+        const upgraded: SignetSession = {
+          pubkey: result.session.pubkey,
+          method: 'bunker',
+          signer: bunkerSigner,
+          authEvent: result.session.authEvent,
+        };
+        if (result.session.displayName) upgraded.displayName = result.session.displayName;
+        persistSession(upgraded);
+        return { kind: 'session', session: upgraded };
+      }
+      // Pubkey mismatch — close the wayward signer to avoid leaking the
+      // relay subscription, then fall through to the ephemeral path.
+      try { await bunkerSigner.close(); } catch { /* ignore */ }
+    } catch {
+      // Connect failed — leave the ephemeral session intact.
+    }
   }
+
+  persistSession(result.session);
   return result;
 }
 

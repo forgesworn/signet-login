@@ -110,7 +110,7 @@ export function startRedirect(opts: RedirectStartOptions): Promise<never> {
 function cleanupCallbackUrl(): void {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  const removed = ['pubkey', 'npub', 'signature', 'eventId', 'error', 'warnings', 'fromNP', 'display_name', 't'];
+  const removed = ['pubkey', 'npub', 'signature', 'eventId', 'error', 'warnings', 'fromNP', 'display_name', 't', 'bunker'];
   let touched = false;
   for (const key of removed) {
     if (url.searchParams.has(key)) {
@@ -129,7 +129,20 @@ function cleanupCallbackUrl(): void {
 
 /** Outcome of consuming a redirect callback. */
 export type ConsumeCallbackResult =
-  | { kind: 'session'; session: SignetSession }
+  | {
+      kind: 'session';
+      session: SignetSession;
+      /**
+       * Optional NIP-46 `bunker://...` URI shipped by signet-app for the
+       * redirect-bunker auto-pair flow. When present, the SDK wrapper
+       * (`handleRedirectCallback`) upgrades the session from auth-only
+       * (`EphemeralSigner`) to a fully-signing `BunkerSigner` so the
+       * consumer can publish events without per-event prompts. Absent on
+       * older signet-app deployments — the consumer just gets the
+       * existing auth-only behaviour.
+       */
+      bunkerUri?: string;
+    }
   | { kind: 'denied' }
   | { kind: 'no-callback' }
   | { kind: 'invalid'; reason: string };
@@ -259,7 +272,20 @@ export function consumeCallback(): ConsumeCallbackResult {
   };
   if (displayName) session.displayName = displayName;
 
-  return finalize({ kind: 'session', session });
+  // Optional bunker URI for the redirect-bunker auto-pair flow. We just
+  // shuttle the string here — the async upgrade to a `BunkerSigner` happens
+  // in `handleRedirectCallback`, which is already async. Light shape check
+  // (must start `bunker://`, length-cap) so a malformed param doesn't
+  // travel further into the SDK; deeper validation lives in
+  // `createBunkerSigner` / `parsePairingURI`.
+  const bunkerRaw = params.get('bunker');
+  let bunkerUri: string | undefined;
+  if (bunkerRaw && bunkerRaw.length >= 9 && bunkerRaw.length <= 8192
+      && bunkerRaw.slice(0, 9).toLowerCase() === 'bunker://') {
+    bunkerUri = bunkerRaw;
+  }
+
+  return finalize(bunkerUri ? { kind: 'session', session, bunkerUri } : { kind: 'session', session });
 }
 
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid
