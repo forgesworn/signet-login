@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner } from '../src/signers.js';
+import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner, buildNostrConnectUri } from '../src/signers.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
 
@@ -190,5 +190,47 @@ describe('createLocalSignerFromNsec', () => {
     await expect(
       signer.signEvent({ kind: 1, content: '', tags: [], created_at: 1 }),
     ).rejects.toThrow();
+  });
+});
+
+describe('buildNostrConnectUri', () => {
+  const validPubkey = 'a'.repeat(64);
+
+  it('builds a well-formed nostrconnect:// URI', () => {
+    const uri = buildNostrConnectUri({
+      clientPubkeyHex: validPubkey,
+      relayUrl: 'wss://relay.example.com',
+      secret: 'abc123',
+      perms: ['sign_event', 'nip44_encrypt'],
+      appName: 'Test App',
+    });
+    expect(uri).toMatch(/^nostrconnect:\/\/[0-9a-f]{64}\?/);
+    expect(uri).toContain(`nostrconnect://${validPubkey}?`);
+    expect(uri).toContain('relay=wss%3A%2F%2Frelay.example.com');
+    expect(uri).toContain('secret=abc123');
+    expect(uri).toContain('perms=sign_event%2Cnip44_encrypt');
+    expect(uri).toContain('name=Test+App');
+  });
+
+  it('omits perms and name when not provided', () => {
+    const uri = buildNostrConnectUri({
+      clientPubkeyHex: validPubkey,
+      relayUrl: 'wss://r.example',
+      secret: 's',
+    });
+    expect(uri).not.toContain('perms=');
+    expect(uri).not.toContain('name=');
+  });
+
+  it('rejects invalid pubkey', () => {
+    expect(() =>
+      buildNostrConnectUri({ clientPubkeyHex: 'not-hex', relayUrl: 'wss://r', secret: 's' }),
+    ).toThrow(/invalid-client-pubkey/);
+  });
+
+  it('rejects non-ws relay URLs', () => {
+    expect(() =>
+      buildNostrConnectUri({ clientPubkeyHex: validPubkey, relayUrl: 'http://r', secret: 's' }),
+    ).toThrow(/invalid-relay-url/);
   });
 });

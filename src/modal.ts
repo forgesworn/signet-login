@@ -7,7 +7,7 @@
 
 import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -26,7 +26,7 @@ import QRCode from 'qrcode';
  * differs: redirect navigates the current tab, qr publishes a gift-wrapped
  * response over the relay so a phone can sign for a desktop session.
  */
-type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nsec' | 'cancel';
+type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'nsec' | 'cancel';
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -98,6 +98,7 @@ function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' 
       <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
       <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
       <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
+      <button data-choice="nostrconnect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📡</span><span><strong>Connect a Nostr signer</strong><br><span style="font-size:0.8rem;color:${muted};">Scan with nsec.app, Amber, Keychat…</span></span></button>
       <button data-choice="nsec" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">⚠️</span><span><strong>Paste private key</strong><br><span style="font-size:0.8rem;color:${muted};">In-memory only — risky, last resort</span></span></button>
     </div>
     <button data-choice="cancel" style="background:none;border:0;color:${muted};padding:12px;cursor:pointer;font-size:0.85rem;margin-top:8px;">Cancel</button>
@@ -370,6 +371,94 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
   });
 }
 
+// ── Connect a Nostr signer (NostrConnect URI, app-initiated NIP-46) ──────────
+
+/**
+ * App-initiated NIP-46. Mirror image of bunker URI: instead of the user
+ * pasting a bunker URI from their signer, we generate a `nostrconnect://`
+ * URI and the user scans it with their signer (nsec.app, Amber, Keychat…).
+ * The signer connects to our chosen relay and signs ad-hoc from there.
+ */
+async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<BunkerSignerImpl | null> {
+  const dark = isDarkMode(opts.theme);
+  const muted = dark ? '#888' : '#666';
+
+  const sk = schnorr.utils.randomPrivateKey();
+  const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
+  const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
+
+  const uri = buildNostrConnectUri({
+    clientPubkeyHex: clientPubkey,
+    relayUrl: opts.relayUrl,
+    secret,
+    perms: ['sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+    appName: opts.appName,
+    appUrl: opts.origin,
+  });
+
+  refs.dialog.innerHTML = `
+    <h2 style="margin:0 0 8px;font-size:1.2rem;">Connect a Nostr signer</h2>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan or paste this into your signer (nsec.app, Amber, Keychat…). The connection happens over your relay.</p>
+    <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
+      <canvas id="signet-login-nc-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
+      <button data-action="copy" style="${buttonStyle(dark)}width:auto;font-size:0.75rem;padding:6px 10px;margin:0 auto;display:block;">Copy URI</button>
+    </div>
+    <p id="signet-login-nc-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">Waiting for signer to connect…</p>
+    <div style="display:flex;gap:8px;justify-content:space-between;">
+      <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
+      <button data-action="cancel" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Cancel</button>
+    </div>
+  `;
+
+  const qrCanvas = refs.dialog.querySelector<HTMLCanvasElement>('#signet-login-nc-qr');
+  if (qrCanvas) {
+    void QRCode.toCanvas(qrCanvas, uri, {
+      width: 200, margin: 1, errorCorrectionLevel: 'M',
+      color: { dark: '#0a0418', light: '#ffffff' },
+    }).catch(() => { /* link/copy fallback below */ });
+  }
+
+  const copyBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="copy"]');
+  copyBtn?.addEventListener('click', () => {
+    void navigator.clipboard?.writeText(uri).then(() => {
+      copyBtn.textContent = 'Copied ✓';
+      window.setTimeout(() => { copyBtn.textContent = 'Copy URI'; }, 1500);
+    });
+  });
+
+  const ac = new AbortController();
+  const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nc-status');
+
+  return new Promise<BunkerSignerImpl | null>(resolve => {
+    let settled = false;
+    const settle = (v: BunkerSignerImpl | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
+      ac.abort();
+      settle(null);
+    });
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', () => {
+      ac.abort();
+      settle(null);
+    });
+
+    createBunkerSignerFromNostrConnect({ uri, clientSecretKey: sk, abortSignal: ac.signal })
+      .then(signer => settle(signer))
+      .catch(err => {
+        if (settled) return;  // already cancelled
+        if (status) {
+          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
+          status.style.color = '#d04848';
+        }
+        // Don't auto-settle on error — user clicks Back/Cancel.
+      });
+  });
+}
+
 // ── Paste nsec (in-memory only) ───────────────────────────────────────────────
 
 async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<LocalSigner | null> {
@@ -552,6 +641,35 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
           ],
         }) as SignetAuthEvent;
 
+        return {
+          pubkey: signer.pubkey,
+          method: 'bunker',
+          signer,
+          authEvent,
+        };
+      }
+
+      if (choice === 'nostrconnect') {
+        const signer = await runNostrConnectFlow(refs, resolved);
+        if (!signer) {
+          if (resolved.preferredMethod) return null;
+          continue;
+        }
+
+        const authEvent = await signer.signEvent({
+          kind: 21236,
+          content: '',
+          tags: [
+            ['challenge', resolved.challenge],
+            ['origin', resolved.origin],
+            ['app', resolved.appName],
+          ],
+        }) as SignetAuthEvent;
+
+        // Surfaces as 'bunker' since the session shape is identical to a
+        // bunker URI session — same signer, same persistence path, same
+        // capabilities. The picker choice routed us here; from this point
+        // on the rest of the SDK doesn't care about the initiation direction.
         return {
           pubkey: signer.pubkey,
           method: 'bunker',

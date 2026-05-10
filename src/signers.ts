@@ -111,6 +111,61 @@ export class BunkerSignerImpl implements SignetSigner {
 }
 
 /**
+ * App-initiated NIP-46: we generate a `nostrconnect://` URI containing our
+ * client pubkey, relay, secret, and requested perms. The user pastes/scans
+ * it into their signer, which then connects to the relay and acks. Returns
+ * a BunkerSignerImpl once the handshake completes (or rejects on abort).
+ *
+ *   uri              — the nostrconnect:// URI shown to the user (built by
+ *                      the caller via buildNostrConnectUri)
+ *   clientSecretKey  — the 32-byte session key the URI was built with
+ *   abortSignal      — cancel a long-running wait when the modal closes
+ */
+export async function createBunkerSignerFromNostrConnect(input: {
+  uri: string;
+  clientSecretKey: Uint8Array;
+  abortSignal?: AbortSignal;
+}): Promise<BunkerSignerImpl> {
+  const { uri, clientSecretKey, abortSignal } = input;
+  if (clientSecretKey.length !== 32) throw new Error('invalid-client-secret-key');
+
+  const bunker = abortSignal
+    ? await BunkerSigner.fromURI(clientSecretKey, uri, undefined, abortSignal)
+    : await BunkerSigner.fromURI(clientSecretKey, uri);
+  const pubkey = await bunker.getPublicKey();
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) {
+    await bunker.close().catch(() => {});
+    throw new Error('invalid-pubkey-from-bunker');
+  }
+
+  return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, uri, clientSecretKey);
+}
+
+/**
+ * Build a NIP-46 `nostrconnect://` URI for the app-initiated flow. The
+ * `secret` is echoed back by the bunker on connect so the app can verify
+ * it's talking to the right peer; it must be unguessable.
+ */
+export function buildNostrConnectUri(input: {
+  clientPubkeyHex: string;
+  relayUrl: string;
+  secret: string;
+  perms?: string[];
+  appName?: string;
+  appUrl?: string;
+}): string {
+  const { clientPubkeyHex, relayUrl, secret } = input;
+  if (!/^[0-9a-f]{64}$/i.test(clientPubkeyHex)) throw new Error('invalid-client-pubkey');
+  if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
+
+  const params = new URLSearchParams({ relay: relayUrl, secret });
+  if (input.perms && input.perms.length > 0) params.set('perms', input.perms.join(','));
+  if (input.appName) params.set('name', input.appName);
+  if (input.appUrl) params.set('url', input.appUrl);
+  return `nostrconnect://${clientPubkeyHex}?${params.toString()}`;
+}
+
+/**
  * Connect a bunker session from a `bunker://` or `nostr+connect://` URI (or a
  * NIP-05 identifier). Generates a fresh client secret key for the session.
  */
