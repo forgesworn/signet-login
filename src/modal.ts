@@ -11,8 +11,21 @@ import { hasNip07, createNip07Signer, createBunkerSigner, EphemeralSigner, type 
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
+import { startRedirect } from './redirect.js';
 
-type PickerChoice = 'nip07' | 'redirect' | 'bunker' | 'cancel';
+/**
+ * Picker tokens.
+ *
+ *   - 'nip07'    — browser extension (Bark, Alby, nos2x, …)
+ *   - 'redirect' — Sign in with Signet on this device (same-tab navigation)
+ *   - 'qr'       — Sign in with Signet on another device (QR + relay delivery)
+ *   - 'bunker'   — paste a NIP-46 bunker URI
+ *
+ * `redirect` and `qr` both terminate at signet-app, but the delivery channel
+ * differs: redirect navigates the current tab, qr publishes a gift-wrapped
+ * response over the relay so a phone can sign for a desktop session.
+ */
+type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'cancel';
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -81,7 +94,8 @@ function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' 
     <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
     <div style="display:flex;flex-direction:column;">
       ${showNip07 ? `<button data-choice="nip07" style="${buttonStyle(dark, true)}"><span style="font-size:1.2rem;">🌐</span><span><strong>Browser extension</strong><br><span style="font-size:0.8rem;opacity:0.8;">bark, Alby, nos2x</span></span></button>` : ''}
-      <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
+      <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
+      <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
       <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
     </div>
     <button data-choice="cancel" style="background:none;border:0;color:${muted};padding:12px;cursor:pointer;font-size:0.85rem;margin-top:8px;">Cancel</button>
@@ -411,6 +425,24 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'redirect') {
+        // Same-tab navigation. Reuses the same pending-state and callback
+        // machinery as `Signet.login({ mode: 'redirect' })`, so this picker
+        // path lands the user on signet-app and the consumer's next page
+        // load picks up the round-trip via `Signet.handleRedirectCallback`.
+        // The promise from `startRedirect` never resolves — the page is gone
+        // before the await completes — so the dialog teardown in the finally
+        // block is also a no-op for this branch.
+        await startRedirect({
+          appName: resolved.appName,
+          challenge: resolved.challenge,
+          origin: resolved.origin,
+          signetAppOrigin: resolved.signetAppOrigin,
+          ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
+        });
+        return null;  // unreachable
+      }
+
+      if (choice === 'qr') {
         const result = await runRedirectFlow(refs, resolved);
         if (!result) {
           if (resolved.preferredMethod) return null;
