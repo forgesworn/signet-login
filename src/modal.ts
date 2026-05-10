@@ -8,6 +8,7 @@
 import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
+import { isAndroid, startAmberSignIn } from './amber.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -26,7 +27,7 @@ import QRCode from 'qrcode';
  * differs: redirect navigates the current tab, qr publishes a gift-wrapped
  * response over the relay so a phone can sign for a desktop session.
  */
-type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'nsec' | 'cancel';
+type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'amber' | 'nsec' | 'cancel';
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -89,12 +90,14 @@ function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' 
   const muted = dark ? '#888' : '#666';
 
   const showNip07 = hasNip07();
+  const showAmber = isAndroid();
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.3rem;">Sign in to ${escapeHtml(appName)}</h2>
     <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
     <div style="display:flex;flex-direction:column;">
       ${showNip07 ? `<button data-choice="nip07" style="${buttonStyle(dark, true)}"><span style="font-size:1.2rem;">🌐</span><span><strong>Browser extension</strong><br><span style="font-size:0.8rem;opacity:0.8;">bark, Alby, nos2x</span></span></button>` : ''}
+      ${showAmber ? `<button data-choice="amber" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🤖</span><span><strong>Sign in with Amber</strong><br><span style="font-size:0.8rem;color:${muted};">Android signer (NIP-55)</span></span></button>` : ''}
       <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
       <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
       <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
@@ -601,6 +604,19 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
           challenge: resolved.challenge,
           origin: resolved.origin,
           signetAppOrigin: resolved.signetAppOrigin,
+          ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
+        });
+        return null;  // unreachable
+      }
+
+      if (choice === 'amber') {
+        // Same-tab navigation to a `nostrsigner:` URL. Android dispatches
+        // it to Amber; the page comes back via callbackUrl with the signed
+        // event in `?event=`. Picked up on next boot by handleRedirectCallback.
+        await startAmberSignIn({
+          appName: resolved.appName,
+          challenge: resolved.challenge,
+          origin: resolved.origin,
           ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
         });
         return null;  // unreachable

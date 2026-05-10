@@ -61,7 +61,7 @@ export function loadSession(): PersistedSession | null {
   const authEventJson = safeGet(STORAGE_KEYS.authEvent);
   if (!pubkey || !method || !authEventJson) return null;
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
-  if (method !== 'nip07' && method !== 'redirect' && method !== 'bunker') return null;
+  if (method !== 'nip07' && method !== 'redirect' && method !== 'bunker' && method !== 'amber') return null;
 
   // Sanity-parse the auth event before returning
   let authEvent: SignetAuthEvent;

@@ -42,12 +42,15 @@ import {
   createBunkerSigner,
   EphemeralSigner,
 } from './signers.js';
+import { consumeAmberCallback, type ConsumeAmberResult } from './amber.js';
 
 import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallback, startRedirect } from './redirect.js';
 import type { ConsumeCallbackResult } from './redirect.js';
 export type { CallbackResult } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
+export type { ConsumeAmberResult } from './amber.js';
+export { isAndroid } from './amber.js';
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -188,11 +191,13 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
     }
   }
 
-  // method === 'redirect' — restore as ephemeral (auth-only)
+  // method === 'redirect' or 'amber' — both restore as ephemeral (auth-only).
+  // Preserve the original method so consumers can still distinguish how the
+  // user originally authenticated.
   const ephemeral = new EphemeralSigner(stored.pubkey, authEvent);
   const session: SignetSession = {
     pubkey: stored.pubkey,
-    method: 'redirect',
+    method: stored.method,
     signer: ephemeral,
     authEvent,
   };
@@ -241,7 +246,20 @@ export const handleCallback = handlePopupCallback;
  * code that consumes `restoreSession()` doesn't need to care which path
  * authenticated the user.
  */
-export async function handleRedirectCallback(): Promise<ConsumeCallbackResult> {
+export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | ConsumeAmberResult> {
+  // Try Amber first — its callback shape (event= param) is disjoint from
+  // signet-app's (pubkey/signature/eventId), so the order doesn't matter
+  // for valid callbacks. Picking Amber first only affects the 'no-callback'
+  // → 'no-callback' fall-through, where checking either side first is fine.
+  const amberResult = consumeAmberCallback();
+  if (amberResult.kind === 'session') {
+    persistSession(amberResult.session);
+    return amberResult;
+  }
+  if (amberResult.kind !== 'no-callback') {
+    return amberResult;
+  }
+
   const result = consumeCallback();
   if (result.kind !== 'session') return result;
 
