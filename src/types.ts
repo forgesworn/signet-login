@@ -67,6 +67,23 @@ export interface SignetSession {
   displayName?: string;
 }
 
+/**
+ * Delivery mode for the "Sign in with Signet" method.
+ *
+ * - 'relay' (default): the modal shows a QR / link, signet-app gift-wraps the
+ *   signed auth event back via a Nostr relay. The current tab stays put. Best
+ *   for desktop where users have a phone alongside.
+ *
+ * - 'redirect': the current tab navigates to signet-app, the user signs in
+ *   there, signet-app redirects the same tab back to `redirectCallback` with
+ *   auth params in the query string. The consumer must call
+ *   `Signet.handleCallback()` on boot to consume the params and resolve a
+ *   session. Best for mobile / single-device flows.
+ *
+ * Only affects the 'redirect' login method. NIP-07 and bunker are unchanged.
+ */
+export type SignetDeliveryMode = 'relay' | 'redirect';
+
 /** Options for Signet.login(). */
 export interface LoginOptions {
   /** Required. Shown in the consent UI (e.g. "Asteroid Sats"). */
@@ -87,13 +104,38 @@ export interface LoginOptions {
    */
   signetAppOrigin?: string;
   /**
-   * Callback URL used by the same-device redirect path. Must be on the same
-   * origin as the calling page. If omitted, only the cross-device QR path is
-   * offered for the redirect method.
+   * Callback URL used by the same-device redirect path. Must be same-origin
+   * as the calling page. Defaults to `${origin}/`. Only used when `mode` is
+   * 'redirect'.
    */
   redirectCallback?: string;
+  /**
+   * Delivery mode for the Sign in with Signet method. See `SignetDeliveryMode`.
+   * Default: 'relay'.
+   *
+   * In 'redirect' mode `Signet.login()` navigates the current tab away and
+   * never resolves in this tab — the returned promise is abandoned. Wire up
+   * `Signet.handleCallback()` on boot to receive the session on return.
+   */
+  mode?: SignetDeliveryMode;
   /** Persist the session to localStorage. Default: true. */
   persist?: boolean;
+}
+
+/**
+ * State persisted to localStorage between starting a redirect and consuming
+ * the callback. Used by `consumeCallback()` to validate the round-trip and
+ * reconstruct the kind-21236 auth event.
+ */
+export interface PendingRedirect {
+  /** 64-hex challenge issued at login start — must match the auth event tag. */
+  challenge: string;
+  /** Origin that initiated the login — must match `window.location.origin` on return. */
+  origin: string;
+  /** App name — used to reconstruct the `app` tag on the auth event. */
+  appName: string;
+  /** Unix-ms when the redirect started. Used for the freshness window. */
+  createdAt: number;
 }
 
 /** Options for Signet.restoreSession(). */
@@ -111,7 +153,16 @@ export const DEFAULTS = {
   timeout: 120_000,
   theme: 'auto' as const,
   persist: true,
+  mode: 'relay' as SignetDeliveryMode,
 };
+
+/**
+ * Pending redirect must be consumed within this window of starting it,
+ * otherwise the callback is treated as stale (likely a stray bookmark or
+ * tab restored after a long pause). Mirrors signet-app's URL freshness
+ * window (5 min) so callback consumers behave consistently with the issuer.
+ */
+export const PENDING_REDIRECT_TTL_MS = 5 * 60 * 1000;
 
 /** Storage keys, namespaced under signet:login.* */
 export const STORAGE_KEYS = {

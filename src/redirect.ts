@@ -1,0 +1,267 @@
+/**
+ * Same-tab redirect flow for "Sign in with Signet".
+ *
+ * Two halves:
+ *
+ *   1. `startRedirect()` — called from `Signet.login({ mode: 'redirect' })`.
+ *      Persists pending state to localStorage, builds the signet-app auth URL
+ *      WITHOUT relay/sessionPubkey (so signet-app falls into its
+ *      `window.location.href = callbackUrl` path), and navigates the current
+ *      tab. The caller's promise never resolves in this tab — the page is
+ *      gone.
+ *
+ *   2. `consumeCallback()` — called from `Signet.handleCallback()` on boot.
+ *      Detects auth params in `window.location.search`, validates them
+ *      against the persisted pending state, reconstructs the kind-21236 auth
+ *      event, persists the session via the existing storage layer, strips
+ *      the auth params from the URL, and returns a `SignetSession`.
+ *
+ * Verification note: the reconstructed auth event has a signature that was
+ * produced over the original `created_at` chosen by signet-app at sign time.
+ * To rebuild the event hash exactly, signet-app must emit `t` (unix seconds)
+ * alongside pubkey/signature/eventId in the redirect URL — see the
+ * coordinated change in signet-protocol's `buildAuthCallbackUrl`. When `t`
+ * is present, the reconstructed event passes signature verification. When
+ * absent (older signet-app deployments), the SDK falls back to "now" and
+ * logs a warning — server-side strict verification will fail until the
+ * issuer is upgraded.
+ */
+
+import type {
+  PendingRedirect,
+  SignetAuthEvent,
+  SignetSession,
+} from './types.js';
+import { DEFAULTS, PENDING_REDIRECT_TTL_MS } from './types.js';
+import {
+  clearPendingRedirect,
+  loadPendingRedirect,
+  savePendingRedirect,
+} from './storage.js';
+import { EphemeralSigner } from './signers.js';
+
+/** Subset of resolved options used by the redirect path. */
+export interface RedirectStartOptions {
+  appName: string;
+  challenge: string;
+  origin: string;
+  signetAppOrigin: string;
+  redirectCallback?: string;
+}
+
+/** Hex regexes — kept local to avoid pulling in @noble for two patterns. */
+const HEX_64 = /^[0-9a-f]{64}$/i;
+const HEX_128 = /^[0-9a-f]{128}$/i;
+
+/**
+ * Build the signet-app auth URL for redirect mode. Deliberately omits `relay`
+ * and `sessionPubkey` so signet-app's `isRelayMode` check (App.tsx) returns
+ * false and the redirect path runs.
+ */
+export function buildRedirectAuthUrl(opts: RedirectStartOptions): string {
+  const callback = opts.redirectCallback ?? `${opts.origin}/`;
+  const params = new URLSearchParams({
+    auth: '1',
+    challenge: opts.challenge,
+    origin: opts.origin,
+    name: opts.appName,
+    callback,
+    t: String(Math.floor(Date.now() / 1000)),
+  });
+  return `${opts.signetAppOrigin}/?${params.toString()}`;
+}
+
+/**
+ * Persist pending state and navigate. Resolves to a never-settling promise on
+ * success (the page navigates before it can resolve) so callers using
+ * `await Signet.login()` see consistent behaviour with the relay path.
+ *
+ * Throws synchronously if the environment lacks `window` — calling redirect
+ * mode in non-browser code is a programming error, not something to silently
+ * swallow.
+ */
+export function startRedirect(opts: RedirectStartOptions): Promise<never> {
+  if (typeof window === 'undefined') {
+    throw new Error('signet-login: redirect mode requires a browser environment');
+  }
+  const pending: PendingRedirect = {
+    challenge: opts.challenge,
+    origin: opts.origin,
+    appName: opts.appName,
+    createdAt: Date.now(),
+  };
+  savePendingRedirect(pending);
+  const url = buildRedirectAuthUrl(opts);
+  // Use assignment (not replace) so the user can hit back to abort. The
+  // pending record stays put; consumeCallback will GC it via the freshness
+  // window if they never come back.
+  window.location.href = url;
+  // Page is navigating — return a promise that never resolves. Any code
+  // running after `await Signet.login()` won't see a value, but the tab is
+  // gone before that matters.
+  return new Promise<never>(() => { /* never resolves */ });
+}
+
+/**
+ * Strip auth-callback params from the current URL via `history.replaceState`,
+ * preserving anything else the consumer has on the URL. No-op when there's
+ * no auth-callback param present.
+ */
+function cleanupCallbackUrl(): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  const removed = ['pubkey', 'npub', 'signature', 'eventId', 'error', 'warnings', 'fromNP', 'display_name', 't'];
+  let touched = false;
+  for (const key of removed) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      touched = true;
+    }
+  }
+  if (!touched) return;
+  const newHref = url.pathname + (url.search ? url.search : '') + url.hash;
+  try {
+    window.history.replaceState(window.history.state, document.title, newHref);
+  } catch {
+    // history API blocked (file:// origin, sandboxed iframe, …) — leave URL alone
+  }
+}
+
+/** Outcome of consuming a redirect callback. */
+export type ConsumeCallbackResult =
+  | { kind: 'session'; session: SignetSession }
+  | { kind: 'denied' }
+  | { kind: 'no-callback' }
+  | { kind: 'invalid'; reason: string };
+
+/**
+ * Detect and consume a redirect-back callback. Returns:
+ *
+ *   - { kind: 'session', session }  — round-trip valid; clears pending state
+ *                                     and strips auth params from the URL
+ *   - { kind: 'denied' }            — signet-app sent `error=denied`
+ *   - { kind: 'no-callback' }       — no auth params in the URL; do nothing
+ *   - { kind: 'invalid', reason }   — params present but failed validation
+ *                                     (pending state mismatch, stale, hex
+ *                                     malformed, …). Pending state is cleared
+ *                                     in this case too — a stale or attacker-
+ *                                     supplied URL shouldn't poison the next
+ *                                     login attempt.
+ *
+ * Idempotent: calling it twice on the same loaded page returns 'no-callback'
+ * the second time because the URL params have been stripped.
+ */
+export function consumeCallback(): ConsumeCallbackResult {
+  if (typeof window === 'undefined') return { kind: 'no-callback' };
+
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get('error');
+  const pubkey = params.get('pubkey');
+  const signature = params.get('signature');
+  const eventId = params.get('eventId');
+
+  // No callback at all — early return without touching pending state.
+  if (!error && !pubkey && !signature && !eventId) {
+    return { kind: 'no-callback' };
+  }
+
+  const pending = loadPendingRedirect();
+
+  // From here on we're handling a callback — pending state must always be
+  // cleared on exit so a stale record can't be reused.
+  const finalize = <T extends ConsumeCallbackResult>(result: T): T => {
+    clearPendingRedirect();
+    cleanupCallbackUrl();
+    return result;
+  };
+
+  if (error === 'denied') {
+    return finalize({ kind: 'denied' });
+  }
+
+  if (!pending) {
+    return finalize({ kind: 'invalid', reason: 'no-pending-state' });
+  }
+
+  // Origin sanity — protects against a callback URL fired at a different app
+  // (e.g. attacker emails a crafted link). Pending was issued by `origin`
+  // matching the calling page; on return the page must still be on that origin.
+  if (pending.origin !== window.location.origin) {
+    return finalize({ kind: 'invalid', reason: 'origin-mismatch' });
+  }
+
+  // Freshness — a callback hours after the user clicked Sign In is almost
+  // certainly a stale tab restore. Reject rather than reconstructing an
+  // expired auth event.
+  if (Date.now() - pending.createdAt > PENDING_REDIRECT_TTL_MS) {
+    return finalize({ kind: 'invalid', reason: 'pending-stale' });
+  }
+
+  if (!pubkey || !HEX_64.test(pubkey)) {
+    return finalize({ kind: 'invalid', reason: 'pubkey-malformed' });
+  }
+  if (!signature || !HEX_128.test(signature)) {
+    return finalize({ kind: 'invalid', reason: 'signature-malformed' });
+  }
+  if (!eventId || !HEX_64.test(eventId)) {
+    return finalize({ kind: 'invalid', reason: 'eventId-malformed' });
+  }
+
+  // `t` (created_at unix seconds) — emitted by signet-app for exact event
+  // reconstruction. Fall back to "now" with a warning when absent (older
+  // signet-app deployments). See module-level note.
+  let createdAt: number;
+  const tRaw = params.get('t');
+  if (tRaw && /^\d+$/.test(tRaw)) {
+    const t = Number(tRaw);
+    if (!Number.isFinite(t)) return finalize({ kind: 'invalid', reason: 't-malformed' });
+    createdAt = t;
+  } else {
+    createdAt = Math.floor(Date.now() / 1000);
+    // Surface this in dev tools so consumers can spot upstream signet-app
+    // versions that don't emit `t`. Doesn't fail the flow because the
+    // session is still usable client-side; only strict server-side
+    // verification will reject it.
+    if (typeof console !== 'undefined') {
+      console.warn(
+        'signet-login: redirect callback missing `t` param — auth event ' +
+        'created_at approximated. Server-side verification may reject. ' +
+        'Upgrade signet-app to emit `t` in the redirect URL.',
+      );
+    }
+  }
+
+  const lowerPubkey = pubkey.toLowerCase();
+  const lowerSig = signature.toLowerCase();
+  const lowerEventId = eventId.toLowerCase();
+
+  const authEvent: SignetAuthEvent = {
+    id: lowerEventId,
+    pubkey: lowerPubkey,
+    kind: 21236,
+    created_at: createdAt,
+    tags: [
+      ['challenge', pending.challenge],
+      ['origin', pending.origin],
+      ['app', pending.appName],
+    ],
+    content: '',
+    sig: lowerSig,
+  };
+
+  const displayName = params.get('display_name') || undefined;
+  const ephemeral = new EphemeralSigner(lowerPubkey, authEvent);
+  const session: SignetSession = {
+    pubkey: lowerPubkey,
+    method: 'redirect',
+    signer: ephemeral,
+    authEvent,
+  };
+  if (displayName) session.displayName = displayName;
+
+  return finalize({ kind: 'session', session });
+}
+
+// Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid
+// importing the full types module just for one constant.
+export { DEFAULTS };

@@ -5,7 +5,7 @@
  * with `signet:verify.*` or any future Signet SDK.
  */
 
-import type { LoginMethod, SignetAuthEvent } from './types.js';
+import type { LoginMethod, PendingRedirect, SignetAuthEvent } from './types.js';
 import { STORAGE_KEYS } from './types.js';
 
 /** Raw shape of a persisted session — flat string fields, JSON for the auth event. */
@@ -101,6 +101,45 @@ export function clearSession(): void {
   safeRemove(STORAGE_KEYS.bunkerClientSk);
   safeRemove(STORAGE_KEYS.expiresAt);
   safeRemove(STORAGE_KEYS.displayName);
+}
+
+// ── Pending-redirect persistence ──────────────────────────────────────────────
+
+/**
+ * Persist the in-flight redirect state. Called immediately before navigating
+ * to signet-app so the callback consumer can validate the round-trip.
+ *
+ * Stored as a single JSON blob under `signet:login.pendingRedirect`. We keep
+ * it in localStorage rather than sessionStorage because some browsers (older
+ * iOS Safari especially) wipe sessionStorage on cross-origin navigation.
+ */
+export function savePendingRedirect(p: PendingRedirect): void {
+  safeSet(STORAGE_KEYS.pendingRedirect, JSON.stringify(p));
+}
+
+/** Load and shape-validate the pending redirect. Returns null if absent or malformed. */
+export function loadPendingRedirect(): PendingRedirect | null {
+  const raw = safeGet(STORAGE_KEYS.pendingRedirect);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const challenge = parsed.challenge;
+    const origin = parsed.origin;
+    const appName = parsed.appName;
+    const createdAt = parsed.createdAt;
+    if (typeof challenge !== 'string' || !/^[0-9a-f]{64}$/i.test(challenge)) return null;
+    if (typeof origin !== 'string' || origin.length === 0) return null;
+    if (typeof appName !== 'string' || appName.length === 0) return null;
+    if (typeof createdAt !== 'number' || !Number.isFinite(createdAt)) return null;
+    return { challenge, origin, appName, createdAt };
+  } catch {
+    return null;
+  }
+}
+
+/** Clear the pending-redirect record. Safe to call when none exists. */
+export function clearPendingRedirect(): void {
+  safeRemove(STORAGE_KEYS.pendingRedirect);
 }
 
 // ── Hex helpers (avoid pulling in @noble for two functions) ───────────────────

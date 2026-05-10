@@ -33,6 +33,7 @@ import type {
   SignetSession,
   SignetAuthEvent,
 } from './types.js';
+import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
 import { saveSession, loadSession, clearSession, bytesToHexLocal, hexToBytesLocal } from './storage.js';
 import {
@@ -42,17 +43,47 @@ import {
   EphemeralSigner,
 } from './signers.js';
 
-import { handleCallback } from './callback.js';
-export { handleCallback };
+import { handleCallback as handlePopupCallback } from './callback.js';
+import { consumeCallback, startRedirect } from './redirect.js';
+import type { ConsumeCallbackResult } from './redirect.js';
 export type { CallbackResult } from './callback.js';
+export type { ConsumeCallbackResult } from './redirect.js';
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
  * Show the login picker and resolve to a SignetSession on success, or null on
  * cancel / timeout.
+ *
+ * When `mode: 'redirect'` is set, the picker is skipped entirely — the current
+ * tab navigates to signet-app and this promise NEVER resolves in this tab.
+ * Callers should treat the returned promise as "fire and forget" in that case
+ * and call `Signet.handleCallback()` on the next page load to receive the
+ * session. The other login methods (NIP-07, bunker) don't use redirect at all
+ * and are unaffected by this option.
  */
 export async function login(opts: LoginOptions): Promise<SignetSession | null> {
+  // Redirect mode short-circuits the picker — the user is going to signet-app.
+  // We don't gate on preferredMethod here: redirect mode implies the consumer
+  // wants the Sign in with Signet method, which is the only method that uses
+  // navigation. (NIP-07 and bunker resolve in-tab regardless of mode.)
+  if (opts.mode === 'redirect') {
+    if (typeof window === 'undefined') {
+      throw new Error('signet-login: redirect mode requires a browser environment');
+    }
+    const challenge = opts.challenge ?? generateChallenge();
+    if (!/^[0-9a-f]{64}$/i.test(challenge)) throw new Error('challenge-must-be-64-hex');
+    if (!opts.appName || opts.appName.length === 0) throw new Error('appName-required');
+    if (opts.appName.length > 64) throw new Error('appName-too-long');
+    return startRedirect({
+      appName: opts.appName,
+      challenge: challenge.toLowerCase(),
+      origin: window.location.origin,
+      signetAppOrigin: opts.signetAppOrigin ?? DEFAULTS.signetAppOrigin,
+      ...(opts.redirectCallback !== undefined ? { redirectCallback: opts.redirectCallback } : {}),
+    });
+  }
+
   const session = await showLoginModal(opts);
   if (!session) return null;
 
@@ -61,6 +92,17 @@ export async function login(opts: LoginOptions): Promise<SignetSession | null> {
   }
 
   return session;
+}
+
+/**
+ * Generate a 64-hex random challenge. Mirrors the modal's helper but lives at
+ * the module level so the redirect path can call it without pulling the modal
+ * into the bundle when only `mode: 'redirect'` is used.
+ */
+function generateChallenge(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -159,6 +201,55 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
 }
 
 /**
+ * Popup-style callback receiver. Use on the page that signet-app redirects
+ * a popup to. Parses URL params and posts them to `window.opener`, then
+ * closes the popup. Returns the raw params for non-popup contexts.
+ *
+ * For the same-tab redirect flow (`mode: 'redirect'` on `login()`), use
+ * `Signet.handleRedirectCallback()` instead — that one validates against the
+ * persisted pending state and returns a fully-formed `SignetSession`.
+ */
+export const handleCallback = handlePopupCallback;
+
+/**
+ * Same-tab redirect callback receiver. Call once on app boot, before
+ * `restoreSession()`, to consume an incoming `?pubkey&signature&eventId`
+ * payload from signet-app.
+ *
+ * Behaviour:
+ *
+ *   - `'session'`: validates the round-trip against the pending state saved
+ *     by `login({ mode: 'redirect' })`, builds and persists a SignetSession
+ *     (so `restoreSession()` finds it next time), and strips the auth params
+ *     from the URL via `history.replaceState`. The returned session uses an
+ *     `EphemeralSigner` — `signer.capabilities.canSignEvents` is false. Pair
+ *     with NIP-07 / bunker if you need ongoing signing.
+ *
+ *   - `'denied'`: signet-app reported the user rejected the request.
+ *
+ *   - `'no-callback'`: no auth params on the URL — the typical case on most
+ *     page loads. Idempotent: a second call after success also returns this.
+ *
+ *   - `'invalid'`: params present but failed validation. `reason` is a
+ *     machine-readable token (`origin-mismatch`, `pending-stale`,
+ *     `pubkey-malformed`, …). Pending state is cleared either way so a stale
+ *     URL can't poison the next attempt.
+ *
+ * The returned shape is intentionally tagged so consumers can distinguish
+ * "user denied" from "no callback" without inspecting null. Persistence on
+ * success uses the same storage layer as relay-mode sessions, so downstream
+ * code that consumes `restoreSession()` doesn't need to care which path
+ * authenticated the user.
+ */
+export async function handleRedirectCallback(): Promise<ConsumeCallbackResult> {
+  const result = consumeCallback();
+  if (result.kind === 'session') {
+    persistSession(result.session);
+  }
+  return result;
+}
+
+/**
  * Clear the stored session and close the active signer.
  */
 export async function logout(currentSession?: SignetSession): Promise<void> {
@@ -201,6 +292,12 @@ if (typeof window !== 'undefined') {
   // Never overwrite — additive only. Coexists with signet-verify on the same page.
   const existing = (window as unknown as { Signet?: Record<string, unknown> }).Signet;
   const SignetGlobal = existing ?? {};
-  Object.assign(SignetGlobal, { login, restoreSession, logout, handleCallback });
+  Object.assign(SignetGlobal, {
+    login,
+    restoreSession,
+    logout,
+    handleCallback,
+    handleRedirectCallback,
+  });
   (window as unknown as { Signet: Record<string, unknown> }).Signet = SignetGlobal;
 }
