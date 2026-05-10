@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (2026-05-10)
+
+### Features
+
+- render real QR for cross-device Signet flow (modal)
+
+
+
 ## 0.3.0 (2026-05-10)
 
 ### Features
