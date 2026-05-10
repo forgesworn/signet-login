@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 (2026-05-10)
+
+### Features
+
+- add nsec paste sign-in (in-memory only, never persisted) (modal)
+
+
+
 ## 0.4.0 (2026-05-10)
 
 ### Features
