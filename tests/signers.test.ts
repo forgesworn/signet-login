@@ -7,7 +7,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner } from '../src/signers.js';
+import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner } from '../src/signers.js';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { nsecEncode } from 'nostr-tools/nip19';
 
 describe('hasNip07', () => {
   beforeEach(() => {
@@ -139,5 +141,54 @@ describe('Nip07Signer constructor', () => {
     };
     const signer = new Nip07Signer('a'.repeat(64), provider);
     expect(signer.capabilities.hasNip44).toBe(false);
+  });
+});
+
+describe('createLocalSignerFromNsec', () => {
+  it('decodes a bech32 nsec and signs with the matching pubkey', async () => {
+    const sk = generateSecretKey();
+    const expectedPubkey = getPublicKey(sk);
+    const nsec = nsecEncode(sk);
+
+    const signer = createLocalSignerFromNsec(nsec);
+    expect(signer).toBeInstanceOf(LocalSigner);
+    expect(signer.pubkey).toBe(expectedPubkey);
+    expect(signer.capabilities.canSignEvents).toBe(true);
+    expect(signer.capabilities.hasNip44).toBe(true);
+
+    const event = await signer.signEvent({ kind: 1, content: 'hi', tags: [], created_at: 1 });
+    expect(event.pubkey).toBe(expectedPubkey);
+    expect(event.sig).toMatch(/^[0-9a-f]{128}$/);
+  });
+
+  it('accepts a 64-char hex private key', () => {
+    const sk = generateSecretKey();
+    const hex = Array.from(sk, b => b.toString(16).padStart(2, '0')).join('');
+    const signer = createLocalSignerFromNsec(hex);
+    expect(signer.pubkey).toBe(getPublicKey(sk));
+  });
+
+  it('rejects empty input', () => {
+    expect(() => createLocalSignerFromNsec('')).toThrow(/empty-nsec/);
+    expect(() => createLocalSignerFromNsec('   ')).toThrow(/empty-nsec/);
+  });
+
+  it('rejects an npub (wrong prefix)', () => {
+    expect(() => createLocalSignerFromNsec('npub1' + 'q'.repeat(58))).toThrow();
+  });
+
+  it('rejects garbage', () => {
+    expect(() => createLocalSignerFromNsec('not-a-key')).toThrow(/invalid-nsec-format/);
+  });
+
+  it('zeros the privkey on close', async () => {
+    const sk = generateSecretKey();
+    const nsec = nsecEncode(sk);
+    const signer = createLocalSignerFromNsec(nsec);
+    await signer.close();
+    // After close, signing fails — the schnorr lib rejects an all-zero key.
+    await expect(
+      signer.signEvent({ kind: 1, content: '', tags: [], created_at: 1 }),
+    ).rejects.toThrow();
   });
 });

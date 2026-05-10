@@ -7,7 +7,7 @@
 
 import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, EphemeralSigner, type BunkerSignerImpl } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -26,7 +26,7 @@ import QRCode from 'qrcode';
  * differs: redirect navigates the current tab, qr publishes a gift-wrapped
  * response over the relay so a phone can sign for a desktop session.
  */
-type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'cancel';
+type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nsec' | 'cancel';
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -98,6 +98,7 @@ function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' 
       <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
       <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
       <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
+      <button data-choice="nsec" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">⚠️</span><span><strong>Paste private key</strong><br><span style="font-size:0.8rem;color:${muted};">In-memory only — risky, last resort</span></span></button>
     </div>
     <button data-choice="cancel" style="background:none;border:0;color:${muted};padding:12px;cursor:pointer;font-size:0.85rem;margin-top:8px;">Cancel</button>
   `;
@@ -369,6 +370,65 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
   });
 }
 
+// ── Paste nsec (in-memory only) ───────────────────────────────────────────────
+
+async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<LocalSigner | null> {
+  const dark = isDarkMode(opts.theme);
+  const muted = dark ? '#888' : '#666';
+  const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
+  const inputFg = dark ? '#e0e0e0' : '#1a1a2e';
+  void opts;
+
+  refs.dialog.innerHTML = `
+    <h2 style="margin:0 0 8px;font-size:1.2rem;">Paste private key</h2>
+    <p style="margin:0 0 12px;color:#d04848;font-size:0.85rem;font-weight:600;">⚠️ Last-resort method — only paste keys you can afford to lose.</p>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.8rem;line-height:1.4;">Held in memory for this session only. Cleared on page reload. Prefer a browser extension or bunker URI for any key with real value.</p>
+    <textarea id="signet-login-nsec-input" placeholder="nsec1..." rows="2" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;resize:vertical;margin-bottom:12px;-webkit-text-security:disc;text-security:disc;"></textarea>
+    <p id="signet-login-nsec-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
+    <div style="display:flex;gap:8px;justify-content:space-between;">
+      <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
+      <button data-action="connect" style="${buttonStyle(dark, true)}width:auto;flex:1;padding:8px 16px;text-align:center;">Sign in</button>
+    </div>
+  `;
+
+  return new Promise<LocalSigner | null>(resolve => {
+    let settled = false;
+    const settle = (v: LocalSigner | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+
+    const input = refs.dialog.querySelector<HTMLTextAreaElement>('#signet-login-nsec-input');
+    const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nsec-status');
+    const connectBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="connect"]');
+
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
+      if (input) input.value = '';
+      settle(null);
+    });
+
+    connectBtn?.addEventListener('click', () => {
+      const value = input?.value ?? '';
+      if (!value.trim()) {
+        if (status) status.textContent = 'Please paste an nsec.';
+        return;
+      }
+      try {
+        const signer = createLocalSignerFromNsec(value);
+        // Wipe the textarea ASAP — the key is now in the signer.
+        if (input) input.value = '';
+        settle(signer);
+      } catch (err) {
+        if (status) {
+          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
+          status.style.color = '#d04848';
+        }
+      }
+    });
+  });
+}
+
 // ── Orchestrator ──────────────────────────────────────────────────────────────
 
 interface ResolvedOptions {
@@ -495,6 +555,31 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
         return {
           pubkey: signer.pubkey,
           method: 'bunker',
+          signer,
+          authEvent,
+        };
+      }
+
+      if (choice === 'nsec') {
+        const signer = await runNsecFlow(refs, resolved);
+        if (!signer) {
+          if (resolved.preferredMethod) return null;
+          continue;
+        }
+
+        const authEvent = await signer.signEvent({
+          kind: 21236,
+          content: '',
+          tags: [
+            ['challenge', resolved.challenge],
+            ['origin', resolved.origin],
+            ['app', resolved.appName],
+          ],
+        }) as SignetAuthEvent;
+
+        return {
+          pubkey: signer.pubkey,
+          method: 'nsec',
           signer,
           authEvent,
         };

@@ -26,7 +26,7 @@ export interface EventTemplate {
 }
 
 /** Login method actually used to authenticate. */
-export type LoginMethod = 'nip07' | 'redirect' | 'bunker';
+export type LoginMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec';
 
 /** Capability flags exposed by a signer. */
 export interface SignerCapabilities {

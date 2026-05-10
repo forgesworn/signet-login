@@ -8,6 +8,9 @@
 
 import type { EventTemplate, NostrEvent, SignetSigner, SignerCapabilities, SignetAuthEvent } from './types.js';
 import { BunkerSigner, parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
+import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
+import { decode as nip19Decode } from 'nostr-tools/nip19';
+import { encrypt as nip44Encrypt, decrypt as nip44Decrypt, getConversationKey } from 'nostr-tools/nip44';
 
 // ── NIP-07 ────────────────────────────────────────────────────────────────────
 
@@ -141,6 +144,70 @@ export function generateSecretKey(): Uint8Array {
   const sk = new Uint8Array(32);
   crypto.getRandomValues(sk);
   return sk;
+}
+
+// ── nsec (local privkey, in-memory only) ─────────────────────────────────────
+
+/**
+ * Holds a 32-byte private key in memory, signs locally with schnorr, exposes
+ * NIP-44 via nostr-tools. The key is never persisted by this signer — the SDK
+ * will not call any storage write for an nsec session, so reloads land back
+ * on the picker. The consumer must surface the security trade-off in the UI.
+ */
+export class LocalSigner implements SignetSigner {
+  readonly method = 'nsec' as const;
+  readonly capabilities: SignerCapabilities = { canSignEvents: true, hasNip44: true };
+  readonly nip44: SignetSigner['nip44'];
+
+  constructor(public readonly pubkey: string, private readonly privkey: Uint8Array) {
+    this.nip44 = {
+      encrypt: async (peer, pt) => nip44Encrypt(pt, getConversationKey(this.privkey, peer)),
+      decrypt: async (peer, ct) => nip44Decrypt(ct, getConversationKey(this.privkey, peer)),
+    };
+  }
+
+  async signEvent(template: EventTemplate): Promise<NostrEvent> {
+    const filled = {
+      kind: template.kind,
+      content: template.content,
+      created_at: template.created_at ?? Math.floor(Date.now() / 1000),
+      tags: template.tags ?? [],
+    };
+    return finalizeEvent(filled, this.privkey) as NostrEvent;
+  }
+
+  async close(): Promise<void> {
+    // Best-effort wipe — the engine may already have copies in CoW pages, but
+    // zeroing here at least gives a consistent shape with bunker.close().
+    this.privkey.fill(0);
+  }
+}
+
+/**
+ * Decode a bech32 nsec into a LocalSigner. Accepts either the `nsec1...`
+ * prefix or a raw 64-char hex private key for power-user paste paths.
+ * Throws on any malformed input — caller surfaces the error to the user.
+ */
+export function createLocalSignerFromNsec(input: string): LocalSigner {
+  const trimmed = input.trim();
+  if (!trimmed) throw new Error('empty-nsec');
+
+  let sk: Uint8Array;
+  if (trimmed.startsWith('nsec1')) {
+    const decoded = nip19Decode(trimmed);
+    if (decoded.type !== 'nsec') throw new Error('not-an-nsec');
+    sk = decoded.data as Uint8Array;
+  } else if (/^[0-9a-f]{64}$/i.test(trimmed)) {
+    sk = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) sk[i] = parseInt(trimmed.slice(i * 2, i * 2 + 2), 16);
+  } else {
+    throw new Error('invalid-nsec-format');
+  }
+  if (sk.length !== 32) throw new Error('invalid-nsec-length');
+
+  const pubkey = getPublicKey(sk);
+  if (!/^[0-9a-f]{64}$/i.test(pubkey)) throw new Error('invalid-pubkey-from-nsec');
+  return new LocalSigner(pubkey.toLowerCase(), sk);
 }
 
 // ── Ephemeral (redirect-only) ─────────────────────────────────────────────────

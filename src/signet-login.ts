@@ -296,6 +296,12 @@ export async function logout(currentSession?: SignetSession): Promise<void> {
 // ── Persistence helpers (internal) ────────────────────────────────────────────
 
 function persistSession(session: SignetSession): void {
+  // nsec sessions are deliberately in-memory only — writing the pubkey or
+  // even the method to storage would leak that this user has used a paste
+  // path. Reload lands the user back on the picker, which is the contract
+  // we surface in runNsecFlow's warning copy.
+  if (session.method === 'nsec') return;
+
   const payload: Parameters<typeof saveSession>[0] = {
     pubkey: session.pubkey,
     method: session.method,
