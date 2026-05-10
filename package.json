@@ -1,0 +1,64 @@
+{
+  "name": "signet-login",
+  "version": "0.1.0",
+  "description": "Sign in with Signet — drop-in login SDK for Nostr-aware websites. NIP-07, bunker URI, and Signet redirect/QR in one unified API.",
+  "type": "module",
+  "main": "./dist/signet-login.js",
+  "types": "./dist/signet-login.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/signet-login.d.ts",
+      "import": "./dist/signet-login.js",
+      "default": "./dist/signet-login.js"
+    },
+    "./verify": {
+      "types": "./dist/verify.d.ts",
+      "import": "./dist/verify.js",
+      "default": "./dist/verify.js"
+    },
+    "./iife": "./dist/signet-login.iife.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "provenance": true
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc && npm run build:iife",
+    "build:iife": "esbuild src/signet-login.ts --bundle --format=iife --global-name=__SignetLoginIIFE --outfile=dist/signet-login.iife.js --minify --target=es2020 --footer:js='Object.assign((globalThis.Signet||={}),__SignetLoginIIFE);'",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1",
+    "nostr-tools": "^2.23.3",
+    "signet-verify": "^0.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "jsdom": "^29.1.1",
+    "signet-protocol": "^1.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "nostr",
+    "signet",
+    "login",
+    "authentication",
+    "nip-07",
+    "nip-46",
+    "bunker",
+    "decentralised-identity",
+    "sign-in-with-signet"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/forgesworn/signet-login.git"
+  }
+}

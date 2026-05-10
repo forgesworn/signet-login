@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>signet-login — basic demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a2e; line-height: 1.5; }
+    h1 { font-size: 1.5rem; margin-bottom: 8px; }
+    p.muted { color: #666; font-size: 0.9rem; }
+    .panel { border: 1px solid #e0e0e0; border-radius: 12px; padding: 20px; margin-top: 20px; }
+    button { background: #2c3e8f; color: white; border: 0; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 0.95rem; }
+    button:hover { background: #3b4ea3; }
+    button.secondary { background: #888; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+    pre { background: #f8f8fa; padding: 12px; border-radius: 8px; overflow: auto; font-size: 0.8rem; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>signet-login — basic demo</h1>
+  <p class="muted">Click <strong>Sign in</strong> to launch the picker. Choose your preferred method (browser extension, Sign in with Signet, or paste a bunker URI).</p>
+
+  <div class="panel">
+    <p class="muted" style="margin-top:0"><strong>Build first:</strong> <code>npm run build</code> in the signet-login root, then serve this directory: <code>python3 -m http.server 8080</code> from the repo root.</p>
+  </div>
+
+  <div class="panel">
+    <p id="status" class="muted">Not signed in.</p>
+    <div class="row">
+      <button id="login">Sign in</button>
+      <button id="restore" class="secondary">Restore session</button>
+      <button id="sign" disabled>Sign a kind-30762 score event</button>
+      <button id="logout" class="secondary" disabled>Logout</button>
+    </div>
+    <pre id="result"></pre>
+  </div>
+
+  <!-- signet-login SDK (IIFE bundle attaches login/restoreSession/logout/handleCallback to window.Signet additively) -->
+  <script src="../dist/signet-login.iife.js"></script>
+  <script>
+    let currentSession = null;
+
+    const statusEl = document.getElementById('status');
+    const resultEl = document.getElementById('result');
+    const signBtn = document.getElementById('sign');
+    const logoutBtn = document.getElementById('logout');
+
+    function setSession(session) {
+      currentSession = session;
+      if (session) {
+        statusEl.textContent = `Signed in as ${session.pubkey.slice(0, 16)}… via ${session.method}`;
+        signBtn.disabled = !session.signer.capabilities.canSignEvents;
+        logoutBtn.disabled = false;
+      } else {
+        statusEl.textContent = 'Not signed in.';
+        signBtn.disabled = true;
+        logoutBtn.disabled = true;
+      }
+    }
+
+    document.getElementById('login').addEventListener('click', async () => {
+      try {
+        const session = await Signet.login({
+          appName: 'signet-login Demo',
+          // For local dev, point at your signet-app dev server:
+          // signetAppOrigin: 'http://localhost:5174',
+          // relayUrl: 'ws://localhost:7777',
+        });
+        setSession(session);
+        if (!session) resultEl.textContent = 'Cancelled or timed out.';
+      } catch (err) {
+        resultEl.textContent = `Error: ${err.message}`;
+      }
+    });
+
+    document.getElementById('restore').addEventListener('click', async () => {
+      const session = await Signet.restoreSession();
+      setSession(session);
+      if (!session) resultEl.textContent = 'No session stored.';
+    });
+
+    signBtn.addEventListener('click', async () => {
+      if (!currentSession?.signer.capabilities.canSignEvents) return;
+      try {
+        const signed = await currentSession.signer.signEvent({
+          kind: 30762,
+          content: '',
+          tags: [
+            ['game', 'asteroid-sats'],
+            ['score', '12350'],
+            ['p', currentSession.pubkey],
+            ['d', `asteroid-sats:${currentSession.pubkey}:demo`],
+          ],
+        });
+        resultEl.textContent = JSON.stringify(signed, null, 2);
+      } catch (err) {
+        resultEl.textContent = `Sign error: ${err.message}`;
+      }
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+      await Signet.logout(currentSession);
+      setSession(null);
+      resultEl.textContent = '';
+    });
+
+    // Try to restore on page load
+    Signet.restoreSession().then(s => { if (s) setSession(s); });
+  </script>
+</body>
+</html>

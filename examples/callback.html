@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in with Signet — callback</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 16px; color: #1a1a2e; text-align: center; }
+    h1 { font-size: 1.3rem; }
+    .spinner { display: inline-block; width: 32px; height: 32px; border: 3px solid #e0e0e0; border-top-color: #2c3e8f; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 24px auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p.muted { color: #666; font-size: 0.9rem; }
+    pre { text-align: left; background: #f8f8fa; padding: 12px; border-radius: 8px; overflow: auto; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h1>Returning you to the site…</h1>
+  <div class="spinner"></div>
+  <p class="muted">If this window doesn't close automatically, you can close it manually.</p>
+  <pre id="result"></pre>
+
+  <script src="../dist/signet-login.iife.js"></script>
+  <script>
+    // handleCallback parses URL params and posts them to window.opener (if any),
+    // then closes the popup. If opened in the same window, the params are returned
+    // and the consumer can decide what to do with them.
+    const result = Signet.handleCallback({ closeAfterPost: true });
+    document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+  </script>
+</body>
+</html>
