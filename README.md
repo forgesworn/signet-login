@@ -61,6 +61,7 @@ interface LoginOptions {
   appName: string;                                      // shown in modal
   challenge?: string;                                   // 64 hex; auto if omitted
   preferredMethod?: 'nip07' | 'redirect' | 'bunker';    // skip the picker
+  methodOrder?: readonly PickerMethod[];                // override picker button order; defaults to DEFAULT_METHOD_ORDER (most secure first)
   relayUrl?: string;                                    // default wss://relay.damus.io
   theme?: 'light' | 'dark' | 'auto';                    // default 'auto'
   timeout?: number;                                     // default 120_000ms; clamped to [5k, 600k]
@@ -68,6 +69,8 @@ interface LoginOptions {
   redirectCallback?: string;                            // for same-device redirect (future)
   persist?: boolean;                                    // default true (localStorage)
 }
+
+type PickerMethod = 'bunker' | 'nostrconnect' | 'qr' | 'nip07' | 'amber' | 'redirect' | 'nsec';
 
 interface SignetSession {
   pubkey: string;                  // hex
@@ -78,6 +81,43 @@ interface SignetSession {
   displayName?: string;
 }
 ```
+
+#### Picker ordering
+
+The picker shows methods in `DEFAULT_METHOD_ORDER` by default, which is **most secure first**:
+
+```ts
+import { DEFAULT_METHOD_ORDER } from 'signet-login';
+// ['bunker', 'nostrconnect', 'qr', 'nip07', 'amber', 'redirect', 'nsec']
+```
+
+Reasoning:
+
+1. **bunker** — paste NIP-46 URI. Keys never on this device.
+2. **nostrconnect** — generate nostrconnect:// for a signer on another device.
+3. **qr** — scan signet-app QR with your phone. Keys on phone.
+4. **nip07** — browser extension (Bark, Alby, …). Keys sandboxed in extension. Auto-hidden if no extension detected.
+5. **amber** — Android NIP-55 signer app. Auto-hidden off-Android.
+6. **redirect** — open signet-app on this device. Keys delegated to it.
+7. **nsec** — paste raw private key. In-memory only, last resort.
+
+Pass `methodOrder` to override:
+
+```ts
+// Hide paste-nsec entirely, keep secure-down for the rest
+await Signet.login({
+  appName: 'My Game',
+  methodOrder: ['bunker', 'nostrconnect', 'qr', 'nip07', 'amber', 'redirect'],
+});
+
+// Only allow the two strongest methods
+await Signet.login({
+  appName: 'High-Security App',
+  methodOrder: ['bunker', 'nostrconnect'],
+});
+```
+
+Methods omitted from `methodOrder` are not rendered. Methods present but unavailable in the runtime (`nip07` with no extension, `amber` off-Android) are silently skipped.
 
 ### `Signet.restoreSession(opts?)`
 

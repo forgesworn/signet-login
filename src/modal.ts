@@ -5,7 +5,8 @@
  * top-layer placement, theme-aware colours, no third-party UI deps.
  */
 
-import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
+import type { LoginOptions, SignetSession, LoginMethod, PickerMethod, SignetAuthEvent } from './types.js';
+import { DEFAULT_METHOD_ORDER } from './types.js';
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
@@ -27,7 +28,24 @@ import QRCode from 'qrcode';
  * differs: redirect navigates the current tab, qr publishes a gift-wrapped
  * response over the relay so a phone can sign for a desktop session.
  */
-type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'amber' | 'nsec' | 'cancel';
+type PickerChoice = PickerMethod | 'cancel';
+
+interface PickerButtonConfig {
+  emoji: string;
+  title: string;
+  subtitle: string;
+  envCheck?: () => boolean;   // skip the button if this returns false (e.g. nip07 with no extension)
+}
+
+const PICKER_BUTTONS: Record<PickerMethod, PickerButtonConfig> = {
+  bunker:       { emoji: '🔑', title: 'Paste bunker URI',         subtitle: 'For NIP-46 power users' },
+  nostrconnect: { emoji: '📡', title: 'Connect a Nostr signer',   subtitle: 'Scan with nsec.app, Amber, Keychat…' },
+  qr:           { emoji: '📱', title: 'Signet on another device', subtitle: 'Scan QR with your phone' },
+  nip07:        { emoji: '🌐', title: 'Browser extension',        subtitle: 'bark, Alby, nos2x', envCheck: hasNip07 },
+  amber:        { emoji: '🤖', title: 'Sign in with Amber',       subtitle: 'Android signer (NIP-55)', envCheck: isAndroid },
+  redirect:     { emoji: '🪪', title: 'Sign in with Signet',      subtitle: 'Open Signet on this device' },
+  nsec:         { emoji: '⚠️',  title: 'Paste private key',        subtitle: 'In-memory only, risky, last resort' },
+};
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -85,25 +103,37 @@ function buttonStyle(dark: boolean, primary = false): string {
 
 // ── Picker ────────────────────────────────────────────────────────────────────
 
-function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' | 'auto'): Promise<PickerChoice> {
+function renderPicker(
+  refs: ModalRefs,
+  appName: string,
+  theme: 'light' | 'dark' | 'auto',
+  order: readonly PickerMethod[],
+): Promise<PickerChoice> {
   const dark = isDarkMode(theme);
   const muted = dark ? '#888' : '#666';
 
-  const showNip07 = hasNip07();
-  const showAmber = isAndroid();
+  // Filter methods by environment availability (e.g. drop nip07 when no
+  // extension is detected, drop amber off-Android). Methods not in `order`
+  // are omitted entirely. The first surviving method gets the primary
+  // button style so the user has a clear default.
+  const visible = order.filter(m => {
+    const cfg = PICKER_BUTTONS[m];
+    return cfg !== undefined && (cfg.envCheck ? cfg.envCheck() : true);
+  });
+
+  const buttonsHtml = visible.map((method, i) => {
+    const cfg = PICKER_BUTTONS[method];
+    const primary = i === 0;
+    const subStyle = primary
+      ? `font-size:0.8rem;opacity:0.8;`
+      : `font-size:0.8rem;color:${muted};`;
+    return `<button data-choice="${method}" style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${cfg.emoji}</span><span><strong>${cfg.title}</strong><br><span style="${subStyle}">${cfg.subtitle}</span></span></button>`;
+  }).join('');
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.3rem;">Sign in to ${escapeHtml(appName)}</h2>
     <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
-    <div style="display:flex;flex-direction:column;">
-      ${showNip07 ? `<button data-choice="nip07" style="${buttonStyle(dark, true)}"><span style="font-size:1.2rem;">🌐</span><span><strong>Browser extension</strong><br><span style="font-size:0.8rem;opacity:0.8;">bark, Alby, nos2x</span></span></button>` : ''}
-      ${showAmber ? `<button data-choice="amber" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🤖</span><span><strong>Sign in with Amber</strong><br><span style="font-size:0.8rem;color:${muted};">Android signer (NIP-55)</span></span></button>` : ''}
-      <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
-      <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
-      <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
-      <button data-choice="nostrconnect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📡</span><span><strong>Connect a Nostr signer</strong><br><span style="font-size:0.8rem;color:${muted};">Scan with nsec.app, Amber, Keychat…</span></span></button>
-      <button data-choice="nsec" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">⚠️</span><span><strong>Paste private key</strong><br><span style="font-size:0.8rem;color:${muted};">In-memory only — risky, last resort</span></span></button>
-    </div>
+    <div style="display:flex;flex-direction:column;">${buttonsHtml}</div>
     <button data-choice="cancel" style="background:none;border:0;color:${muted};padding:12px;cursor:pointer;font-size:0.85rem;margin-top:8px;">Cancel</button>
   `;
 
@@ -528,6 +558,7 @@ interface ResolvedOptions {
   challenge: string;
   origin: string;
   preferredMethod?: LoginMethod;
+  methodOrder: readonly PickerMethod[];
   relayUrl: string;
   theme: 'light' | 'dark' | 'auto';
   timeout: number;
@@ -544,6 +575,7 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
     appName: opts.appName,
     challenge: challenge.toLowerCase(),
     origin,
+    methodOrder: opts.methodOrder ?? DEFAULT_METHOD_ORDER,
     relayUrl: opts.relayUrl ?? DEFAULTS.relayUrl,
     theme: opts.theme ?? DEFAULTS.theme,
     timeout,
@@ -569,7 +601,7 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
     while (true) {
       const choice: PickerChoice = resolved.preferredMethod
         ? (resolved.preferredMethod as PickerChoice)
-        : await renderPicker(refs, resolved.appName, resolved.theme);
+        : await renderPicker(refs, resolved.appName, resolved.theme, resolved.methodOrder);
 
       if (choice === 'cancel') return null;
 
