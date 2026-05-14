@@ -28,6 +28,38 @@ export interface EventTemplate {
 /** Login method actually used to authenticate. */
 export type LoginMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
 
+/**
+ * Buttons shown in the login picker. Distinct from LoginMethod because the
+ * picker exposes finer-grained UX choices (e.g. 'qr' and 'redirect' both
+ * resolve to LoginMethod 'redirect' but use different delivery flows).
+ */
+export type PickerMethod = 'bunker' | 'nostrconnect' | 'qr' | 'nip07' | 'amber' | 'redirect' | 'nsec';
+
+/**
+ * Default picker order, most secure first.
+ *
+ *   1. bunker        — paste NIP-46 bunker URI; keys never on this device.
+ *   2. nostrconnect  — generate nostrconnect:// for a signer on another device.
+ *   3. qr            — scan signet-app QR with a phone; signer on phone.
+ *   4. nip07         — browser extension (Bark, Alby, …); keys sandboxed in ext.
+ *   5. amber         — Android NIP-55 signer app; keys in Amber.
+ *   6. redirect      — open signet-app on this device; keys delegated to it.
+ *   7. nsec          — paste raw private key; in-memory only, last resort.
+ *
+ * Consumers can override via LoginOptions.methodOrder. Methods not listed are
+ * omitted from the picker; listed methods unavailable in the environment
+ * (e.g. nip07 with no extension, amber off-Android) are silently skipped.
+ */
+export const DEFAULT_METHOD_ORDER: readonly PickerMethod[] = [
+  'bunker',
+  'nostrconnect',
+  'qr',
+  'nip07',
+  'amber',
+  'redirect',
+  'nsec',
+] as const;
+
 /** Capability flags exposed by a signer. */
 export interface SignerCapabilities {
   /** True if the signer can sign arbitrary events going forward. False for redirect-auth-only sessions. */
@@ -92,6 +124,17 @@ export interface LoginOptions {
   challenge?: string;
   /** Skip the picker and force a specific method. */
   preferredMethod?: LoginMethod;
+  /**
+   * Override the picker order. Default: `DEFAULT_METHOD_ORDER` (most secure
+   * first). Methods omitted from this list are not shown. Methods present but
+   * unavailable in the runtime (nip07 with no extension, amber off-Android)
+   * are silently skipped, not rendered as disabled.
+   *
+   * Example — secure-down with paste-nsec hidden:
+   *
+   *   methodOrder: ['bunker', 'nostrconnect', 'qr', 'nip07', 'amber', 'redirect']
+   */
+  methodOrder?: readonly PickerMethod[];
   /** Relay URL for cross-device communication. Default: wss://relay.damus.io */
   relayUrl?: string;
   /** Modal colour scheme. Default: 'auto'. */

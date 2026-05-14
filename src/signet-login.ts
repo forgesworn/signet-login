@@ -19,6 +19,7 @@ export type {
   NostrEvent,
   EventTemplate,
   LoginMethod,
+  PickerMethod,
   SignerCapabilities,
   SignetSigner,
   SignetAuthEvent,
@@ -26,6 +27,7 @@ export type {
   LoginOptions,
   RestoreOptions,
 } from './types.js';
+export { DEFAULT_METHOD_ORDER } from './types.js';
 
 import type {
   LoginOptions,
