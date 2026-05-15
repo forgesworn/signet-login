@@ -104,7 +104,7 @@ function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' 
       <button data-choice="nostrconnect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📡</span><span><strong>Connect a Nostr signer</strong><br><span style="font-size:0.8rem;color:${muted};">Scan with nsec.app, Amber, Keychat…</span></span></button>
       <button data-choice="nsec" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">⚠️</span><span><strong>Paste private key</strong><br><span style="font-size:0.8rem;color:${muted};">In-memory only — risky, last resort</span></span></button>
     </div>
-    <button data-choice="cancel" style="background:none;border:0;color:${muted};padding:12px;cursor:pointer;font-size:0.85rem;margin-top:8px;">Cancel</button>
+    <button data-choice="cancel" style="background:transparent;color:${dark ? '#e0e0e0' : '#1a1a2e'};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:12px;cursor:pointer;font-size:0.95rem;width:100%;margin-top:12px;text-align:center;">Cancel</button>
   `;
 
   return new Promise<PickerChoice>(resolve => {
@@ -565,16 +565,28 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
   const resolved = resolveOptions(opts);
   const refs = buildModalShell(resolved.theme);
 
+  // Escape and the Android / OS back button fire the dialog's native
+  // `cancel` event. Unhandled, the dialog closes visually but the
+  // in-flight flow promise never resolves — login() hangs forever and
+  // the caller's UI is left stuck behind a dead modal. Racing every
+  // flow await against this lets the modal exit cleanly.
+  let userAborted = false;
+  const aborted = new Promise<null>((resolve) => {
+    refs.dialog.addEventListener('cancel', () => { userAborted = true; resolve(null); });
+  });
+
   try {
     while (true) {
-      const choice: PickerChoice = resolved.preferredMethod
+      const choice = resolved.preferredMethod
         ? (resolved.preferredMethod as PickerChoice)
-        : await renderPicker(refs, resolved.appName, resolved.theme);
+        : await Promise.race([renderPicker(refs, resolved.appName, resolved.theme), aborted]);
 
-      if (choice === 'cancel') return null;
+      if (userAborted) return null;
+      if (choice === null || choice === 'cancel') return null;
 
       if (choice === 'nip07') {
-        const result = await runNip07Flow(refs, resolved);
+        const result = await Promise.race([runNip07Flow(refs, resolved), aborted]);
+        if (userAborted) return null;
         if (!result) {
           if (resolved.preferredMethod) return null;
           continue;  // back to picker
@@ -623,7 +635,8 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'qr') {
-        const result = await runRedirectFlow(refs, resolved);
+        const result = await Promise.race([runRedirectFlow(refs, resolved), aborted]);
+        if (userAborted) return null;
         if (!result) {
           if (resolved.preferredMethod) return null;
           continue;
@@ -640,7 +653,8 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'bunker') {
-        const signer = await runBunkerFlow(refs, resolved);
+        const signer = await Promise.race([runBunkerFlow(refs, resolved), aborted]);
+        if (userAborted) return null;
         if (!signer) {
           if (resolved.preferredMethod) return null;
           continue;
@@ -666,7 +680,8 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'nostrconnect') {
-        const signer = await runNostrConnectFlow(refs, resolved);
+        const signer = await Promise.race([runNostrConnectFlow(refs, resolved), aborted]);
+        if (userAborted) return null;
         if (!signer) {
           if (resolved.preferredMethod) return null;
           continue;
@@ -695,7 +710,8 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'nsec') {
-        const signer = await runNsecFlow(refs, resolved);
+        const signer = await Promise.race([runNsecFlow(refs, resolved), aborted]);
+        if (userAborted) return null;
         if (!signer) {
           if (resolved.preferredMethod) return null;
           continue;
