@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1 (2026-05-15)
+
+### Bug Fixes
+
+- clean exit on Escape / OS back (modal)
+
+
+
 ## 0.7.0 (2026-05-10)
 
 ### Features
