@@ -110,7 +110,7 @@ export function startRedirect(opts: RedirectStartOptions): Promise<never> {
 function cleanupCallbackUrl(): void {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  const removed = ['pubkey', 'npub', 'signature', 'eventId', 'error', 'warnings', 'fromNP', 'display_name', 't', 'bunker'];
+  const removed = ['pubkey', 'npub', 'signature', 'eventId', 'error', 'warnings', 'fromNP', 'display_name', 't', 'bunker', 'avatar_hash', 'avatar_url', 'avatar_key'];
   let touched = false;
   for (const key of removed) {
     if (url.searchParams.has(key)) {
@@ -248,16 +248,35 @@ export function consumeCallback(): ConsumeCallbackResult {
   const lowerSig = signature.toLowerCase();
   const lowerEventId = eventId.toLowerCase();
 
+  // Reconstruct the tag list signet-app *actually signed with*. Looking at
+  // signet-app/src/lib/signet.ts::signAuthChallenge, the kind-21236 event
+  // carries `[challenge, origin]` plus optional avatar metadata. Notably it
+  // does NOT include an `app` tag (yet). Including extra tags here breaks
+  // the event-ID hash check on any strict server-side verifier — they hash
+  // a tuple that includes our reconstruction but the signature was
+  // generated over a different tuple.
+  //
+  // Avatar params arrive on the redirect URL when the persona has an
+  // avatar set (see signet-app/src/lib/url-auth.ts::appendUrlAuthExtras).
+  // Pull them in the same order signet-app emits them so the canonical
+  // serialisation matches what was signed.
+  const tags: string[][] = [
+    ['challenge', pending.challenge],
+    ['origin', pending.origin],
+  ];
+  const avatarHash = params.get('avatar_hash');
+  const avatarUrl = params.get('avatar_url');
+  const avatarKey = params.get('avatar_key');
+  if (avatarHash && /^[0-9a-f]{64}$/i.test(avatarHash)) tags.push(['avatar_hash', avatarHash]);
+  if (avatarUrl && avatarUrl.length <= 500) tags.push(['avatar_url', avatarUrl]);
+  if (avatarKey && /^[0-9a-f]{64}$/i.test(avatarKey)) tags.push(['avatar_key', avatarKey]);
+
   const authEvent: SignetAuthEvent = {
     id: lowerEventId,
     pubkey: lowerPubkey,
     kind: 21236,
     created_at: createdAt,
-    tags: [
-      ['challenge', pending.challenge],
-      ['origin', pending.origin],
-      ['app', pending.appName],
-    ],
+    tags,
     content: '',
     sig: lowerSig,
   };

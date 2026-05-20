@@ -196,10 +196,13 @@ describe('consumeCallback', () => {
       expect(result.session.method).toBe('redirect');
       expect(result.session.signer.capabilities.canSignEvents).toBe(false);
       expect(result.session.authEvent.created_at).toBe(t);
+      // No `app` tag — signet-app's signAuthChallenge (src/lib/signet.ts)
+      // doesn't include one in the signed event, so reconstructing with
+      // one would break the canonical event-ID hash for any strict
+      // server-side verifier.
       expect(result.session.authEvent.tags).toEqual([
         ['challenge', CHALLENGE],
         ['origin', JSDOM_ORIGIN],
-        ['app', APP_NAME],
       ]);
       expect(result.session.displayName).toBe('Alice');
     }
