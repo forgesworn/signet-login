@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 (2026-06-05)
+
+### Features
+
+- upgrade QR/relay session to a live BunkerSigner via response bunkerUri
+
+
+
 ## 0.7.2 (2026-06-05)
 
 ### Bug Fixes
