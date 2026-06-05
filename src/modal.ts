@@ -214,6 +214,9 @@ interface RedirectFlowResult {
   pubkey: string;
   authEvent: SignetAuthEvent;
   displayName?: string;
+  /** `bunker://` URI handed back by the signer for the auth-only → live-signer
+   *  upgrade (cross-device passthrough). Absent on plain auth-only responses. */
+  bunkerUri?: string;
 }
 
 async function runRedirectFlow(
@@ -302,6 +305,7 @@ async function runRedirectFlow(
       };
       const out: RedirectFlowResult = { pubkey: result.pubkey, authEvent };
       if (result.displayName) out.displayName = result.displayName;
+      if (result.bunkerUri) out.bunkerUri = result.bunkerUri;
       settle(out);
     }).catch(err => {
       const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
@@ -641,11 +645,32 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
           if (resolved.preferredMethod) return null;
           continue;
         }
-        const ephemeral = new EphemeralSigner(result.pubkey, result.authEvent);
+        // Default: auth-only ephemeral signer (identity proof, no live signing).
+        let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
+        let method: SignetSession['method'] = 'redirect';
+
+        // Cross-device bunker passthrough: when the signer device hands back a
+        // `bunker://` URI (its own NIP-46 server), connect to it so this tab gets
+        // a live signer that proxies to the signer device's backend (local key /
+        // hardware bunker). Mirrors the redirect-flow upgrade. Best-effort — if
+        // the connect fails or the pubkey doesn't match, keep the ephemeral
+        // session so the consumer still has identity proof.
+        if (result.bunkerUri) {
+          try {
+            const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri });
+            if (bunkerSigner.pubkey.toLowerCase() === result.pubkey.toLowerCase()) {
+              signer = bunkerSigner;
+              method = 'bunker';
+            } else {
+              try { await bunkerSigner.close(); } catch { /* ignore */ }
+            }
+          } catch { /* keep ephemeral */ }
+        }
+
         const session: SignetSession = {
           pubkey: result.pubkey,
-          method: 'redirect',
-          signer: ephemeral,
+          method,
+          signer,
           authEvent: result.authEvent,
         };
         if (result.displayName) session.displayName = result.displayName;

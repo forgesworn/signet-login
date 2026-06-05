@@ -1,6 +1,6 @@
 {
   "name": "signet-login",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Sign in with Signet — drop-in login SDK for Nostr-aware websites. NIP-07, bunker URI, and Signet redirect/QR in one unified API.",
   "type": "module",
   "main": "./dist/signet-login.js",
@@ -38,7 +38,7 @@
     "@types/qrcode": "^1.5.6",
     "nostr-tools": "^2.23.3",
     "qrcode": "^1.5.4",
-    "signet-verify": "^0.3.1"
+    "signet-verify": "^0.4.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
