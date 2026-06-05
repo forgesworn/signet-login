@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2 (2026-06-05)
+
+### Bug Fixes
+
+- reconstruct event with only the tags signet-app actually signs (redirect)
+
+
+
 ## 0.7.1 (2026-05-15)
 
 ### Bug Fixes
