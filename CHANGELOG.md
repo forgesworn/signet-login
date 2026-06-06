@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.3 (2026-06-06)
+
+### Bug Fixes
+
+- persist the NIP-46 client key so a bound bunker keeps auto-approving (bunker)
+
+
+
 ## 0.8.2 (2026-06-06)
 
 ### Bug Fixes

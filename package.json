@@ -1,6 +1,6 @@
 {
   "name": "signet-login",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Sign in with Signet — drop-in login SDK for Nostr-aware websites. NIP-07, bunker URI, and Signet redirect/QR in one unified API.",
   "type": "module",
   "main": "./dist/signet-login.js",
