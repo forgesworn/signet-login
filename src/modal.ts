@@ -91,23 +91,34 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
     const dir = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
               : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
     if (dir) {
+      // While the modal is open IT owns arrow nav — stop the host page's own
+      // menu-nav listeners (e.g. a game's overlay arrow-nav still mounted
+      // behind the dialog) from also grabbing the key and stealing focus.
       e.preventDefault();
+      e.stopImmediatePropagation();
       const cur = btns.indexOf(focusedButton() as HTMLButtonElement);
       btns[cur < 0 ? 0 : (cur + dir + btns.length) % btns.length].focus();
       return;
     }
-    if (e.isTrusted) return; // real keyboard: let native Enter/Escape behaviour stand
+    // Real keyboard (isTrusted): let native Enter/Escape stand AND keep
+    // propagating so the focused button's native activation fires. We only
+    // fully drive the SYNTHETIC events a gamepad host dispatches on window.
+    if (e.isTrusted) return;
     if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space' || e.code === 'Enter') {
       e.preventDefault();
+      e.stopImmediatePropagation();
       (focusedButton() ?? btns[0]).click();
     } else if (e.key === 'Escape' || e.code === 'Escape') {
       e.preventDefault();
+      e.stopImmediatePropagation();
       // Prefer Back (sub-screen → picker); fall back to Cancel.
       (dialog.querySelector<HTMLButtonElement>('[data-action="back"]')
         ?? dialog.querySelector<HTMLButtonElement>('[data-action="cancel"],[data-choice="cancel"]'))?.click();
     }
   };
-  window.addEventListener('keydown', keyNav);
+  // Capture phase: run BEFORE the host page's bubble-phase window keydown
+  // handlers, so stopImmediatePropagation above actually pre-empts them.
+  window.addEventListener('keydown', keyNav, true);
   // Auto-focus the first button when a new screen swaps in (innerHTML replace),
   // so the gamepad has a visible selection and Enter has a target. Only focuses
   // when nothing in the dialog is already focused — never steals an active pick.
@@ -119,7 +130,7 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   return {
     dialog,
     style,
-    cleanupNav: () => { window.removeEventListener('keydown', keyNav); mo.disconnect(); },
+    cleanupNav: () => { window.removeEventListener('keydown', keyNav, true); mo.disconnect(); },
   };
 }
 
