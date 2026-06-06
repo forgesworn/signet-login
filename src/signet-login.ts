@@ -35,7 +35,7 @@ import type {
 } from './types.js';
 import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
-import { saveSession, loadSession, clearSession, bytesToHexLocal, hexToBytesLocal } from './storage.js';
+import { saveSession, loadSession, clearSession, bytesToHexLocal, loadOrCreatePersistentClientSk } from './storage.js';
 import {
   hasNip07,
   createNip07Signer,
@@ -183,8 +183,14 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       return null;
     }
     try {
-      const sk = hexToBytesLocal(stored.bunkerClientSkHex);
-      const signer = await createBunkerSigner({ uri: stored.bunkerUri, clientSecretKey: sk });
+      // Reconnect with the browser's persistent client key (not the
+      // session-stored one) so the client pubkey stays stable across logins
+      // and remains bound/auto-approved by the signer. For sessions created
+      // by this version the two are identical; legacy sessions converge here.
+      const signer = await createBunkerSigner({
+        uri: stored.bunkerUri,
+        clientSecretKey: loadOrCreatePersistentClientSk(),
+      });
       if (signer.pubkey !== stored.pubkey) {
         console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session', { connected: signer.pubkey, expected: stored.pubkey });
         await signer.close();
@@ -291,6 +297,7 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
     try {
       const bunkerSigner = await createBunkerSigner({
         uri: result.bunkerUri,
+        clientSecretKey: loadOrCreatePersistentClientSk(),
         timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
       });
       // Sanity: the bunker we connected to must sign as the same pubkey

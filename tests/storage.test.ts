@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { saveSession, loadSession, clearSession, bytesToHexLocal, hexToBytesLocal } from '../src/storage.js';
+import { saveSession, loadSession, clearSession, bytesToHexLocal, hexToBytesLocal, loadOrCreatePersistentClientSk, clearPersistentClientSk } from '../src/storage.js';
 import { STORAGE_KEYS } from '../src/types.js';
 
 const fakePubkey = 'a'.repeat(64);
@@ -113,5 +113,42 @@ describe('storage', () => {
   it('hex round-trips bytes', () => {
     const original = new Uint8Array([0, 1, 2, 254, 255]);
     expect(hexToBytesLocal(bytesToHexLocal(original))).toEqual(original);
+  });
+
+  describe('persistent client key', () => {
+    it('generates a 32-byte key and persists it', () => {
+      const sk = loadOrCreatePersistentClientSk();
+      expect(sk).toBeInstanceOf(Uint8Array);
+      expect(sk.length).toBe(32);
+      expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toBe(bytesToHexLocal(sk));
+    });
+
+    it('returns the same key on subsequent calls', () => {
+      const first = loadOrCreatePersistentClientSk();
+      const second = loadOrCreatePersistentClientSk();
+      expect(bytesToHexLocal(second)).toBe(bytesToHexLocal(first));
+    });
+
+    it('survives clearSession (it is not session state)', () => {
+      const sk = loadOrCreatePersistentClientSk();
+      clearSession();
+      expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toBe(bytesToHexLocal(sk));
+      expect(bytesToHexLocal(loadOrCreatePersistentClientSk())).toBe(bytesToHexLocal(sk));
+    });
+
+    it('regenerates after an explicit reset', () => {
+      const first = bytesToHexLocal(loadOrCreatePersistentClientSk());
+      clearPersistentClientSk();
+      expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toBeNull();
+      const second = bytesToHexLocal(loadOrCreatePersistentClientSk());
+      expect(second).not.toBe(first);
+    });
+
+    it('regenerates a corrupt stored value', () => {
+      localStorage.setItem(STORAGE_KEYS.clientSk, 'not-hex');
+      const sk = loadOrCreatePersistentClientSk();
+      expect(sk.length).toBe(32);
+      expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toBe(bytesToHexLocal(sk));
+    });
   });
 });

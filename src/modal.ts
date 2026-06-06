@@ -9,6 +9,7 @@ import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from '
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
+import { loadOrCreatePersistentClientSk } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -365,7 +366,7 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
       }
       connectBtn.disabled = true;
       try {
-        const signer = await createBunkerSigner({ uri });
+        const signer = await createBunkerSigner({ uri, clientSecretKey: loadOrCreatePersistentClientSk() });
         settle(signer);
       } catch (err) {
         if (status) {
@@ -390,7 +391,10 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
 
-  const sk = schnorr.utils.randomPrivateKey();
+  // Persistent client key so the advertised client pubkey is stable across
+  // logins (bunkers auto-approve a bound client pubkey). The connect `secret`
+  // stays fresh per handshake — it's a one-time challenge, not an identity.
+  const sk = loadOrCreatePersistentClientSk();
   const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
   const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
 
@@ -657,7 +661,7 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
         // session so the consumer still has identity proof.
         if (result.bunkerUri) {
           try {
-            const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri });
+            const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri, clientSecretKey: loadOrCreatePersistentClientSk() });
             if (bunkerSigner.pubkey.toLowerCase() === result.pubkey.toLowerCase()) {
               signer = bunkerSigner;
               method = 'bunker';

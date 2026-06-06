@@ -197,7 +197,10 @@ async function raceBunkerHandshake<T>(
 
 /**
  * Connect a bunker session from a `bunker://` or `nostr+connect://` URI (or a
- * NIP-05 identifier). Generates a fresh client secret key for the session.
+ * NIP-05 identifier). Pass `clientSecretKey` to bind a stable client pubkey the
+ * signer can auto-approve (see `loadOrCreatePersistentClientSk`); when omitted a
+ * fresh ephemeral key is generated, which a per-pubkey-approving bunker will
+ * treat as a new, unapproved client.
  */
 export async function createBunkerSigner(input: {
   uri: string;

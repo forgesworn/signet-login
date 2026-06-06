@@ -92,7 +92,13 @@ export function loadSession(): PersistedSession | null {
   return result;
 }
 
-/** Clear all signet-login keys. Does not touch other Signet SDK storage. */
+/** Clear all signet-login keys. Does not touch other Signet SDK storage.
+ *
+ * Note: `clientSk` (the persistent NIP-46 client identity, see
+ * `loadOrCreatePersistentClientSk`) is deliberately NOT cleared. It is the
+ * browser's stable transport identity to bunkers, not session state — keeping
+ * it means a re-login presents the same client pubkey and stays auto-approved
+ * by the signer. Use `clearPersistentClientSk` for an explicit reset. */
 export function clearSession(): void {
   safeRemove(STORAGE_KEYS.pubkey);
   safeRemove(STORAGE_KEYS.method);
@@ -101,6 +107,37 @@ export function clearSession(): void {
   safeRemove(STORAGE_KEYS.bunkerClientSk);
   safeRemove(STORAGE_KEYS.expiresAt);
   safeRemove(STORAGE_KEYS.displayName);
+}
+
+/**
+ * Load the persistent NIP-46 client secret key for this browser/origin,
+ * generating and storing one on first use. Reused across every bunker connect
+ * (paste, redirect upgrade, QR upgrade, nostrconnect, restore) so the client
+ * pubkey is stable. A bunker that auto-approves a bound client pubkey per slot
+ * (e.g. Heartwood) then keeps auto-approving instead of prompting per request.
+ *
+ * Survives logout. If localStorage is unavailable (private mode, quota) a fresh
+ * ephemeral key is returned each call — degrades to the old behaviour rather
+ * than throwing.
+ */
+export function loadOrCreatePersistentClientSk(): Uint8Array {
+  const existing = safeGet(STORAGE_KEYS.clientSk);
+  if (existing && /^[0-9a-f]{64}$/i.test(existing)) {
+    try {
+      return hexToBytesLocal(existing);
+    } catch {
+      // Corrupt value — fall through and regenerate.
+    }
+  }
+  const sk = new Uint8Array(32);
+  crypto.getRandomValues(sk);
+  safeSet(STORAGE_KEYS.clientSk, bytesToHexLocal(sk));
+  return sk;
+}
+
+/** Forget the persistent client key, forcing a fresh one on next connect. */
+export function clearPersistentClientSk(): void {
+  safeRemove(STORAGE_KEYS.clientSk);
 }
 
 // ── Pending-redirect persistence ──────────────────────────────────────────────

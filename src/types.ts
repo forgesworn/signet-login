@@ -171,6 +171,14 @@ export const STORAGE_KEYS = {
   authEvent: 'signet:login.authEvent',
   bunkerUri: 'signet:login.bunkerUri',
   bunkerClientSk: 'signet:login.bunkerClientSk',
+  /**
+   * Persistent NIP-46 client secret key for this browser/origin. Unlike
+   * `bunkerClientSk` (session-scoped, cleared on logout), this survives logout
+   * so every bunker connect presents the SAME client pubkey. Bunkers (e.g.
+   * Heartwood) auto-approve a single bound client pubkey per slot; minting a
+   * fresh key per login made every request unbound and forced manual approval.
+   */
+  clientSk: 'signet:login.clientSk',
   expiresAt: 'signet:login.expiresAt',
   displayName: 'signet:login.displayName',
   /** Session-storage key for in-flight redirect state. */
