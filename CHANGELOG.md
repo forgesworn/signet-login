@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.1 (2026-06-06)
+
+### Bug Fixes
+
+- gamepad arrow-nav — capture-phase keydown + stopImmediatePropagation
+
+
+
 ## 0.9.0 (2026-06-06)
 
 ### Features
