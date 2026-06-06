@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 (2026-06-06)
+
+### Features
+
+- gamepad-navigable login modal — arrow-key focus + synthetic Enter/Escape bridge
+
+
+
 ## 0.8.4 (2026-06-06)
 
 ### Bug Fixes
