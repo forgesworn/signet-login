@@ -33,6 +33,8 @@ type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'a
 interface ModalRefs {
   dialog: HTMLDialogElement;
   style: HTMLStyleElement;
+  /** Tears down the gamepad/keyboard nav listeners attached in buildModalShell. */
+  cleanupNav?: () => void;
 }
 
 function escapeHtml(str: string): string {
@@ -66,10 +68,63 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   document.body.appendChild(dialog);
   dialog.showModal();
 
-  return { dialog, style };
+  // Gamepad navigation. A booth/kiosk drives this modal with a gamepad, whose
+  // host game dispatches *synthetic* Arrow / Enter / Escape KeyboardEvents on
+  // `window` (isTrusted=false). Native <dialog> only moves focus with Tab, and
+  // synthetic Enter/Escape don't trigger native button activation or the
+  // dialog's cancel — so bridge them here. Real keyboard events (isTrusted)
+  // keep their native behaviour; we only fully drive the synthetic ones. Works
+  // across every screen because it queries the live buttons each keypress.
+  const visibleButtons = (): HTMLButtonElement[] =>
+    Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
+      .filter((b) => !b.disabled && b.offsetParent !== null);
+  const focusedButton = (): HTMLButtonElement | null =>
+    document.activeElement instanceof HTMLButtonElement && dialog.contains(document.activeElement)
+      ? (document.activeElement as HTMLButtonElement)
+      : null;
+  const keyNav = (e: KeyboardEvent): void => {
+    if (!dialog.isConnected || !dialog.open) return;
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return; // forms own their keys
+    const btns = visibleButtons();
+    if (btns.length === 0) return;
+    const dir = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
+              : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+    if (dir) {
+      e.preventDefault();
+      const cur = btns.indexOf(focusedButton() as HTMLButtonElement);
+      btns[cur < 0 ? 0 : (cur + dir + btns.length) % btns.length].focus();
+      return;
+    }
+    if (e.isTrusted) return; // real keyboard: let native Enter/Escape behaviour stand
+    if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space' || e.code === 'Enter') {
+      e.preventDefault();
+      (focusedButton() ?? btns[0]).click();
+    } else if (e.key === 'Escape' || e.code === 'Escape') {
+      e.preventDefault();
+      // Prefer Back (sub-screen → picker); fall back to Cancel.
+      (dialog.querySelector<HTMLButtonElement>('[data-action="back"]')
+        ?? dialog.querySelector<HTMLButtonElement>('[data-action="cancel"],[data-choice="cancel"]'))?.click();
+    }
+  };
+  window.addEventListener('keydown', keyNav);
+  // Auto-focus the first button when a new screen swaps in (innerHTML replace),
+  // so the gamepad has a visible selection and Enter has a target. Only focuses
+  // when nothing in the dialog is already focused — never steals an active pick.
+  const focusFirst = (): void => { if (!focusedButton()) visibleButtons()[0]?.focus(); };
+  const mo = new MutationObserver(() => focusFirst());
+  mo.observe(dialog, { childList: true, subtree: true });
+  focusFirst();
+
+  return {
+    dialog,
+    style,
+    cleanupNav: () => { window.removeEventListener('keydown', keyNav); mo.disconnect(); },
+  };
 }
 
 function tearDown(refs: ModalRefs): void {
+  refs.cleanupNav?.();
   try { refs.dialog.close(); } catch { /* ignore */ }
   refs.dialog.remove();
   refs.style.remove();
