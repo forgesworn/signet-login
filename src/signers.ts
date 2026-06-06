@@ -166,6 +166,36 @@ export function buildNostrConnectUri(input: {
 }
 
 /**
+ * Race a bunker handshake against a deadline. nostr-tools' `BunkerSigner`
+ * `sendRequest` has no per-request timeout — it publishes the request and only
+ * settles when a matching response arrives on the subscription. If the remote
+ * signer never replies (relay unreachable, or the bunker server is already gone
+ * — e.g. signet-app's in-page NIP-46 server after a same-tab redirect navigated
+ * it away), `connect()`/`getPublicKey()` hang forever. On timeout we close the
+ * half-open signer (releasing its relay subscription) and reject so the caller
+ * can fall back. `Promise.race` keeps a rejection handler attached to `p`, so a
+ * late rejection from the abandoned handshake won't surface as unhandled.
+ */
+async function raceBunkerHandshake<T>(
+  p: Promise<T>,
+  ms: number,
+  bunker: { close: () => Promise<void> },
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      void bunker.close().catch(() => {});
+      reject(new Error('bunker-connect-timeout'));
+    }, ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * Connect a bunker session from a `bunker://` or `nostr+connect://` URI (or a
  * NIP-05 identifier). Generates a fresh client secret key for the session.
  */
@@ -173,6 +203,16 @@ export async function createBunkerSigner(input: {
   uri: string;
   clientSecretKey?: Uint8Array;
   onauth?: (url: string) => void;
+  /**
+   * Bound the NIP-46 `connect` + `get_public_key` handshake, in milliseconds.
+   * Omit for the interactive paste flow, where a cold remote signer may
+   * legitimately take tens of seconds to approve via the `auth_url` callback.
+   * Set it for unattended boot-time connects (redirect-bunker auto-pair,
+   * session restore) where a non-responding signer must degrade to the
+   * auth-only fallback rather than stall. On expiry the half-open signer is
+   * closed and the call rejects with `bunker-connect-timeout`.
+   */
+  timeoutMs?: number;
 }): Promise<BunkerSignerImpl> {
   const trimmed = input.uri.trim();
   if (!trimmed) throw new Error('empty-bunker-uri');
@@ -184,8 +224,13 @@ export async function createBunkerSigner(input: {
   if (sk.length !== 32) throw new Error('invalid-client-secret-key');
 
   const bunker = BunkerSigner.fromBunker(sk, pointer, { onauth: input.onauth });
-  await bunker.connect();
-  const pubkey = await bunker.getPublicKey();
+  const handshake = (async (): Promise<string> => {
+    await bunker.connect();
+    return bunker.getPublicKey();
+  })();
+  const pubkey = input.timeoutMs && input.timeoutMs > 0
+    ? await raceBunkerHandshake(handshake, input.timeoutMs, bunker)
+    : await handshake;
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) {
     await bunker.close().catch(() => {});
     throw new Error('invalid-pubkey-from-bunker');

@@ -52,6 +52,16 @@ export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
 
+/**
+ * Cap the redirect-bunker auto-pair handshake. The `bunker://` URI signet-app
+ * appends is best-effort and may be unreachable on arrival — most notably when
+ * it points at signet-app's own in-page NIP-46 server, which the same-tab
+ * navigation back to the consumer has already torn down, so the connect can
+ * never complete. Bound it so boot degrades to the ephemeral auth-only session
+ * in a few seconds instead of hanging the consumer on a blank screen.
+ */
+const REDIRECT_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -279,7 +289,10 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
   // ephemeral session so the consumer at least gets identity proof.
   if (result.bunkerUri) {
     try {
-      const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri });
+      const bunkerSigner = await createBunkerSigner({
+        uri: result.bunkerUri,
+        timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
+      });
       // Sanity: the bunker we connected to must sign as the same pubkey
       // the redirect callback authenticated. A mismatch here means the
       // signet-app deployment is misconfigured (or someone tampered with
