@@ -82,6 +82,18 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
     document.activeElement instanceof HTMLButtonElement && dialog.contains(document.activeElement)
       ? (document.activeElement as HTMLButtonElement)
       : null;
+  // Tracked cursor. We click THIS index on Enter rather than
+  // document.activeElement, because a host page's own menu-nav (still mounted
+  // behind the dialog) can clear/move DOM focus between keypresses — which made
+  // "A = select the highlighted item" click the wrong (first) button. Tracking
+  // the index ourselves makes selection reliable regardless of the host.
+  let selIndex = 0;
+  const showSel = (): void => {
+    const btns = visibleButtons();
+    if (btns.length === 0) return;
+    selIndex = Math.min(Math.max(selIndex, 0), btns.length - 1);
+    btns[selIndex].focus();
+  };
   const keyNav = (e: KeyboardEvent): void => {
     if (!dialog.isConnected || !dialog.open) return;
     const tgt = e.target as HTMLElement | null;
@@ -91,13 +103,15 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
     const dir = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
               : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
     if (dir) {
-      // While the modal is open IT owns arrow nav — stop the host page's own
-      // menu-nav listeners (e.g. a game's overlay arrow-nav still mounted
-      // behind the dialog) from also grabbing the key and stealing focus.
+      // The modal owns nav while open — stop the host page's listeners from
+      // also grabbing the key and stealing focus.
       e.preventDefault();
       e.stopImmediatePropagation();
-      const cur = btns.indexOf(focusedButton() as HTMLButtonElement);
-      btns[cur < 0 ? 0 : (cur + dir + btns.length) % btns.length].focus();
+      // Re-sync to live DOM focus if the host moved it, else step our index.
+      const fb = focusedButton();
+      const fi = fb ? btns.indexOf(fb) : -1;
+      selIndex = ((fi >= 0 ? fi : selIndex) + dir + btns.length) % btns.length;
+      btns[selIndex].focus();
       return;
     }
     // Real keyboard (isTrusted): let native Enter/Escape stand AND keep
@@ -107,7 +121,7 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
     if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space' || e.code === 'Enter') {
       e.preventDefault();
       e.stopImmediatePropagation();
-      (focusedButton() ?? btns[0]).click();
+      btns[Math.min(Math.max(selIndex, 0), btns.length - 1)].click(); // tracked cursor, not activeElement
     } else if (e.key === 'Escape' || e.code === 'Escape') {
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -119,13 +133,11 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   // Capture phase: run BEFORE the host page's bubble-phase window keydown
   // handlers, so stopImmediatePropagation above actually pre-empts them.
   window.addEventListener('keydown', keyNav, true);
-  // Auto-focus the first button when a new screen swaps in (innerHTML replace),
-  // so the gamepad has a visible selection and Enter has a target. Only focuses
-  // when nothing in the dialog is already focused — never steals an active pick.
-  const focusFirst = (): void => { if (!focusedButton()) visibleButtons()[0]?.focus(); };
-  const mo = new MutationObserver(() => focusFirst());
-  mo.observe(dialog, { childList: true, subtree: true });
-  focusFirst();
+  // Reset the cursor to the first button when a new SCREEN swaps in. childList
+  // (no subtree) so frequent status-text updates inside a screen don't reset it.
+  const mo = new MutationObserver(() => { selIndex = 0; showSel(); });
+  mo.observe(dialog, { childList: true });
+  showSel();
 
   return {
     dialog,
