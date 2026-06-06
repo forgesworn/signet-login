@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.4 (2026-06-06)
+
+### Bug Fixes
+
+- connect the redirect bunker in the background (redirect)
+
+
+
 ## 0.8.3 (2026-06-06)
 
 ### Bug Fixes
