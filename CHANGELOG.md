@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 (2026-06-06)
+
+### Bug Fixes
+
+- track selection index for gamepad Enter (don't rely on activeElement)
+
+
+
 ## 0.9.1 (2026-06-06)
 
 ### Bug Fixes
