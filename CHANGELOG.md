@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1 (2026-06-06)
+
+### Bug Fixes
+
+- surface bunker-upgrade fallbacks + keep the bond on a transient restore failure (login)
+
+
+
 ## 0.8.0 (2026-06-05)
 
 ### Features
