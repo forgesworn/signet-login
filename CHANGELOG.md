@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 (2026-06-06)
+
+### Bug Fixes
+
+- time-box the NIP-46 connect so a dead bunker falls back to auth-only (bunker)
+
+
+
 ## 0.8.1 (2026-06-06)
 
 ### Bug Fixes
