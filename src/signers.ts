@@ -336,3 +336,53 @@ export class EphemeralSigner implements SignetSigner {
     // nothing to close
   }
 }
+
+/**
+ * A redirect-bunker signer whose bunker connects in the BACKGROUND.
+ *
+ * `handleRedirectCallback` returns this immediately so the consumer can paint a
+ * signed-in UI without waiting on an up-to-8s bunker handshake over flaky
+ * relays (the cause of the "blank screen on sign-in"). The authenticated pubkey
+ * is known up front; the first `signEvent` / `nip44` call awaits the background
+ * connect. If that connect fails, signing rejects with the auth-only error —
+ * the session is still valid for identity proof.
+ */
+export class DeferredBunkerSigner implements SignetSigner {
+  readonly method = 'bunker' as const;
+  // Optimistic — we expect the handed-over bunker to connect. If it doesn't,
+  // signEvent/nip44 reject and the consumer falls back to auth-only handling.
+  readonly capabilities: SignerCapabilities = { canSignEvents: true, hasNip44: true };
+  readonly nip44: SignetSigner['nip44'];
+
+  constructor(
+    public readonly pubkey: string,
+    public readonly authEvent: SignetAuthEvent,
+    /** Resolves to the connected bunker, or null if the connect failed. */
+    private readonly upgrade: Promise<BunkerSignerImpl | null>,
+  ) {
+    this.nip44 = {
+      encrypt: async (peer, pt) => (await this.live()).nip44!.encrypt(peer, pt),
+      decrypt: async (peer, ct) => (await this.live()).nip44!.decrypt(peer, ct),
+    };
+  }
+
+  private async live(): Promise<BunkerSignerImpl> {
+    const signer = await this.upgrade;
+    if (!signer) {
+      throw new Error(
+        'signer-auth-only: the redirect bunker handoff did not connect, so this ' +
+        'session cannot sign. Reconnect the signer or paste a bunker URI to upgrade.',
+      );
+    }
+    return signer;
+  }
+
+  async signEvent(template: EventTemplate): Promise<NostrEvent> {
+    return (await this.live()).signEvent(template);
+  }
+
+  async close(): Promise<void> {
+    const signer = await this.upgrade.catch(() => null);
+    if (signer) await signer.close().catch(() => { /* ignore */ });
+  }
+}

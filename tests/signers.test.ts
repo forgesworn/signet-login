@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner, buildNostrConnectUri } from '../src/signers.js';
+import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner, buildNostrConnectUri, DeferredBunkerSigner, type BunkerSignerImpl } from '../src/signers.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
 
@@ -130,6 +130,49 @@ describe('EphemeralSigner', () => {
       sig: 'a'.repeat(128),
     });
     await expect(signer.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('DeferredBunkerSigner', () => {
+  const pubkey = 'b'.repeat(64);
+  const authEvent = {
+    id: 'a'.repeat(64), pubkey, kind: 21236 as const,
+    created_at: 1, tags: [], content: '', sig: 'c'.repeat(128),
+  };
+  const signed = { id: 'e'.repeat(64), pubkey, kind: 1, created_at: 1, tags: [], content: 'hi', sig: 'f'.repeat(128) };
+  const fakeBunker = {
+    pubkey,
+    signEvent: vi.fn(async () => signed),
+    nip44: { encrypt: async (_p: string, _t: string) => 'CT', decrypt: async (_p: string, _c: string) => 'PT' },
+    close: vi.fn(async () => {}),
+  } as unknown as BunkerSignerImpl;
+
+  it('exposes pubkey/method/signing capability up front', () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null));
+    expect(s.pubkey).toBe(pubkey);
+    expect(s.method).toBe('bunker');
+    expect(s.capabilities).toEqual({ canSignEvents: true, hasNip44: true });
+  });
+
+  it('delegates signEvent to the bunker once it connects', async () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
+    await expect(s.signEvent({ kind: 1, content: 'hi', tags: [], created_at: 1 })).resolves.toEqual(signed);
+  });
+
+  it('delegates nip44 to the connected bunker', async () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
+    expect(await s.nip44!.encrypt('peer', 'x')).toBe('CT');
+    expect(await s.nip44!.decrypt('peer', 'y')).toBe('PT');
+  });
+
+  it('rejects signEvent with the auth-only error when the bunker never connected', async () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null));
+    await expect(s.signEvent({ kind: 1, content: '', tags: [], created_at: 1 })).rejects.toThrow(/signer-auth-only/);
+  });
+
+  it('close() is safe before and after the upgrade resolves', async () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
+    await expect(s.close()).resolves.toBeUndefined();
   });
 });
 

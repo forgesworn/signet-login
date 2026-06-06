@@ -41,6 +41,8 @@ import {
   createNip07Signer,
   createBunkerSigner,
   EphemeralSigner,
+  DeferredBunkerSigner,
+  type BunkerSignerImpl,
 } from './signers.js';
 import { consumeAmberCallback, type ConsumeAmberResult } from './amber.js';
 
@@ -287,47 +289,58 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
   if (result.kind !== 'session') return result;
 
   // Optional redirect-bunker upgrade. signet-app appends a `bunker://` URI
-  // when its NIP-46 server is enabled and the user authorised the redirect
-  // login; this lets us swap the auth-only `EphemeralSigner` for a real
-  // signing `BunkerSigner` in the same round-trip. Best-effort — if the
-  // bunker connect fails (relay unreachable, secret expired, signet-app
-  // tab closed before the connect lands) we fall back to the plain
-  // ephemeral session so the consumer at least gets identity proof.
+  // when the user authorised the redirect login; it lets us swap the auth-only
+  // `EphemeralSigner` for a real signing bunker. The connect runs in the
+  // BACKGROUND so this callback resolves immediately — awaiting the up-to-8s
+  // handshake here blocked the consumer's first paint on a blank screen
+  // (signet-app-internal: pallasite empty-screen-on-signin). DeferredBunkerSigner
+  // awaits the connect on the first signEvent/nip44 call; if it fails the
+  // session is still valid for identity proof.
   if (result.bunkerUri) {
-    try {
-      const bunkerSigner = await createBunkerSigner({
-        uri: result.bunkerUri,
-        clientSecretKey: loadOrCreatePersistentClientSk(),
-        timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
+    const expected = result.session.pubkey;
+    const authEvent = result.session.authEvent;
+    const displayName = result.session.displayName;
+    const upgrade: Promise<BunkerSignerImpl | null> = createBunkerSigner({
+      uri: result.bunkerUri,
+      clientSecretKey: loadOrCreatePersistentClientSk(),
+      timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
+    })
+      .then((bunkerSigner): BunkerSignerImpl | null => {
+        // Sanity: the bunker must sign as the same pubkey the redirect
+        // authenticated. A mismatch means a misconfigured deployment or a
+        // tampered URL — drop back to auth-only rather than silently swapping
+        // identity under the consumer's feet.
+        if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
+          console.warn('[signet-login] redirect upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected });
+          void bunkerSigner.close().catch(() => { /* ignore */ });
+          return null;
+        }
+        // Live now — re-persist with real bunker creds so the next load
+        // restores a connected signer instead of an auth-only stub.
+        const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
+        if (displayName) liveSession.displayName = displayName;
+        persistSession(liveSession);
+        return bunkerSigner;
+      })
+      .catch((err): BunkerSignerImpl | null => {
+        console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
+        return null;
       });
-      // Sanity: the bunker we connected to must sign as the same pubkey
-      // the redirect callback authenticated. A mismatch here means the
-      // signet-app deployment is misconfigured (or someone tampered with
-      // the URL) — drop back to ephemeral rather than silently swapping
-      // identity under the consumer's feet.
-      if (bunkerSigner.pubkey.toLowerCase() === result.session.pubkey.toLowerCase()) {
-        const upgraded: SignetSession = {
-          pubkey: result.session.pubkey,
-          method: 'bunker',
-          signer: bunkerSigner,
-          authEvent: result.session.authEvent,
-        };
-        if (result.session.displayName) upgraded.displayName = result.session.displayName;
-        persistSession(upgraded);
-        return { kind: 'session', session: upgraded };
-      }
-      // Pubkey mismatch — close the wayward signer to avoid leaking the
-      // relay subscription, then fall through to the ephemeral path.
-      console.warn('[signet-login] redirect upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected: result.session.pubkey });
-      try { await bunkerSigner.close(); } catch { /* ignore */ }
-    } catch (err) {
-      // Connect failed — leave the ephemeral session intact.
-      console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
-    }
-  } else {
-    console.warn('[signet-login] redirect login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must enable its NIP-46 server to return a bunker:// URI.');
+
+    const session: SignetSession = {
+      pubkey: expected,
+      method: 'bunker',
+      signer: new DeferredBunkerSigner(expected, authEvent, upgrade),
+      authEvent,
+    };
+    if (displayName) session.displayName = displayName;
+    // Persist the auth-only session now so a reload mid-handshake restores
+    // identity; the background upgrade re-persists with bunker creds on success.
+    persistSession(result.session);
+    return { kind: 'session', session };
   }
 
+  console.warn('[signet-login] redirect login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must enable its NIP-46 server to return a bunker:// URI.');
   persistSession(result.session);
   return result;
 }
