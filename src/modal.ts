@@ -662,9 +662,14 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
               signer = bunkerSigner;
               method = 'bunker';
             } else {
+              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected: result.pubkey });
               try { await bunkerSigner.close(); } catch { /* ignore */ }
             }
-          } catch { /* keep ephemeral */ }
+          } catch (err) {
+            console.warn('[signet-login] QR upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
+          }
+        } else {
+          console.warn('[signet-login] QR login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
         }
 
         const session: SignetSession = {

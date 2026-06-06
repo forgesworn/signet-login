@@ -168,6 +168,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       };
     }
     if (!stored.bunkerUri || !stored.bunkerClientSkHex) {
+      console.warn('[signet-login] restore: stored bunker session has no reconnect creds (bunkerUri/clientSk) — it was an auth-only login. Clearing.');
       clearSession();
       return null;
     }
@@ -175,6 +176,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       const sk = hexToBytesLocal(stored.bunkerClientSkHex);
       const signer = await createBunkerSigner({ uri: stored.bunkerUri, clientSecretKey: sk });
       if (signer.pubkey !== stored.pubkey) {
+        console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session', { connected: signer.pubkey, expected: stored.pubkey });
         await signer.close();
         clearSession();
         return null;
@@ -185,8 +187,13 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
         signer,
         authEvent,
       };
-    } catch {
-      clearSession();
+    } catch (err) {
+      // Transient reconnect failure (relay slow, signer device asleep/busy). Do
+      // NOT clear the stored creds — a single hiccup must not permanently break
+      // the bond and force a fresh pairing (the symptom: "the signer keeps
+      // asking to authorise"). Keep them so the next restore reconnects with the
+      // SAME client key, which the signer device still recognises.
+      console.warn('[signet-login] restore: bunker reconnect failed — keeping creds for the next retry (NOT clearing). The signer device should still recognise us on reconnect.', err);
       return null;
     }
   }
@@ -291,10 +298,14 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
       }
       // Pubkey mismatch — close the wayward signer to avoid leaking the
       // relay subscription, then fall through to the ephemeral path.
+      console.warn('[signet-login] redirect upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected: result.session.pubkey });
       try { await bunkerSigner.close(); } catch { /* ignore */ }
-    } catch {
+    } catch (err) {
       // Connect failed — leave the ephemeral session intact.
+      console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
     }
+  } else {
+    console.warn('[signet-login] redirect login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must enable its NIP-46 server to return a bunker:// URI.');
   }
 
   persistSession(result.session);
