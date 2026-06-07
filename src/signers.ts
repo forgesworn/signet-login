@@ -51,12 +51,27 @@ export class Nip07Signer implements SignetSigner {
   }
 
   async signEvent(template: EventTemplate): Promise<NostrEvent> {
-    return this.provider.signEvent(template);
+    return retryTransientNip07Sign(() => this.provider.signEvent(template));
   }
 
   async close(): Promise<void> {
     // NIP-07 extensions have no concept of disconnect — nothing to do.
   }
+}
+
+async function retryTransientNip07Sign(sign: () => Promise<NostrEvent>): Promise<NostrEvent> {
+  try {
+    return await sign();
+  } catch (err) {
+    if (!isTransientNip07Error(err)) throw err;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    return sign();
+  }
+}
+
+function isTransientNip07Error(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Request failed|Receiving end does not exist|Extension context invalidated|message port closed|context invalidated/i.test(msg);
 }
 
 /** Connects to the page's NIP-07 provider and returns a Nip07Signer. */

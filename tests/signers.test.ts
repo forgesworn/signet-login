@@ -87,6 +87,33 @@ describe('createNip07Signer', () => {
     expect(signer.capabilities.hasNip44).toBe(false);
     expect(signer.nip44).toBeUndefined();
   });
+
+  it('retries transient extension signEvent failures once', async () => {
+    const fakePub = 'b'.repeat(64);
+    const signed = { kind: 1, content: 'hi', tags: [], created_at: 1, id: '0', sig: '0', pubkey: fakePub };
+    const signEventMock = vi.fn()
+      .mockRejectedValueOnce(new Error('Request failed.'))
+      .mockResolvedValueOnce(signed);
+    const signer = new Nip07Signer(fakePub, {
+      getPublicKey: async () => fakePub,
+      signEvent: signEventMock,
+    });
+
+    await expect(signer.signEvent({ kind: 1, content: 'hi' })).resolves.toBe(signed);
+    expect(signEventMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry user-denied extension signEvent failures', async () => {
+    const fakePub = 'c'.repeat(64);
+    const signEventMock = vi.fn().mockRejectedValue(new Error('User rejected request'));
+    const signer = new Nip07Signer(fakePub, {
+      getPublicKey: async () => fakePub,
+      signEvent: signEventMock,
+    });
+
+    await expect(signer.signEvent({ kind: 1, content: 'hi' })).rejects.toThrow(/User rejected/);
+    expect(signEventMock).toHaveBeenCalledOnce();
+  });
 });
 
 describe('EphemeralSigner', () => {
