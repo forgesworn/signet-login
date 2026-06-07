@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.3 (2026-06-07)
+
+### Bug Fixes
+
+- harden modal arrow navigation
+
+
+
 ## 0.9.2 (2026-06-06)
 
 ### Bug Fixes
