@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.11 (2026-06-07)
+
+### Bug Fixes
+
+- retry transient nip07 sign failures
+
+
+
 ## 0.9.10 (2026-06-07)
 
 ### Bug Fixes
