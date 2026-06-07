@@ -349,9 +349,7 @@ export class EphemeralSigner implements SignetSigner {
  */
 export class DeferredBunkerSigner implements SignetSigner {
   readonly method = 'bunker' as const;
-  // Optimistic — we expect the handed-over bunker to connect. If it doesn't,
-  // signEvent/nip44 reject and the consumer falls back to auth-only handling.
-  readonly capabilities: SignerCapabilities = { canSignEvents: true, hasNip44: true };
+  readonly capabilities: SignerCapabilities;
   readonly nip44: SignetSigner['nip44'];
 
   constructor(
@@ -363,7 +361,18 @@ export class DeferredBunkerSigner implements SignetSigner {
     public readonly bunkerUri?: string,
     /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
     public readonly clientSecretKey?: Uint8Array,
+    optimisticCapabilities = true,
   ) {
+    this.capabilities = {
+      canSignEvents: optimisticCapabilities,
+      hasNip44: optimisticCapabilities,
+    };
+    void this.upgrade.then(signer => {
+      if (signer) {
+        this.capabilities.canSignEvents = true;
+        this.capabilities.hasNip44 = true;
+      }
+    });
     this.nip44 = {
       encrypt: async (peer, pt) => (await this.live()).nip44!.encrypt(peer, pt),
       decrypt: async (peer, ct) => (await this.live()).nip44!.decrypt(peer, ct),

@@ -158,6 +158,20 @@ describe('DeferredBunkerSigner', () => {
     expect(s.clientSecretKey).toBe(clientSecretKey);
   });
 
+  it('can wait to advertise signing until the bunker upgrade resolves', async () => {
+    let resolveUpgrade!: (signer: BunkerSignerImpl | null) => void;
+    const upgrade = new Promise<BunkerSignerImpl | null>(resolve => { resolveUpgrade = resolve; });
+    const s = new DeferredBunkerSigner(pubkey, authEvent, upgrade, undefined, undefined, false);
+
+    expect(s.capabilities).toEqual({ canSignEvents: false, hasNip44: false });
+
+    resolveUpgrade(fakeBunker);
+    await upgrade;
+    await Promise.resolve();
+
+    expect(s.capabilities).toEqual({ canSignEvents: true, hasNip44: true });
+  });
+
   it('delegates signEvent to the bunker once it connects', async () => {
     const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
     await expect(s.signEvent({ kind: 1, content: 'hi', tags: [], created_at: 1 })).resolves.toEqual(signed);

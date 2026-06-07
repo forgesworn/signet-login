@@ -331,13 +331,14 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
     const session: SignetSession = {
       pubkey: expected,
       method: 'bunker',
-      signer: new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey),
+      signer: new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey, false),
       authEvent,
     };
     if (displayName) session.displayName = displayName;
-    // Persist the auth-only session now so a reload mid-handshake restores
-    // identity; the background upgrade re-persists with bunker creds on success.
-    persistSession(result.session);
+    // Persist the deferred bunker session now so a reload mid-handshake keeps
+    // the bunker URI + stable client key and restoreSession can reconnect.
+    // The background upgrade re-persists with the live signer on success.
+    persistSession(session);
     return { kind: 'session', session };
   }
 

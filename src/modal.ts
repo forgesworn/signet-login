@@ -765,7 +765,11 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
               console.warn('[signet-login] QR upgrade: createBunkerSigner failed — deferred signer will behave auth-only until reconnect. Reconnect/relay issue or signer device unreachable.', err);
               return null;
             });
-          signer = new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey);
+          // QR handoffs must not advertise signing until the remote bunker is
+          // actually connected. Pallasite starts several background signing
+          // tasks as soon as canSignEvents=true; an optimistic cold ESP32
+          // handoff strands the UI on "Signing…" before the player can act.
+          signer = new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey, false);
           method = 'bunker';
         } else {
           console.warn('[signet-login] QR login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
