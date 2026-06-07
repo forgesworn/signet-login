@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.5 (2026-06-07)
+
+### Bug Fixes
+
+- defer bunker handoff signing readiness
+
+
+
 ## 0.9.4 (2026-06-07)
 
 ### Bug Fixes
