@@ -77,7 +77,11 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   // across every screen because it queries the live buttons each keypress.
   const visibleButtons = (): HTMLButtonElement[] =>
     Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
-      .filter((b) => !b.disabled && b.offsetParent !== null);
+      .filter((b) => {
+        if (b.disabled || !b.isConnected) return false;
+        const css = window.getComputedStyle(b);
+        return css.display !== 'none' && css.visibility !== 'hidden';
+      });
   const focusedButton = (): HTMLButtonElement | null =>
     document.activeElement instanceof HTMLButtonElement && dialog.contains(document.activeElement)
       ? (document.activeElement as HTMLButtonElement)
@@ -97,11 +101,13 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   const keyNav = (e: KeyboardEvent): void => {
     if (!dialog.isConnected || !dialog.open) return;
     const tgt = e.target as HTMLElement | null;
-    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return; // forms own their keys
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA') && e.isTrusted) return; // real typing owns its keys
     const btns = visibleButtons();
     if (btns.length === 0) return;
-    const dir = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1
-              : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+    const key = e.key || e.code;
+    const code = e.code || e.key;
+    const dir = key === 'ArrowDown' || code === 'ArrowDown' || key === 'ArrowRight' || code === 'ArrowRight' ? 1
+              : key === 'ArrowUp' || code === 'ArrowUp' || key === 'ArrowLeft' || code === 'ArrowLeft' ? -1 : 0;
     if (dir) {
       // The modal owns nav while open — stop the host page's listeners from
       // also grabbing the key and stealing focus.

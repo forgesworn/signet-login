@@ -27,6 +27,10 @@ function dispatchSyntheticKey(key: string, code = key): void {
   window.dispatchEvent(new KeyboardEvent('keydown', { key, code, bubbles: true }));
 }
 
+function dispatchSyntheticCode(code: string): void {
+  window.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true }));
+}
+
 async function settleMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -75,6 +79,68 @@ describe('gamepad modal navigation', () => {
     dispatchSyntheticKey('Enter');
     await expect(pending).resolves.toBeNull();
     expect(document.getElementById('signet-login-dialog')).toBeNull();
+  });
+
+  it('navigates with Arrow code even when key is blank', async () => {
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    await settleMicrotasks();
+
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('redirect');
+
+    dispatchSyntheticCode('ArrowDown');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('qr');
+
+    dispatchSyntheticCode('ArrowUp');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('redirect');
+
+    for (let i = 0; i < 5; i++) dispatchSyntheticKey('ArrowDown');
+    dispatchSyntheticKey('Enter');
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('does not depend on offsetParent for dialog button visibility', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get() {
+        return null;
+      },
+    });
+
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    await settleMicrotasks();
+
+    dispatchSyntheticKey('ArrowDown');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('qr');
+
+    for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
+    dispatchSyntheticKey('Enter');
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('synthetic arrows can escape a focused textarea', async () => {
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    await settleMicrotasks();
+
+    // Move to the nsec method and select it. This opens a sub-screen with a
+    // textarea plus Back / Sign in buttons.
+    for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
+    dispatchSyntheticKey('Enter');
+    await settleMicrotasks();
+
+    const input = document.querySelector<HTMLTextAreaElement>('#signet-login-nsec-input');
+    expect(input).toBeInstanceOf(HTMLTextAreaElement);
+    input?.focus();
+    expect(document.activeElement).toBe(input);
+
+    input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+    expect((document.activeElement as HTMLElement | null)?.dataset.action).toBe('connect');
+
+    dispatchSyntheticKey('Escape');
+    await settleMicrotasks();
+    const cancel = document.querySelector<HTMLButtonElement>('[data-choice="cancel"]');
+    expect(cancel).toBeInstanceOf(HTMLButtonElement);
+    cancel?.click();
+    await expect(pending).resolves.toBeNull();
   });
 
   it('synthetic Escape prefers Back on sub-screens instead of cancelling the whole flow', async () => {
