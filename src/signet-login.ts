@@ -64,6 +64,17 @@ export { isAndroid } from './amber.js';
  */
 const REDIRECT_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
 
+export interface HandleRedirectCallbackOptions {
+  /**
+   * Await the returned `bunker://` handoff before resolving the callback.
+   *
+   * Default is false so identity-only consumers can paint immediately and let
+   * a deferred bunker warm in the background. Signing-required consumers
+   * should set this true and reject auth-only returns at their boundary.
+   */
+  waitForBunker?: boolean;
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -271,7 +282,7 @@ export const handleCallback = handlePopupCallback;
  * code that consumes `restoreSession()` doesn't need to care which path
  * authenticated the user.
  */
-export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | ConsumeAmberResult> {
+export async function handleRedirectCallback(options: HandleRedirectCallbackOptions = {}): Promise<ConsumeCallbackResult | ConsumeAmberResult> {
   // Try Amber first — its callback shape (event= param) is disjoint from
   // signet-app's (pubkey/signature/eventId), so the order doesn't matter
   // for valid callbacks. Picking Amber first only affects the 'no-callback'
@@ -327,6 +338,16 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
         console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
         return null;
       });
+
+    if (options.waitForBunker) {
+      const bunkerSigner = await upgrade;
+      if (bunkerSigner) {
+        const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
+        if (displayName) liveSession.displayName = displayName;
+        persistSession(liveSession);
+        return { kind: 'session', session: liveSession };
+      }
+    }
 
     const session: SignetSession = {
       pubkey: expected,
