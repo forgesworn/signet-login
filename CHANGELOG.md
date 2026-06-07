@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.9 (2026-06-07)
+
+### Bug Fixes
+
+- wait for qr bunker signer
+
+
+
 ## 0.9.8 (2026-06-07)
 
 ### Bug Fixes
