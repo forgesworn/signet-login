@@ -300,9 +300,10 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
     const expected = result.session.pubkey;
     const authEvent = result.session.authEvent;
     const displayName = result.session.displayName;
+    const clientSecretKey = loadOrCreatePersistentClientSk();
     const upgrade: Promise<BunkerSignerImpl | null> = createBunkerSigner({
       uri: result.bunkerUri,
-      clientSecretKey: loadOrCreatePersistentClientSk(),
+      clientSecretKey,
       timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
     })
       .then((bunkerSigner): BunkerSignerImpl | null => {
@@ -330,7 +331,7 @@ export async function handleRedirectCallback(): Promise<ConsumeCallbackResult | 
     const session: SignetSession = {
       pubkey: expected,
       method: 'bunker',
-      signer: new DeferredBunkerSigner(expected, authEvent, upgrade),
+      signer: new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey),
       authEvent,
     };
     if (displayName) session.displayName = displayName;

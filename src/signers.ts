@@ -359,6 +359,10 @@ export class DeferredBunkerSigner implements SignetSigner {
     public readonly authEvent: SignetAuthEvent,
     /** Resolves to the connected bunker, or null if the connect failed. */
     private readonly upgrade: Promise<BunkerSignerImpl | null>,
+    /** Original bunker URI — exposed so persistence can reconnect on reload. */
+    public readonly bunkerUri?: string,
+    /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
+    public readonly clientSecretKey?: Uint8Array,
   ) {
     this.nip44 = {
       encrypt: async (peer, pt) => (await this.live()).nip44!.encrypt(peer, pt),

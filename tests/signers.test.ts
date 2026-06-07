@@ -148,10 +148,14 @@ describe('DeferredBunkerSigner', () => {
   } as unknown as BunkerSignerImpl;
 
   it('exposes pubkey/method/signing capability up front', () => {
-    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null));
+    const clientSecretKey = generateSecretKey();
+    const bunkerUri = `bunker://${pubkey}?relay=wss://relay.example`;
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null), bunkerUri, clientSecretKey);
     expect(s.pubkey).toBe(pubkey);
     expect(s.method).toBe('bunker');
     expect(s.capabilities).toEqual({ canSignEvents: true, hasNip44: true });
+    expect(s.bunkerUri).toBe(bunkerUri);
+    expect(s.clientSecretKey).toBe(clientSecretKey);
   });
 
   it('delegates signEvent to the bunker once it connects', async () => {

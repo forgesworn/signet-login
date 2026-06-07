@@ -7,7 +7,7 @@
 
 import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, DeferredBunkerSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
 import { loadOrCreatePersistentClientSk } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
@@ -29,6 +29,7 @@ import QRCode from 'qrcode';
  * response over the relay so a phone can sign for a desktop session.
  */
 type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'amber' | 'nsec' | 'cancel';
+const QR_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -738,24 +739,34 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
         let method: SignetSession['method'] = 'redirect';
 
         // Cross-device bunker passthrough: when the signer device hands back a
-        // `bunker://` URI (its own NIP-46 server), connect to it so this tab gets
-        // a live signer that proxies to the signer device's backend (local key /
-        // hardware bunker). Mirrors the redirect-flow upgrade. Best-effort — if
-        // the connect fails or the pubkey doesn't match, keep the ephemeral
-        // session so the consumer still has identity proof.
+        // `bunker://` URI (its own NIP-46 server, or an upstream hardware
+        // bunker), preserve it as a deferred signer. That keeps login responsive
+        // and avoids downgrading to auth-only just because a cold ESP32 / relay
+        // is not ready during the approval round trip. The first real signing
+        // request awaits the connection and reports auth-only only if it fails.
         if (result.bunkerUri) {
-          try {
-            const bunkerSigner = await createBunkerSigner({ uri: result.bunkerUri, clientSecretKey: loadOrCreatePersistentClientSk() });
-            if (bunkerSigner.pubkey.toLowerCase() === result.pubkey.toLowerCase()) {
-              signer = bunkerSigner;
-              method = 'bunker';
-            } else {
-              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected: result.pubkey });
-              try { await bunkerSigner.close(); } catch { /* ignore */ }
-            }
-          } catch (err) {
-            console.warn('[signet-login] QR upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
-          }
+          const clientSecretKey = loadOrCreatePersistentClientSk();
+          const expected = result.pubkey;
+          const authEvent = result.authEvent;
+          const upgrade: Promise<BunkerSignerImpl | null> = createBunkerSigner({
+            uri: result.bunkerUri,
+            clientSecretKey,
+            timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
+          })
+            .then((bunkerSigner): BunkerSignerImpl | null => {
+              if (bunkerSigner.pubkey.toLowerCase() === expected.toLowerCase()) {
+                return bunkerSigner;
+              }
+              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected });
+              void bunkerSigner.close().catch(() => { /* ignore */ });
+              return null;
+            })
+            .catch((err): BunkerSignerImpl | null => {
+              console.warn('[signet-login] QR upgrade: createBunkerSigner failed — deferred signer will behave auth-only until reconnect. Reconnect/relay issue or signer device unreachable.', err);
+              return null;
+            });
+          signer = new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey);
+          method = 'bunker';
         } else {
           console.warn('[signet-login] QR login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
         }
