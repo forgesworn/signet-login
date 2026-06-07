@@ -13,20 +13,20 @@ import { loadOrCreatePersistentClientSk } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
-import { startRedirect } from './redirect.js';
 import QRCode from 'qrcode';
 
 /**
  * Picker tokens.
  *
  *   - 'nip07'    — browser extension (Bark, Alby, nos2x, …)
- *   - 'redirect' — Sign in with Signet on this device (same-tab navigation)
+ *   - 'redirect' — Sign in with Signet on this device (relay delivery)
  *   - 'qr'       — Sign in with Signet on another device (QR + relay delivery)
  *   - 'bunker'   — paste a NIP-46 bunker URI
  *
- * `redirect` and `qr` both terminate at signet-app, but the delivery channel
- * differs: redirect navigates the current tab, qr publishes a gift-wrapped
- * response over the relay so a phone can sign for a desktop session.
+ * `redirect` and `qr` both terminate at signet-app and publish a gift-wrapped
+ * response over the relay. Keeping the consumer tab alive is important on
+ * desktop: a same-tab redirect can navigate away from the signet-app page that
+ * is supposed to stay up as the live NIP-46 bunker.
  */
 type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'amber' | 'nsec' | 'cancel';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
@@ -309,12 +309,18 @@ type AuthResponseWithBunker = Awaited<ReturnType<typeof waitForAuthResponse>> & 
   bunkerUri?: string;
 };
 
+interface RedirectFlowOptions {
+  sameDevice?: boolean;
+}
+
 async function runRedirectFlow(
   refs: ModalRefs,
   opts: ResolvedOptions,
+  flowOpts: RedirectFlowOptions = {},
 ): Promise<RedirectFlowResult | null> {
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
+  const sameDevice = flowOpts.sameDevice === true;
 
   // Generate session keypair for cross-device gift-wrap
   const sessionPrivKey = schnorr.utils.randomPrivateKey();
@@ -333,13 +339,13 @@ async function runRedirectFlow(
   const authUrl = `${opts.signetAppOrigin}/?${params.toString()}`;
 
   refs.dialog.innerHTML = `
-    <h2 style="margin:0 0 8px;font-size:1.2rem;">Sign in with Signet</h2>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Open the link on your phone, or scan the QR if rendered.</p>
+    <h2 style="margin:0 0 8px;font-size:1.2rem;">${sameDevice ? 'Open My Signet' : 'Sign in with Signet'}</h2>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Approve in My Signet and keep that tab open so it can sign for this app.' : 'Open the link on your phone, or scan the QR if rendered.'}</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
       <canvas id="signet-login-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
-      <a href="${escapeHtml(authUrl)}" target="_blank" rel="noopener" style="display:block;color:#5b6dff;font-size:0.75rem;word-break:break-all;text-decoration:none;">${escapeHtml(authUrl.slice(0, 80))}…</a>
+      <a id="signet-login-open-signet" href="${escapeHtml(authUrl)}" target="_blank" rel="noopener" style="${sameDevice ? buttonStyle(dark, true) + 'justify-content:center;text-align:center;text-decoration:none;' : 'display:block;color:#5b6dff;font-size:0.75rem;word-break:break-all;text-decoration:none;'}">${sameDevice ? 'Open My Signet' : `${escapeHtml(authUrl.slice(0, 80))}…`}</a>
     </div>
-    <p id="signet-login-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">Waiting for approval…</p>
+    <p id="signet-login-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Waiting for My Signet approval…' : 'Waiting for approval…'}</p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
       <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
       <button data-action="cancel" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Cancel</button>
@@ -360,6 +366,14 @@ async function runRedirectFlow(
       // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
       // — the visible link below the canvas still gets the user across.
     });
+  }
+
+  if (sameDevice && typeof window !== 'undefined') {
+    try {
+      window.open(authUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      // Popup blocked or unavailable — the explicit link remains visible.
+    }
   }
 
   return new Promise<RedirectFlowResult | null>(resolve => {
@@ -407,6 +421,68 @@ async function runRedirectFlow(
       // Don't auto-settle on error — let the user choose to go back/cancel.
     });
   });
+}
+
+async function buildSessionFromRedirectFlowResult(
+  refs: ModalRefs,
+  result: RedirectFlowResult,
+  aborted: Promise<null>,
+): Promise<SignetSession | null> {
+  // Default: auth-only ephemeral signer (identity proof, no live signing).
+  let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
+  let method: SignetSession['method'] = 'redirect';
+
+  // Cross-device / same-device bunker passthrough: when the signer device hands
+  // back a `bunker://` URI (its own NIP-46 server, or an upstream hardware
+  // bunker), connect before resolving the flow. Consumers such as Pallasite
+  // reject auth-only at their auth boundary; returning a cold
+  // DeferredBunkerSigner makes them classify the session as non-signing before
+  // the relay handshake can finish.
+  if (result.bunkerUri) {
+    const clientSecretKey = loadOrCreatePersistentClientSk();
+    const expected = result.pubkey;
+    const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
+    if (status) status.textContent = 'Connecting signer...';
+    try {
+      const bunkerSigner = await createBunkerSigner({
+        uri: result.bunkerUri,
+        clientSecretKey,
+        timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
+      });
+      if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
+        console.warn('[signet-login] Signet relay upgrade: bunker pubkey mismatch — cannot sign', { connected: bunkerSigner.pubkey, expected });
+        void bunkerSigner.close().catch(() => { /* ignore */ });
+        if (status) {
+          status.textContent = 'Signer connected with the wrong public key.';
+          status.style.color = '#d04848';
+        }
+        await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
+        return null;
+      }
+      signer = bunkerSigner;
+    } catch (err) {
+      console.warn('[signet-login] Signet relay upgrade: createBunkerSigner failed — signer did not become live.', err);
+      const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
+      if (status) {
+        status.textContent = `Signer connection failed: ${err instanceof Error ? err.message : String(err)}`;
+        status.style.color = '#d04848';
+      }
+      await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
+      return null;
+    }
+    method = 'bunker';
+  } else {
+    console.warn('[signet-login] Signet relay login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
+  }
+
+  const session: SignetSession = {
+    pubkey: result.pubkey,
+    method,
+    signer,
+    authEvent: result.authEvent,
+  };
+  if (result.displayName) session.displayName = result.displayName;
+  return session;
 }
 
 // ── Paste bunker URI ──────────────────────────────────────────────────────────
@@ -702,21 +778,23 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
       }
 
       if (choice === 'redirect') {
-        // Same-tab navigation. Reuses the same pending-state and callback
-        // machinery as `Signet.login({ mode: 'redirect' })`, so this picker
-        // path lands the user on signet-app and the consumer's next page
-        // load picks up the round-trip via `Signet.handleRedirectCallback`.
-        // The promise from `startRedirect` never resolves — the page is gone
-        // before the await completes — so the dialog teardown in the finally
-        // block is also a no-op for this branch.
-        await startRedirect({
-          appName: resolved.appName,
-          challenge: resolved.challenge,
-          origin: resolved.origin,
-          signetAppOrigin: resolved.signetAppOrigin,
-          ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
-        });
-        return null;  // unreachable
+        // Same-device Signet in the modal must keep this app tab alive and keep
+        // the My Signet tab alive as the ongoing bunker. Use the relay-backed
+        // auth response path here; explicit `login({ mode: 'redirect' })`
+        // remains the same-tab redirect API for mobile/single-device callers.
+        const result = await Promise.race([runRedirectFlow(refs, resolved, { sameDevice: true }), aborted]);
+        if (userAborted) return null;
+        if (!result) {
+          if (resolved.preferredMethod) return null;
+          continue;
+        }
+        const session = await buildSessionFromRedirectFlowResult(refs, result, aborted);
+        if (userAborted) return null;
+        if (!session) {
+          if (resolved.preferredMethod) return null;
+          continue;
+        }
+        return session;
       }
 
       if (choice === 'amber') {
@@ -739,62 +817,12 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
           if (resolved.preferredMethod) return null;
           continue;
         }
-        // Default: auth-only ephemeral signer (identity proof, no live signing).
-        let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
-        let method: SignetSession['method'] = 'redirect';
-
-        // Cross-device bunker passthrough: when the signer device hands back a
-        // `bunker://` URI (its own NIP-46 server, or an upstream hardware
-        // bunker), connect before resolving the QR flow. QR is already an
-        // in-place modal, and consumers such as Pallasite reject auth-only at
-        // their auth boundary; returning a cold DeferredBunkerSigner makes them
-        // classify the session as non-signing before the relay handshake can
-        // finish.
-        if (result.bunkerUri) {
-          const clientSecretKey = loadOrCreatePersistentClientSk();
-          const expected = result.pubkey;
-          const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
-          if (status) status.textContent = 'Connecting signer...';
-          try {
-            const bunkerSigner = await createBunkerSigner({
-              uri: result.bunkerUri,
-              clientSecretKey,
-              timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
-            });
-            if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
-              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — cannot sign', { connected: bunkerSigner.pubkey, expected });
-              void bunkerSigner.close().catch(() => { /* ignore */ });
-              if (status) {
-                status.textContent = 'Signer connected with the wrong public key.';
-                status.style.color = '#d04848';
-              }
-              await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
-              if (userAborted || resolved.preferredMethod) return null;
-              continue;
-            }
-            signer = bunkerSigner;
-          } catch (err) {
-            console.warn('[signet-login] QR upgrade: createBunkerSigner failed — signer did not become live.', err);
-            if (status) {
-              status.textContent = `Signer connection failed: ${err instanceof Error ? err.message : String(err)}`;
-              status.style.color = '#d04848';
-            }
-            await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
-            if (userAborted || resolved.preferredMethod) return null;
-            continue;
-          }
-          method = 'bunker';
-        } else {
-          console.warn('[signet-login] QR login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
+        const session = await buildSessionFromRedirectFlowResult(refs, result, aborted);
+        if (userAborted) return null;
+        if (!session) {
+          if (resolved.preferredMethod) return null;
+          continue;
         }
-
-        const session: SignetSession = {
-          pubkey: result.pubkey,
-          method,
-          signer,
-          authEvent: result.authEvent,
-        };
-        if (result.displayName) session.displayName = result.displayName;
         return session;
       }
 

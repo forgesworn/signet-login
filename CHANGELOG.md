@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.12 (2026-06-07)
+
+### Bug Fixes
+
+- keep same-device Signet login on relay handoff so desktop bunker tabs stay alive
+
+
 ## 0.9.11 (2026-06-07)
 
 ### Bug Fixes
@@ -190,5 +197,3 @@
 ### Features
 
 - same-tab redirect mode + handleRedirectCallback (login)
-
-
