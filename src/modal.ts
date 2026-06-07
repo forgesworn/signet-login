@@ -305,6 +305,10 @@ interface RedirectFlowResult {
   bunkerUri?: string;
 }
 
+type AuthResponseWithBunker = Awaited<ReturnType<typeof waitForAuthResponse>> & {
+  bunkerUri?: string;
+};
+
 async function runRedirectFlow(
   refs: ModalRefs,
   opts: ResolvedOptions,
@@ -379,7 +383,8 @@ async function runRedirectFlow(
       sessionPrivKey,
       expectedOrigin: opts.origin,
       timeout: opts.timeout,
-    }).then(result => {
+    }).then(rawResult => {
+      const result = rawResult as AuthResponseWithBunker;
       const authEvent: SignetAuthEvent = {
         id: result.authEvent.id,
         pubkey: result.authEvent.pubkey,
