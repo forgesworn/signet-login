@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.13 (2026-06-07)
+
+### Bug Fixes
+
+- keep same-device signet signer alive
+
+
+
 ## 0.9.12 (2026-06-07)
 
 ### Bug Fixes
