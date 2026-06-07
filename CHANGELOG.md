@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.6 (2026-06-07)
+
+### Bug Fixes
+
+- keep verify dependency on published release
+
+
+
 ## 0.9.5 (2026-06-07)
 
 ### Bug Fixes
