@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.8 (2026-06-07)
+
+### Bug Fixes
+
+- preserve qr bunker handoff
+
+
+
 ## 0.9.6 (2026-06-07)
 
 ### Bug Fixes
