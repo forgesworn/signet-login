@@ -7,7 +7,7 @@
 
 import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, DeferredBunkerSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
 import { loadOrCreatePersistentClientSk } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
@@ -745,36 +745,44 @@ export async function showLoginModal(opts: LoginOptions): Promise<SignetSession 
 
         // Cross-device bunker passthrough: when the signer device hands back a
         // `bunker://` URI (its own NIP-46 server, or an upstream hardware
-        // bunker), preserve it as a deferred signer. That keeps login responsive
-        // and avoids downgrading to auth-only just because a cold ESP32 / relay
-        // is not ready during the approval round trip. The first real signing
-        // request awaits the connection and reports auth-only only if it fails.
+        // bunker), connect before resolving the QR flow. QR is already an
+        // in-place modal, and consumers such as Pallasite reject auth-only at
+        // their auth boundary; returning a cold DeferredBunkerSigner makes them
+        // classify the session as non-signing before the relay handshake can
+        // finish.
         if (result.bunkerUri) {
           const clientSecretKey = loadOrCreatePersistentClientSk();
           const expected = result.pubkey;
-          const authEvent = result.authEvent;
-          const upgrade: Promise<BunkerSignerImpl | null> = createBunkerSigner({
-            uri: result.bunkerUri,
-            clientSecretKey,
-            timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
-          })
-            .then((bunkerSigner): BunkerSignerImpl | null => {
-              if (bunkerSigner.pubkey.toLowerCase() === expected.toLowerCase()) {
-                return bunkerSigner;
-              }
-              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected });
-              void bunkerSigner.close().catch(() => { /* ignore */ });
-              return null;
-            })
-            .catch((err): BunkerSignerImpl | null => {
-              console.warn('[signet-login] QR upgrade: createBunkerSigner failed — deferred signer will behave auth-only until reconnect. Reconnect/relay issue or signer device unreachable.', err);
-              return null;
+          const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
+          if (status) status.textContent = 'Connecting signer...';
+          try {
+            const bunkerSigner = await createBunkerSigner({
+              uri: result.bunkerUri,
+              clientSecretKey,
+              timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
             });
-          // QR handoffs must not advertise signing until the remote bunker is
-          // actually connected. Pallasite starts several background signing
-          // tasks as soon as canSignEvents=true; an optimistic cold ESP32
-          // handoff strands the UI on "Signing…" before the player can act.
-          signer = new DeferredBunkerSigner(expected, authEvent, upgrade, result.bunkerUri, clientSecretKey, false);
+            if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
+              console.warn('[signet-login] QR upgrade: bunker pubkey mismatch — cannot sign', { connected: bunkerSigner.pubkey, expected });
+              void bunkerSigner.close().catch(() => { /* ignore */ });
+              if (status) {
+                status.textContent = 'Signer connected with the wrong public key.';
+                status.style.color = '#d04848';
+              }
+              await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
+              if (userAborted || resolved.preferredMethod) return null;
+              continue;
+            }
+            signer = bunkerSigner;
+          } catch (err) {
+            console.warn('[signet-login] QR upgrade: createBunkerSigner failed — signer did not become live.', err);
+            if (status) {
+              status.textContent = `Signer connection failed: ${err instanceof Error ? err.message : String(err)}`;
+              status.style.color = '#d04848';
+            }
+            await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
+            if (userAborted || resolved.preferredMethod) return null;
+            continue;
+          }
           method = 'bunker';
         } else {
           console.warn('[signet-login] QR login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
