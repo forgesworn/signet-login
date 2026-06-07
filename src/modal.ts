@@ -728,12 +728,27 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
   return result;
 }
 
+let modalQueue: Promise<void> = Promise.resolve();
+
 /**
  * Entry point — show the modal, route to the chosen method, return a session.
  *
  * Returns null when the user cancels or the flow times out.
  */
 export async function showLoginModal(opts: LoginOptions): Promise<SignetSession | null> {
+  const previous = modalQueue;
+  let release!: () => void;
+  modalQueue = new Promise<void>(resolve => { release = resolve; });
+
+  await previous;
+  try {
+    return await runLoginModal(opts);
+  } finally {
+    release();
+  }
+}
+
+async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> {
   if (!opts.appName || opts.appName.length === 0) throw new Error('appName-required');
   if (opts.appName.length > 64) throw new Error('appName-too-long');
   const resolved = resolveOptions(opts);

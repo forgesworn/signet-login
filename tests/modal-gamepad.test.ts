@@ -9,6 +9,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { login } from '../src/signet-login.js';
+import { hexToBytesLocal } from '../src/storage.js';
+import { getPublicKey } from 'nostr-tools/pure';
 
 function installDialogPolyfill(): void {
   if (typeof HTMLDialogElement.prototype.showModal !== 'function') {
@@ -36,6 +38,39 @@ async function settleMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+function activeHeading(): string {
+  return document.querySelector('h2')?.textContent ?? '';
+}
+
+async function cancelActiveLogin(): Promise<void> {
+  document.querySelector<HTMLButtonElement>('[data-choice="cancel"],[data-action="cancel"]')?.click();
+  await settleMicrotasks();
+}
+
+async function waitForActiveDialog(): Promise<HTMLDialogElement> {
+  for (let i = 0; i < 20; i++) {
+    const dialog = document.getElementById('signet-login-dialog');
+    if (dialog instanceof HTMLDialogElement) return dialog;
+    await settleMicrotasks();
+  }
+  expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+  return document.getElementById('signet-login-dialog') as HTMLDialogElement;
+}
+
+async function completeActiveNsecLogin(rawPrivateKeyHex: string): Promise<void> {
+  // Desktop picker order without NIP-07/Amber:
+  // redirect, qr, bunker, nostrconnect, nsec, cancel.
+  for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
+  dispatchSyntheticKey('Enter');
+  await settleMicrotasks();
+
+  const input = document.querySelector<HTMLTextAreaElement>('#signet-login-nsec-input');
+  expect(input).toBeInstanceOf(HTMLTextAreaElement);
+  input!.value = rawPrivateKeyHex;
+  document.querySelector<HTMLButtonElement>('[data-action="connect"]')?.click();
+  await settleMicrotasks();
+}
+
 describe('gamepad modal navigation', () => {
   beforeEach(() => {
     installDialogPolyfill();
@@ -55,6 +90,7 @@ describe('gamepad modal navigation', () => {
   });
 
   afterEach(() => {
+    document.querySelector<HTMLButtonElement>('[data-choice="cancel"],[data-action="cancel"],[data-action="back"]')?.click();
     document.body.innerHTML = '';
   });
 
@@ -162,5 +198,109 @@ describe('gamepad modal navigation', () => {
     for (let i = 0; i < 5; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
     await expect(pending).resolves.toBeNull();
+  });
+
+  it('serializes overlapping booth player logins into one active modal', async () => {
+    const playerOne = login({ appName: 'Prague Booth P1', theme: 'dark', persist: false });
+    const playerTwo = login({ appName: 'Prague Booth P2', theme: 'dark', persist: false });
+    await settleMicrotasks();
+
+    expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+    expect(activeHeading()).toContain('Prague Booth P1');
+
+    await cancelActiveLogin();
+    await expect(playerOne).resolves.toBeNull();
+    await settleMicrotasks();
+
+    expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+    expect(activeHeading()).toContain('Prague Booth P2');
+
+    await cancelActiveLogin();
+    await expect(playerTwo).resolves.toBeNull();
+    expect(document.getElementById('signet-login-dialog')).toBeNull();
+  });
+
+  it('handles Prague booth player count combinations without modal leaks', async () => {
+    const cases = [
+      ['one booth / one player', ['Prague Booth A P1']],
+      ['one booth / two players', ['Prague Booth A P1', 'Prague Booth A P2']],
+      ['two booths / one player each', ['Prague Booth A P1', 'Prague Booth B P1']],
+      ['two booths / booth A two players, booth B one player', ['Prague Booth A P1', 'Prague Booth A P2', 'Prague Booth B P1']],
+      ['two booths / two players each', ['Prague Booth A P1', 'Prague Booth A P2', 'Prague Booth B P1', 'Prague Booth B P2']],
+    ];
+
+    for (const [label, appNames] of cases) {
+      const pending = appNames.map(appName => login({ appName, theme: 'dark', persist: false }));
+
+      for (let i = 0; i < appNames.length; i++) {
+        await waitForActiveDialog();
+        expect(document.querySelectorAll('#signet-login-dialog'), label).toHaveLength(1);
+        expect(activeHeading(), label).toContain(appNames[i]);
+        await cancelActiveLogin();
+        await expect(pending[i], label).resolves.toBeNull();
+        await settleMicrotasks();
+      }
+
+      expect(document.getElementById('signet-login-dialog'), label).toBeNull();
+      await expect(Promise.all(pending), label).resolves.toEqual(appNames.map(() => null));
+    }
+  });
+
+  it('preserves FIFO order and returns distinct sessions for four overlapping players', async () => {
+    const privateKeys = [
+      '01'.repeat(32),
+      '02'.repeat(32),
+      '03'.repeat(32),
+      '04'.repeat(32),
+    ];
+    const appNames = ['Prague Booth A P1', 'Prague Booth A P2', 'Prague Booth B P1', 'Prague Booth B P2'];
+    const pending = appNames.map(appName => login({ appName, theme: 'dark', persist: false }));
+
+    for (let i = 0; i < appNames.length; i++) {
+      await waitForActiveDialog();
+      expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+      expect(activeHeading()).toContain(appNames[i]);
+      await completeActiveNsecLogin(privateKeys[i]);
+    }
+
+    const sessions = await Promise.all(pending);
+    expect(document.getElementById('signet-login-dialog')).toBeNull();
+    expect(sessions.map(s => s?.method)).toEqual(['nsec', 'nsec', 'nsec', 'nsec']);
+    expect(sessions.map(s => s?.pubkey)).toEqual(privateKeys.map(sk => getPublicKey(hexToBytesLocal(sk))));
+    expect(new Set(sessions.map(s => s?.pubkey)).size).toBe(4);
+    expect(localStorage.getItem('signet:login.pubkey')).toBeNull();
+  });
+
+  it('keeps queued logins usable after a validation failure', async () => {
+    const invalid = login({ appName: '', theme: 'dark', persist: false });
+    const valid = login({ appName: 'Prague Booth Recovery', theme: 'dark', persist: false });
+
+    await expect(invalid).rejects.toThrow(/appName-required/);
+    await waitForActiveDialog();
+
+    expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+    expect(activeHeading()).toContain('Prague Booth Recovery');
+    await cancelActiveLogin();
+    await expect(valid).resolves.toBeNull();
+    expect(document.getElementById('signet-login-dialog')).toBeNull();
+  });
+
+  it('stress-cancels many overlapping booth requests without duplicate dialogs', async () => {
+    const total = 24;
+    const pending = Array.from({ length: total }, (_, i) =>
+      login({ appName: `Prague Stress Player ${String(i + 1).padStart(2, '0')}`, theme: 'dark', persist: false }),
+    );
+
+    for (let i = 0; i < total; i++) {
+      await waitForActiveDialog();
+      expect(document.querySelectorAll('#signet-login-dialog')).toHaveLength(1);
+      expect(activeHeading()).toContain(`Prague Stress Player ${String(i + 1).padStart(2, '0')}`);
+      await cancelActiveLogin();
+      await expect(pending[i]).resolves.toBeNull();
+      await settleMicrotasks();
+    }
+
+    expect(document.getElementById('signet-login-dialog')).toBeNull();
+    await expect(Promise.all(pending)).resolves.toEqual(Array.from({ length: total }, () => null));
   });
 });
