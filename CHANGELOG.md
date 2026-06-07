@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.10 (2026-06-07)
+
+### Bug Fixes
+
+- allow redirect callbacks to wait for bunker
+
+
+
 ## 0.9.9 (2026-06-07)
 
 ### Bug Fixes
