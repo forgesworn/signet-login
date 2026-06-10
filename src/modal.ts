@@ -426,7 +426,7 @@ async function runRedirectFlow(
 async function buildSessionFromRedirectFlowResult(
   refs: ModalRefs,
   result: RedirectFlowResult,
-  aborted: Promise<null>,
+  _aborted: Promise<null>,
 ): Promise<SignetSession | null> {
   // Default: auth-only ephemeral signer (identity proof, no live signing).
   let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
@@ -450,27 +450,26 @@ async function buildSessionFromRedirectFlowResult(
         timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
       });
       if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
-        console.warn('[signet-login] Signet relay upgrade: bunker pubkey mismatch — cannot sign', { connected: bunkerSigner.pubkey, expected });
+        // Bunker came back as a different key than the identity we proved.
+        // Discard it and keep the auth-only identity (result.pubkey) rather than
+        // signing as the wrong key — the consumer can prompt for a proper signer
+        // if it needs one.
+        console.warn('[signet-login] Signet relay upgrade: bunker pubkey mismatch — continuing identity-only', { connected: bunkerSigner.pubkey, expected });
         void bunkerSigner.close().catch(() => { /* ignore */ });
-        if (status) {
-          status.textContent = 'Signer connected with the wrong public key.';
-          status.style.color = '#d04848';
-        }
-        await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
-        return null;
+      } else {
+        signer = bunkerSigner;
+        method = 'bunker';
       }
-      signer = bunkerSigner;
     } catch (err) {
-      console.warn('[signet-login] Signet relay upgrade: createBunkerSigner failed — signer did not become live.', err);
-      const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
-      if (status) {
-        status.textContent = `Signer connection failed: ${err instanceof Error ? err.message : String(err)}`;
-        status.style.color = '#d04848';
-      }
-      await Promise.race([new Promise(resolve => setTimeout(resolve, 2500)), aborted]);
-      return null;
+      // Bunker connect failed or timed out — signer offline, or a stale handoff
+      // URI (the common cross-device failure: the producer re-handed a dead
+      // connect string). Do NOT fail the whole sign-in: fall back to the
+      // auth-only identity we already hold (the kind-21236 authEvent proves
+      // result.pubkey). The consumer decides whether identity-only is enough —
+      // one that needs a live signer can prompt for an upgrade rather than being
+      // handed null and stranding the user at "couldn't sign in".
+      console.warn('[signet-login] Signet relay upgrade: createBunkerSigner failed — continuing identity-only (auth-only).', err);
     }
-    method = 'bunker';
   } else {
     console.warn('[signet-login] Signet relay login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must have its NIP-46 server enabled to hand back a bunker:// URI.');
   }
