@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.14 (2026-06-10)
+
+### Bug Fixes
+
+- fall back to auth-only session on bunker-connect-timeout
+
+
+
 ## 0.9.13 (2026-06-07)
 
 ### Bug Fixes
