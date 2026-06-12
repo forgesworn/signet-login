@@ -65,7 +65,7 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
 
   const dialog = document.createElement('dialog');
   dialog.id = 'signet-login-dialog';
-  dialog.style.cssText = `border:none;border-radius:16px;padding:32px;max-width:380px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);background:${bg};color:${fg};font-family:system-ui,-apple-system,sans-serif;`;
+  dialog.style.cssText = `border:none;border-radius:16px;padding:32px;max-width:460px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);background:${bg};color:${fg};font-family:system-ui,-apple-system,sans-serif;`;
   document.body.appendChild(dialog);
   dialog.showModal();
 
@@ -342,7 +342,7 @@ async function runRedirectFlow(
     <h2 style="margin:0 0 8px;font-size:1.2rem;">${sameDevice ? 'Open My Signet' : 'Sign in with Signet'}</h2>
     <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Approve in My Signet and keep that tab open so it can sign for this app.' : 'Open the link on your phone, or scan the QR if rendered.'}</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
-      <canvas id="signet-login-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
+      <canvas id="signet-login-qr" width="360" height="360" style="display:block;width:360px;height:360px;max-width:100%;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
       <a id="signet-login-open-signet" href="${escapeHtml(authUrl)}" target="_blank" rel="noopener" style="${sameDevice ? buttonStyle(dark, true) + 'justify-content:center;text-align:center;text-decoration:none;' : 'display:block;color:#5b6dff;font-size:0.75rem;word-break:break-all;text-decoration:none;'}">${sameDevice ? 'Open My Signet' : `${escapeHtml(authUrl.slice(0, 80))}…`}</a>
     </div>
     <p id="signet-login-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Waiting for My Signet approval…' : 'Waiting for approval…'}</p>
@@ -354,13 +354,16 @@ async function runRedirectFlow(
 
   // Render the auth URL into the QR canvas. Async, but the dialog has already
   // surfaced the visible link as a fallback so a slow encode doesn't block UX.
-  // M error correction tolerates ~15% damage — comfortable for camera scans.
+  // 360px + H error correction (~30% damage tolerance) so a phone can lock on
+  // from across a booth, at an angle, through screen glare. The auth URL is
+  // short (origin + relay + session pubkey), so H's denser modules stay large
+  // enough to scan at this size.
   const qrCanvas = refs.dialog.querySelector<HTMLCanvasElement>('#signet-login-qr');
   if (qrCanvas) {
     void QRCode.toCanvas(qrCanvas, authUrl, {
-      width: 200,
+      width: 360,
       margin: 1,
-      errorCorrectionLevel: 'M',
+      errorCorrectionLevel: 'H',
       color: { dark: '#0a0418', light: '#ffffff' },
     }).catch(() => {
       // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
