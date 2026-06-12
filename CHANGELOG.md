@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.15 (2026-06-12)
+
+### Bug Fixes
+
+- enlarge sign-in QR to 360px + EC level H for booth scanning
+
+
+
 ## 0.9.14 (2026-06-10)
 
 ### Bug Fixes
