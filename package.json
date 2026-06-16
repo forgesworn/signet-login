@@ -43,11 +43,13 @@
     "signet-verify": "^0.5.0"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
     "jsdom": "^29.1.1",
     "signet-protocol": "^1.6.0",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "ws": "^8.21.0"
   },
   "keywords": [
     "nostr",
