@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.3 (2026-06-16)
+
+### Bug Fixes
+
+- persist nostrconnect sessions as bunker reconnects
+
+
+
 ## 0.10.2 (2026-06-16)
 
 ### Changed
