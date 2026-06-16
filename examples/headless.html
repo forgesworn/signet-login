@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signet Access — headless demo</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fbfaf7;
+      --fg: #161716;
+      --muted: #656866;
+      --panel: #ffffff;
+      --border: #d9ddd8;
+      --primary: #2f6f5e;
+      --primary-hover: #255a4d;
+      --danger: #b42318;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101412;
+        --fg: #f1f4f0;
+        --muted: #a1aaa4;
+        --panel: #171d1a;
+        --border: #2c3932;
+        --primary: #65b89f;
+        --primary-hover: #79c9b1;
+        --danger: #ff8a80;
+      }
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(920px, calc(100vw - 32px));
+      margin: 32px auto;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.45rem;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-weight: 650;
+    }
+    textarea,
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--fg);
+      padding: 10px;
+      font: 0.9rem/1.4 var(--mono);
+    }
+    textarea {
+      min-height: 86px;
+      resize: vertical;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--primary);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 10px 14px;
+    }
+    button:hover {
+      background: var(--primary-hover);
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .status {
+      min-height: 1.4em;
+      margin-top: 12px;
+      color: var(--muted);
+    }
+    .status.error {
+      color: var(--danger);
+    }
+    pre {
+      min-height: 180px;
+      max-height: 360px;
+      overflow: auto;
+      margin: 18px 0 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      font: 0.82rem/1.45 var(--mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    @media (max-width: 760px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Signet Access headless demo</h1>
+    <p>Build a custom interface while reusing Signet's signer constructors and login proof helpers.</p>
+
+    <section class="grid">
+      <div class="panel">
+        <h2 style="margin:0;font-size:1rem;">Remote signer</h2>
+        <label for="bunker">Bunker URI</label>
+        <textarea id="bunker" placeholder="bunker://..."></textarea>
+        <div class="row">
+          <button id="connect-bunker">Connect bunker</button>
+        </div>
+        <p id="bunker-status" class="status"></p>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin:0;font-size:1rem;">Local test signer</h2>
+        <label for="nsec">nsec or 64-hex private key</label>
+        <input id="nsec" autocomplete="off" spellcheck="false" placeholder="nsec1... or 64 hex chars" />
+        <div class="row">
+          <button id="connect-nsec">Use local signer</button>
+          <button id="fill-dev-key" class="secondary" type="button">Fill dev key</button>
+        </div>
+        <p id="nsec-status" class="status"></p>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:14px;">
+      <h2 style="margin:0;font-size:1rem;">Session</h2>
+      <p id="session-status" class="status">No signer connected.</p>
+      <div class="row">
+        <button id="sign-proof" disabled>Create auth proof</button>
+        <button id="sign-event" disabled>Sign sample event</button>
+        <button id="clear" class="secondary" disabled>Clear</button>
+      </div>
+    </section>
+
+    <pre id="output"></pre>
+  </main>
+
+  <script src="../dist/signet-login.iife.js"></script>
+  <script>
+    const appName = 'Headless Demo';
+    const challenge = 'ab'.repeat(32);
+    let signer = null;
+    let session = null;
+
+    const output = document.getElementById('output');
+    const sessionStatus = document.getElementById('session-status');
+    const signProof = document.getElementById('sign-proof');
+    const signEvent = document.getElementById('sign-event');
+    const clearBtn = document.getElementById('clear');
+
+    function show(value) {
+      output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    }
+
+    function setStatus(id, text, error = false) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.classList.toggle('error', error);
+    }
+
+    function updateSession(nextSigner, nextSession = null) {
+      signer = nextSigner;
+      session = nextSession;
+      const connected = !!signer;
+      sessionStatus.textContent = connected
+        ? `Connected ${signer.pubkey.slice(0, 16)}... via ${signer.method}`
+        : 'No signer connected.';
+      signProof.disabled = !connected;
+      signEvent.disabled = !connected || !signer.capabilities.canSignEvents;
+      clearBtn.disabled = !connected;
+    }
+
+    document.getElementById('fill-dev-key').addEventListener('click', () => {
+      document.getElementById('nsec').value = '01'.repeat(32);
+    });
+
+    document.getElementById('connect-nsec').addEventListener('click', async () => {
+      try {
+        const value = document.getElementById('nsec').value.trim();
+        const nextSigner = Signet.createLocalSignerFromNsec(value);
+        updateSession(nextSigner);
+        setStatus('nsec-status', `Ready: ${nextSigner.pubkey.slice(0, 16)}...`);
+        show({ method: nextSigner.method, pubkey: nextSigner.pubkey, capabilities: nextSigner.capabilities });
+      } catch (err) {
+        setStatus('nsec-status', err.message, true);
+      }
+    });
+
+    document.getElementById('connect-bunker').addEventListener('click', async () => {
+      try {
+        setStatus('bunker-status', 'Connecting...');
+        const uri = document.getElementById('bunker').value.trim();
+        const nextSigner = await Signet.createBunkerSigner({ uri, timeoutMs: 30000 });
+        updateSession(nextSigner);
+        setStatus('bunker-status', `Ready: ${nextSigner.pubkey.slice(0, 16)}...`);
+        show({ method: nextSigner.method, pubkey: nextSigner.pubkey, capabilities: nextSigner.capabilities });
+      } catch (err) {
+        setStatus('bunker-status', err.message, true);
+      }
+    });
+
+    signProof.addEventListener('click', async () => {
+      try {
+        session = await Signet.createSessionFromSigner(signer, {
+          appName,
+          challenge,
+          origin: location.origin,
+        });
+        show(session.authEvent);
+      } catch (err) {
+        show(`Auth proof error: ${err.message}`);
+      }
+    });
+
+    signEvent.addEventListener('click', async () => {
+      try {
+        const signed = await signer.signEvent({
+          kind: 1,
+          content: 'Signed from the Signet Access headless demo',
+          tags: [['client', 'signet-login']],
+        });
+        show(signed);
+      } catch (err) {
+        show(`Sign error: ${err.message}`);
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      updateSession(null);
+      show('');
+      setStatus('nsec-status', '');
+      setStatus('bunker-status', '');
+    });
+  </script>
+</body>
+</html>

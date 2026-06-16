@@ -1,7 +1,7 @@
 {
   "name": "signet-login",
-  "version": "0.9.15",
-  "description": "Sign in with Signet — drop-in login SDK for Nostr-aware websites. NIP-07, bunker URI, and Signet redirect/QR in one unified API.",
+  "version": "0.10.0",
+  "description": "Signet Access — drop-in auth and signer-access SDK for Nostr-aware websites. Signet QR/redirect, NIP-07, NIP-46, Amber, and nsec fallback in one API.",
   "type": "module",
   "main": "./dist/signet-login.js",
   "types": "./dist/signet-login.d.ts",
@@ -19,7 +19,9 @@
     "./iife": "./dist/signet-login.iife.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "examples",
+    "docs"
   ],
   "publishConfig": {
     "provenance": true
@@ -36,6 +38,7 @@
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
     "@types/qrcode": "^1.5.6",
+    "jsqr": "^1.4.0",
     "nostr-tools": "^2.23.3",
     "qrcode": "^1.5.4",
     "signet-verify": "^0.5.0"
@@ -45,15 +48,19 @@
     "jsdom": "^29.1.1",
     "signet-protocol": "^1.6.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.9"
   },
   "keywords": [
     "nostr",
     "signet",
+    "signet-access",
     "login",
+    "access",
     "authentication",
     "nip-07",
     "nip-46",
+    "nip-55",
+    "nostrconnect",
     "bunker",
     "decentralised-identity",
     "sign-in-with-signet"

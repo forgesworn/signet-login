@@ -1,9 +1,9 @@
 /**
  * Public types for signet-login.
  *
- * The SDK exposes a single SignetSigner interface that wraps three backends
- * (NIP-07 extension, NIP-46 bunker, ephemeral redirect-only). Consumers code
- * against the interface; the SDK picks the implementation based on user choice.
+ * The SDK exposes a single SignetSigner interface across extension, Signet,
+ * NIP-46, Android, and local fallback paths. Consumers code against the
+ * interface; the SDK picks the implementation based on user choice.
  */
 
 /** A signed Nostr event. */
@@ -27,6 +27,9 @@ export interface EventTemplate {
 
 /** Login method actually used to authenticate. */
 export type LoginMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
+
+/** Method choices the login picker can show. Some choices resolve to the same session method. */
+export type LoginPickerMethod = LoginMethod | 'qr' | 'nostrconnect';
 
 /** Capability flags exposed by a signer. */
 export interface SignerCapabilities {
@@ -90,10 +93,34 @@ export interface LoginOptions {
   appName: string;
   /** Optional 64-hex challenge. Auto-generated if omitted. */
   challenge?: string;
-  /** Skip the picker and force a specific method. */
-  preferredMethod?: LoginMethod;
-  /** Relay URL for cross-device communication. Default: wss://relay.damus.io */
+  /**
+   * Skip the picker and force a specific method. `qr` means cross-device Signet;
+   * `nostrconnect` means app-initiated NIP-46. Both resolve to normal sessions.
+   */
+  preferredMethod?: LoginPickerMethod;
+  /**
+   * Picker methods to show, in order. Unavailable methods such as NIP-07 when
+   * no extension is installed are hidden at render time. Default shows every
+   * supported method, with power-user paths grouped under Advanced.
+   */
+  methods?: LoginPickerMethod[];
+  /**
+   * Subset of `methods` grouped behind Advanced. Pass `[]` to show all allowed
+   * methods in the main picker. Default: bunker, nostrconnect, nsec.
+   */
+  advancedMethods?: LoginPickerMethod[];
+  /** Relay URL for cross-device communication. Default wss://relay.damus.io */
   relayUrl?: string;
+  /**
+   * Relay URLs for NIP-46 / NostrConnect. The first relay is also used for
+   * Signet QR/relay delivery until signet-verify grows multi-relay waiting.
+   */
+  relayUrls?: string[];
+  /**
+   * Permissions requested by the app-initiated NostrConnect flow.
+   * Default: sign_event, nip44_encrypt, nip44_decrypt.
+   */
+  nostrConnectPerms?: string[];
   /** Modal colour scheme. Default: 'auto'. */
   theme?: 'light' | 'dark' | 'auto';
   /** Timeout in milliseconds. Default: 120_000. Clamped to [5_000, 600_000]. */

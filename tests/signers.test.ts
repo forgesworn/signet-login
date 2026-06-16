@@ -310,6 +310,19 @@ describe('buildNostrConnectUri', () => {
     expect(uri).not.toContain('name=');
   });
 
+  it('supports multiple relays', () => {
+    const uri = buildNostrConnectUri({
+      clientPubkeyHex: validPubkey,
+      relayUrls: ['wss://relay-one.example', 'wss://relay-two.example'],
+      secret: 's',
+    });
+    const parsed = new URL(uri);
+    expect(parsed.searchParams.getAll('relay')).toEqual([
+      'wss://relay-one.example',
+      'wss://relay-two.example',
+    ]);
+  });
+
   it('rejects invalid pubkey', () => {
     expect(() =>
       buildNostrConnectUri({ clientPubkeyHex: 'not-hex', relayUrl: 'wss://r', secret: 's' }),

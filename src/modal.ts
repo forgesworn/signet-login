@@ -5,7 +5,7 @@
  * top-layer placement, theme-aware colours, no third-party UI deps.
  */
 
-import type { LoginOptions, SignetSession, LoginMethod, SignetAuthEvent } from './types.js';
+import type { LoginOptions, SignetSession, LoginPickerMethod, SignetAuthEvent } from './types.js';
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
@@ -14,22 +14,34 @@ import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
 import QRCode from 'qrcode';
+import jsQR from 'jsqr';
 
 /**
  * Picker tokens.
  *
- *   - 'nip07'    — browser extension (Bark, Alby, nos2x, …)
- *   - 'redirect' — Sign in with Signet on this device (relay delivery)
- *   - 'qr'       — Sign in with Signet on another device (QR + relay delivery)
- *   - 'bunker'   — paste a NIP-46 bunker URI
+ *   - 'nip07'        — browser extension (Bark, Alby, nos2x, …)
+ *   - 'redirect'     — Sign in with Signet on this device (relay delivery)
+ *   - 'qr'           — Sign in with Signet on another device (QR + relay delivery)
+ *   - 'bunker'       — paste a NIP-46 bunker URI
+ *   - 'nostrconnect' — app-initiated NIP-46 URI for signer apps to scan
+ *   - 'amber'        — Android NIP-55 signer handoff
+ *   - 'nsec'         — local in-memory private key fallback
  *
  * `redirect` and `qr` both terminate at signet-app and publish a gift-wrapped
  * response over the relay. Keeping the consumer tab alive is important on
  * desktop: a same-tab redirect can navigate away from the signet-app page that
  * is supposed to stay up as the live NIP-46 bunker.
  */
-type PickerChoice = 'nip07' | 'redirect' | 'qr' | 'bunker' | 'nostrconnect' | 'amber' | 'nsec' | 'cancel';
+type PickerChoice = LoginPickerMethod | 'cancel';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
+const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'redirect', 'qr', 'bunker', 'nostrconnect', 'nsec'];
+const DEFAULT_ADVANCED_METHODS: LoginPickerMethod[] = ['bunker', 'nostrconnect', 'nsec'];
+const DEFAULT_NOSTR_CONNECT_PERMS = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
+
+interface ResolvedMethodConfig {
+  methods: LoginPickerMethod[];
+  advancedMethods: LoginPickerMethod[];
+}
 
 interface ModalRefs {
   dialog: HTMLDialogElement;
@@ -169,37 +181,200 @@ function buttonStyle(dark: boolean, primary = false): string {
   return `background:transparent;color:${fg};border:1px solid ${border};padding:12px 16px;border-radius:8px;cursor:pointer;font-size:0.95rem;width:100%;margin-bottom:8px;text-align:left;display:flex;align-items:center;gap:12px;`;
 }
 
+// ── Camera QR scanner ─────────────────────────────────────────────────────────
+
+interface QrScannerHandle {
+  stop(): void;
+}
+
+function canUseCameraQrScanner(): boolean {
+  return typeof navigator !== 'undefined'
+    && !!navigator.mediaDevices
+    && typeof navigator.mediaDevices.getUserMedia === 'function'
+    && typeof document !== 'undefined';
+}
+
+function isAcceptedPairingQr(value: string, acceptedPrefixes: readonly string[]): boolean {
+  const lower = value.trim().toLowerCase();
+  return acceptedPrefixes.some(prefix => lower.startsWith(prefix));
+}
+
+async function startCameraQrScanner(input: {
+  container: HTMLElement;
+  status: HTMLElement | null;
+  acceptedPrefixes: readonly string[];
+  onValue(value: string): void;
+}): Promise<QrScannerHandle> {
+  const { container, status, acceptedPrefixes, onValue } = input;
+  if (!canUseCameraQrScanner()) throw new Error('camera-unavailable');
+
+  let stopped = false;
+  let frame = 0;
+  let stream: MediaStream | null = null;
+  const video = document.createElement('video');
+  const canvas = document.createElement('canvas');
+  const stopBtn = document.createElement('button');
+
+  video.muted = true;
+  video.playsInline = true;
+  video.style.cssText = 'display:block;width:100%;max-height:240px;object-fit:cover;border-radius:8px;background:#000;margin:0 0 8px;';
+  canvas.style.display = 'none';
+  stopBtn.type = 'button';
+  stopBtn.dataset.action = 'stop-scan';
+  stopBtn.textContent = 'Stop scan';
+  stopBtn.style.cssText = 'display:block;margin:0 auto 8px;background:transparent;border:1px solid currentColor;border-radius:8px;padding:8px 12px;cursor:pointer;color:inherit;';
+
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (frame) cancelAnimationFrame(frame);
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop();
+    }
+    container.hidden = true;
+    container.replaceChildren();
+  };
+
+  stopBtn.addEventListener('click', () => {
+    stop();
+    if (status) {
+      status.textContent = 'QR scan stopped.';
+      status.style.color = '';
+    }
+  });
+
+  container.hidden = false;
+  container.replaceChildren(video, canvas, stopBtn);
+  if (status) {
+    status.textContent = 'Point your camera at a QR code...';
+    status.style.color = '';
+  }
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' } },
+    });
+    video.srcObject = stream;
+    await video.play();
+  } catch (err) {
+    stop();
+    throw err;
+  }
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    stop();
+    throw new Error('canvas-unavailable');
+  }
+
+  const tick = (): void => {
+    if (stopped) return;
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(image.data, image.width, image.height, { inversionAttempts: 'attemptBoth' });
+      const scanned = code?.data?.trim();
+      if (scanned) {
+        if (isAcceptedPairingQr(scanned, acceptedPrefixes)) {
+          onValue(scanned);
+          if (status) {
+            status.textContent = 'QR code scanned.';
+            status.style.color = '';
+          }
+          stop();
+          return;
+        }
+        if (status) {
+          status.textContent = 'That QR is not a supported pairing URI.';
+          status.style.color = '#d04848';
+        }
+      }
+    }
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+
+  return { stop };
+}
+
 // ── Picker ────────────────────────────────────────────────────────────────────
 
-function renderPicker(refs: ModalRefs, appName: string, theme: 'light' | 'dark' | 'auto'): Promise<PickerChoice> {
-  const dark = isDarkMode(theme);
+const METHOD_META: Record<LoginPickerMethod, { icon: string; title: string; hint: string }> = {
+  nip07: { icon: '🌐', title: 'Browser extension', hint: 'bark, Alby, nos2x' },
+  amber: { icon: '🤖', title: 'Sign in with Amber', hint: 'Android signer (NIP-55)' },
+  redirect: { icon: '🪪', title: 'Sign in with Signet', hint: 'Open Signet on this device' },
+  qr: { icon: '📱', title: 'Signet on another device', hint: 'Scan QR with your phone' },
+  bunker: { icon: '🔑', title: 'Paste bunker URI', hint: 'For NIP-46 power users' },
+  nostrconnect: { icon: '📡', title: 'Connect a Nostr signer', hint: 'Scan with nsec.app, Amber, Keychat...' },
+  nsec: { icon: '⚠️', title: 'Paste private key', hint: 'In-memory only - risky, last resort' },
+};
+
+function isMethodAvailable(method: LoginPickerMethod): boolean {
+  if (method === 'nip07') return hasNip07();
+  if (method === 'amber') return isAndroid();
+  return true;
+}
+
+function methodButtonHtml(method: LoginPickerMethod, dark: boolean, muted: string, primary: boolean): string {
+  const meta = METHOD_META[method];
+  return `<button data-choice="${method}" style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${meta.icon}</span><span><strong>${meta.title}</strong><br><span style="font-size:0.8rem;color:${primary ? 'rgba(255,255,255,0.8)' : muted};">${meta.hint}</span></span></button>`;
+}
+
+function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerChoice> {
+  const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
 
-  const showNip07 = hasNip07();
-  const showAmber = isAndroid();
-
-  refs.dialog.innerHTML = `
-    <h2 style="margin:0 0 8px;font-size:1.3rem;">Sign in to ${escapeHtml(appName)}</h2>
-    <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
-    <div style="display:flex;flex-direction:column;">
-      ${showNip07 ? `<button data-choice="nip07" style="${buttonStyle(dark, true)}"><span style="font-size:1.2rem;">🌐</span><span><strong>Browser extension</strong><br><span style="font-size:0.8rem;opacity:0.8;">bark, Alby, nos2x</span></span></button>` : ''}
-      ${showAmber ? `<button data-choice="amber" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🤖</span><span><strong>Sign in with Amber</strong><br><span style="font-size:0.8rem;color:${muted};">Android signer (NIP-55)</span></span></button>` : ''}
-      <button data-choice="redirect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🪪</span><span><strong>Sign in with Signet</strong><br><span style="font-size:0.8rem;color:${muted};">Open Signet on this device</span></span></button>
-      <button data-choice="qr" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📱</span><span><strong>Signet on another device</strong><br><span style="font-size:0.8rem;color:${muted};">Scan QR with your phone</span></span></button>
-      <button data-choice="bunker" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">🔑</span><span><strong>Paste bunker URI</strong><br><span style="font-size:0.8rem;color:${muted};">For NIP-46 power users</span></span></button>
-      <button data-choice="nostrconnect" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">📡</span><span><strong>Connect a Nostr signer</strong><br><span style="font-size:0.8rem;color:${muted};">Scan with nsec.app, Amber, Keychat…</span></span></button>
-      <button data-choice="nsec" style="${buttonStyle(dark)}"><span style="font-size:1.2rem;">⚠️</span><span><strong>Paste private key</strong><br><span style="font-size:0.8rem;color:${muted};">In-memory only — risky, last resort</span></span></button>
-    </div>
-    <button data-choice="cancel" style="background:transparent;color:${dark ? '#e0e0e0' : '#1a1a2e'};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:12px;cursor:pointer;font-size:0.95rem;width:100%;margin-top:12px;text-align:center;">Cancel</button>
-  `;
-
   return new Promise<PickerChoice>(resolve => {
-    refs.dialog.querySelectorAll<HTMLButtonElement>('button[data-choice]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const choice = btn.dataset.choice as PickerChoice;
-        resolve(choice);
+    let advancedOpen = false;
+    const availableMethods = opts.methods.filter(isMethodAvailable);
+    const advancedSet = new Set(opts.advancedMethods);
+    const primaryMethods = availableMethods.filter(method => !advancedSet.has(method));
+    const advancedMethods = availableMethods.filter(method => advancedSet.has(method));
+
+    const attachChoiceHandlers = (): void => {
+      refs.dialog.querySelectorAll<HTMLButtonElement>('button[data-choice]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const choice = btn.dataset.choice as PickerChoice;
+          resolve(choice);
+        });
       });
-    });
+      refs.dialog.querySelector<HTMLButtonElement>('[data-action="advanced"]')?.addEventListener('click', () => {
+        advancedOpen = true;
+        paint();
+      });
+    };
+
+    const paint = (): void => {
+      const showAdvanced = advancedOpen || primaryMethods.length === 0;
+      const primaryHtml = primaryMethods.map((method, index) => methodButtonHtml(method, dark, muted, index === 0)).join('');
+      const advancedHtml = showAdvanced
+        ? advancedMethods.map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && index === 0)).join('')
+        : '';
+      const advancedToggle = advancedMethods.length > 0 && !showAdvanced
+        ? `<button data-action="advanced" style="${buttonStyle(dark)}justify-content:center;text-align:center;">Advanced</button>`
+        : '';
+      const empty = availableMethods.length === 0
+        ? `<p style="margin:0 0 12px;color:${muted};font-size:0.85rem;">No configured sign-in methods are available on this device.</p>`
+        : '';
+
+      refs.dialog.innerHTML = `
+        <h2 style="margin:0 0 8px;font-size:1.3rem;">Sign in to ${escapeHtml(opts.appName)}</h2>
+        <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
+        <div style="display:flex;flex-direction:column;">
+          ${empty}
+          ${primaryHtml}
+          ${advancedToggle}
+          ${advancedHtml}
+        </div>
+        <button data-choice="cancel" style="background:transparent;color:${dark ? '#e0e0e0' : '#1a1a2e'};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:12px;cursor:pointer;font-size:0.95rem;width:100%;margin-top:12px;text-align:center;">Cancel</button>
+      `;
+      attachChoiceHandlers();
+    };
+
+    paint();
   });
 }
 
@@ -494,32 +669,72 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
   const muted = dark ? '#888' : '#666';
   const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
   const inputFg = dark ? '#e0e0e0' : '#1a1a2e';
+  const scanButton = canUseCameraQrScanner()
+    ? `<button data-action="scan" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Scan QR</button>`
+    : '';
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Paste bunker URI</h2>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Connect to your NIP-46 bunker (Heartwood, nsecBunker, or any compatible signer).</p>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Connect to your NIP-46 bunker (Heartwood, nsecBunker, Amber, or any compatible signer).</p>
     <textarea id="signet-login-bunker-input" placeholder="bunker://..." rows="3" style="width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;resize:vertical;margin-bottom:12px;"></textarea>
+    <div id="signet-login-bunker-scan" hidden style="margin:0 0 12px;"></div>
     <p id="signet-login-bunker-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
       <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
+      ${scanButton}
       <button data-action="connect" style="${buttonStyle(dark, true)}width:auto;flex:1;padding:8px 16px;text-align:center;">Connect</button>
     </div>
   `;
 
   return new Promise<BunkerSignerImpl | null>(resolve => {
     let settled = false;
+    let scanGeneration = 0;
     const settle = (v: BunkerSignerImpl | null): void => {
       if (settled) return;
       settled = true;
+      scanGeneration++;
+      scanner?.stop();
       resolve(v);
     };
 
     const input = refs.dialog.querySelector<HTMLTextAreaElement>('#signet-login-bunker-input');
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-bunker-status');
+    const scanContainer = refs.dialog.querySelector<HTMLElement>('#signet-login-bunker-scan');
     const connectBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="connect"]');
+    const scanBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="scan"]');
+    let scanner: QrScannerHandle | null = null;
 
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
+      scanner?.stop();
       settle(null);
+    });
+
+    scanBtn?.addEventListener('click', () => {
+      if (!input || !scanContainer) return;
+      scanner?.stop();
+      scanner = null;
+      const generation = ++scanGeneration;
+      void startCameraQrScanner({
+        container: scanContainer,
+        status,
+        acceptedPrefixes: ['bunker://'],
+        onValue: value => {
+          input.value = value;
+          input.focus();
+        },
+      }).then(handle => {
+        if (settled || generation !== scanGeneration) {
+          handle.stop();
+          return;
+        }
+        scanner = handle;
+      }).catch(err => {
+        if (settled || generation !== scanGeneration) return;
+        if (status) {
+          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
+          status.style.color = '#d04848';
+        }
+      });
     });
 
     connectBtn?.addEventListener('click', async () => {
@@ -568,16 +783,16 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
 
   const uri = buildNostrConnectUri({
     clientPubkeyHex: clientPubkey,
-    relayUrl: opts.relayUrl,
+    relayUrls: opts.relayUrls,
     secret,
-    perms: ['sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+    perms: opts.nostrConnectPerms,
     appName: opts.appName,
     appUrl: opts.origin,
   });
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Connect a Nostr signer</h2>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan or paste this into your signer (nsec.app, Amber, Keychat…). The connection happens over your relay.</p>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan or paste this into your signer (nsec.app, Amber, Keychat...). The connection happens over your configured relay${opts.relayUrls.length > 1 ? 's' : ''}.</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
       <canvas id="signet-login-nc-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
       <button data-action="copy" style="${buttonStyle(dark)}width:auto;font-size:0.75rem;padding:6px 10px;margin:0 auto;display:block;">Copy URI</button>
@@ -703,12 +918,40 @@ interface ResolvedOptions {
   appName: string;
   challenge: string;
   origin: string;
-  preferredMethod?: LoginMethod;
+  preferredMethod?: LoginPickerMethod;
+  methods: LoginPickerMethod[];
+  advancedMethods: LoginPickerMethod[];
   relayUrl: string;
+  relayUrls: string[];
+  nostrConnectPerms: string[];
   theme: 'light' | 'dark' | 'auto';
   timeout: number;
   signetAppOrigin: string;
   redirectCallback?: string;
+}
+
+function uniquePickerMethods(input: readonly LoginPickerMethod[] | undefined, fallback: readonly LoginPickerMethod[]): LoginPickerMethod[] {
+  const source = input ?? fallback;
+  const allowed = new Set<LoginPickerMethod>(DEFAULT_PICKER_METHODS);
+  const out: LoginPickerMethod[] = [];
+  for (const method of source) {
+    if (!allowed.has(method)) continue;
+    if (!out.includes(method)) out.push(method);
+  }
+  return input === undefined && out.length === 0 ? [...fallback] : out;
+}
+
+function resolveMethodConfig(opts: LoginOptions): ResolvedMethodConfig {
+  const methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
+  const advancedMethods = uniquePickerMethods(opts.advancedMethods, DEFAULT_ADVANCED_METHODS)
+    .filter(method => methods.includes(method));
+  return { methods, advancedMethods };
+}
+
+function resolveRelayUrls(opts: LoginOptions): string[] {
+  const relayUrls = opts.relayUrls ?? (opts.relayUrl ? [opts.relayUrl] : [DEFAULTS.relayUrl]);
+  const cleanRelayUrls = relayUrls.map(relay => relay.trim()).filter(Boolean);
+  return cleanRelayUrls.length > 0 ? cleanRelayUrls : [DEFAULTS.relayUrl];
 }
 
 function resolveOptions(opts: LoginOptions): ResolvedOptions {
@@ -716,11 +959,17 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
   if (!/^[0-9a-f]{64}$/i.test(challenge)) throw new Error('challenge-must-be-64-hex');
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
   const timeout = Math.max(5_000, Math.min(opts.timeout ?? DEFAULTS.timeout, 600_000));
+  const relayUrls = resolveRelayUrls(opts);
+  const methodConfig = resolveMethodConfig(opts);
   const result: ResolvedOptions = {
     appName: opts.appName,
     challenge: challenge.toLowerCase(),
     origin,
-    relayUrl: opts.relayUrl ?? DEFAULTS.relayUrl,
+    methods: methodConfig.methods,
+    advancedMethods: methodConfig.advancedMethods,
+    relayUrl: relayUrls[0],
+    relayUrls,
+    nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
     theme: opts.theme ?? DEFAULTS.theme,
     timeout,
     signetAppOrigin: opts.signetAppOrigin ?? DEFAULTS.signetAppOrigin,
@@ -770,7 +1019,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
     while (true) {
       const choice = resolved.preferredMethod
         ? (resolved.preferredMethod as PickerChoice)
-        : await Promise.race([renderPicker(refs, resolved.appName, resolved.theme), aborted]);
+        : await Promise.race([renderPicker(refs, resolved), aborted]);
 
       if (userAborted) return null;
       if (choice === null || choice === 'cancel') return null;

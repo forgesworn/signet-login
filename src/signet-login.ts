@@ -1,5 +1,5 @@
 /**
- * Signet Login SDK — Sign in with Signet for Nostr-aware websites.
+ * Signet Access SDK — Sign in with Signet for Nostr-aware websites.
  *
  * ESM / bundler usage:
  *   import { login, restoreSession, logout } from 'signet-login';
@@ -19,6 +19,7 @@ export type {
   NostrEvent,
   EventTemplate,
   LoginMethod,
+  LoginPickerMethod,
   SignerCapabilities,
   SignetSigner,
   SignetAuthEvent,
@@ -28,6 +29,7 @@ export type {
 } from './types.js';
 
 import type {
+  SignetSigner,
   LoginOptions,
   RestoreOptions,
   SignetSession,
@@ -40,9 +42,15 @@ import {
   hasNip07,
   createNip07Signer,
   createBunkerSigner,
+  createBunkerSignerFromNostrConnect,
+  buildNostrConnectUri,
+  createLocalSignerFromNsec,
+  generateSecretKey,
   EphemeralSigner,
   DeferredBunkerSigner,
-  type BunkerSignerImpl,
+  Nip07Signer,
+  BunkerSignerImpl,
+  LocalSigner,
 } from './signers.js';
 import { consumeAmberCallback, type ConsumeAmberResult } from './amber.js';
 
@@ -53,6 +61,18 @@ export type { CallbackResult } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
+export {
+  hasNip07,
+  createNip07Signer,
+  createBunkerSigner,
+  createBunkerSignerFromNostrConnect,
+  buildNostrConnectUri,
+  createLocalSignerFromNsec,
+  generateSecretKey,
+  Nip07Signer,
+  BunkerSignerImpl,
+  LocalSigner,
+};
 
 /**
  * Cap the redirect-bunker auto-pair handshake. The `bunker://` URI signet-app
@@ -73,6 +93,15 @@ export interface HandleRedirectCallbackOptions {
    * should set this true and reject auth-only returns at their boundary.
    */
   waitForBunker?: boolean;
+}
+
+export interface CreateLoginAuthEventOptions {
+  /** Required. Bound into the auth event's `app` tag. */
+  appName: string;
+  /** Optional 64-hex challenge. Auto-generated if omitted. */
+  challenge?: string;
+  /** Origin to bind into the proof. Defaults to `window.location.origin`. */
+  origin?: string;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -118,6 +147,52 @@ export async function login(opts: LoginOptions): Promise<SignetSession | null> {
   }
 
   return session;
+}
+
+/**
+ * Headless helper for custom UIs. Given any SignetSigner, sign the same
+ * kind-21236 login proof the built-in picker uses.
+ */
+export async function createLoginAuthEvent(
+  signer: SignetSigner,
+  opts: CreateLoginAuthEventOptions,
+): Promise<SignetAuthEvent> {
+  const { appName } = opts;
+  if (!appName || appName.length === 0) throw new Error('appName-required');
+  if (appName.length > 64) throw new Error('appName-too-long');
+  const challenge = opts.challenge ?? generateChallenge();
+  if (!/^[0-9a-f]{64}$/i.test(challenge)) throw new Error('challenge-must-be-64-hex');
+  const origin = opts.origin ?? (typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+  if (!origin) throw new Error('origin-required');
+
+  const authEvent = await signer.signEvent({
+    kind: 21236,
+    content: '',
+    tags: [
+      ['challenge', challenge.toLowerCase()],
+      ['origin', origin],
+      ['app', appName],
+    ],
+  }) as SignetAuthEvent;
+
+  return authEvent;
+}
+
+/**
+ * Headless helper for custom UIs. Builds the same SignetSession shape returned
+ * by `login()` from a signer the caller already obtained.
+ */
+export async function createSessionFromSigner(
+  signer: SignetSigner,
+  opts: CreateLoginAuthEventOptions,
+): Promise<SignetSession> {
+  const authEvent = await createLoginAuthEvent(signer, opts);
+  return {
+    pubkey: signer.pubkey,
+    method: signer.method,
+    signer,
+    authEvent,
+  };
 }
 
 /**
@@ -419,6 +494,15 @@ if (typeof window !== 'undefined') {
   const SignetGlobal = existing ?? {};
   Object.assign(SignetGlobal, {
     login,
+    hasNip07,
+    createNip07Signer,
+    createBunkerSigner,
+    createBunkerSignerFromNostrConnect,
+    buildNostrConnectUri,
+    createLocalSignerFromNsec,
+    generateSecretKey,
+    createLoginAuthEvent,
+    createSessionFromSigner,
     restoreSession,
     logout,
     handleCallback,

@@ -163,17 +163,26 @@ export async function createBunkerSignerFromNostrConnect(input: {
  */
 export function buildNostrConnectUri(input: {
   clientPubkeyHex: string;
-  relayUrl: string;
+  relayUrl?: string;
+  relayUrls?: string[];
   secret: string;
   perms?: string[];
   appName?: string;
   appUrl?: string;
 }): string {
-  const { clientPubkeyHex, relayUrl, secret } = input;
+  const { clientPubkeyHex, secret } = input;
   if (!/^[0-9a-f]{64}$/i.test(clientPubkeyHex)) throw new Error('invalid-client-pubkey');
-  if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
 
-  const params = new URLSearchParams({ relay: relayUrl, secret });
+  const relayUrls = input.relayUrls ?? (input.relayUrl ? [input.relayUrl] : []);
+  const cleanRelayUrls = relayUrls.map(relay => relay.trim()).filter(Boolean);
+  if (cleanRelayUrls.length === 0) throw new Error('relay-url-required');
+  for (const relayUrl of cleanRelayUrls) {
+    if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
+  }
+
+  const params = new URLSearchParams();
+  for (const relayUrl of cleanRelayUrls) params.append('relay', relayUrl);
+  params.set('secret', secret);
   if (input.perms && input.perms.length > 0) params.set('perms', input.perms.join(','));
   if (input.appName) params.set('name', input.appName);
   if (input.appUrl) params.set('url', input.appUrl);

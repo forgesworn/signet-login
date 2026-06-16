@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 (2026-06-16)
+
+### Features
+
+- rebrand public docs/metadata around Signet Access
+- add configurable picker methods, Advanced grouping, and picker-level `qr` / `nostrconnect` method selection
+- emit multi-relay `nostrconnect://` URIs and configurable NIP-46 permissions
+- expose headless signer/auth helpers for custom UIs
+- add camera QR scanning for `bunker://` pairing codes when browser APIs are available
+- add a competitive audit and headless custom-UI example
+
+
 ## 0.9.15 (2026-06-12)
 
 ### Bug Fixes

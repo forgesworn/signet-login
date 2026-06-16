@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>signet-login — basic demo</title>
+  <title>Signet Access — basic demo</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a2e; line-height: 1.5; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -19,8 +19,8 @@
   </style>
 </head>
 <body>
-  <h1>signet-login — basic demo</h1>
-  <p class="muted">Click <strong>Sign in</strong> to launch the picker. Choose your preferred method (browser extension, Sign in with Signet, or paste a bunker URI).</p>
+  <h1>Signet Access basic demo</h1>
+  <p class="muted">Click <strong>Sign in</strong> to launch the picker. Choose your preferred method, then use the returned session to sign a sample event.</p>
 
   <div class="panel">
     <p class="muted" style="margin-top:0"><strong>Build first:</strong> <code>npm run build</code> in the signet-login root, then serve this directory: <code>python3 -m http.server 8080</code> from the repo root.</p>
@@ -37,7 +37,7 @@
     <pre id="result"></pre>
   </div>
 
-  <!-- signet-login SDK (IIFE bundle attaches login/restoreSession/logout/handleCallback to window.Signet additively) -->
+  <!-- Signet Access SDK (IIFE bundle attaches login/restoreSession/logout/handleCallback to window.Signet additively) -->
   <script src="../dist/signet-login.iife.js"></script>
   <script>
     let currentSession = null;
@@ -63,7 +63,7 @@
     document.getElementById('login').addEventListener('click', async () => {
       try {
         const session = await Signet.login({
-          appName: 'signet-login Demo',
+          appName: 'Signet Access Demo',
           // For local dev, point at your signet-app dev server:
           // signetAppOrigin: 'http://localhost:5174',
           // relayUrl: 'ws://localhost:7777',

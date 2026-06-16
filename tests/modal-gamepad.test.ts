@@ -58,7 +58,7 @@ async function waitForActiveDialog(): Promise<HTMLDialogElement> {
 }
 
 async function completeActiveNsecLogin(rawPrivateKeyHex: string): Promise<void> {
-  // Desktop picker order without NIP-07/Amber:
+  // Flat desktop picker order without NIP-07/Amber:
   // redirect, qr, bunker, nostrconnect, nsec, cancel.
   for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
   dispatchSyntheticKey('Enter');
@@ -101,9 +101,9 @@ describe('gamepad modal navigation', () => {
     const dialog = document.getElementById('signet-login-dialog');
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
 
-    // Desktop picker order without NIP-07/Amber:
-    // redirect, qr, bunker, nostrconnect, nsec, cancel.
-    for (let i = 0; i < 5; i++) dispatchSyntheticKey('ArrowDown');
+    // Default desktop picker order without NIP-07/Amber:
+    // redirect, qr, Advanced, cancel.
+    for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     expect(document.activeElement?.textContent?.trim()).toBe('Cancel');
 
     const hostButton = document.createElement('button');
@@ -129,7 +129,7 @@ describe('gamepad modal navigation', () => {
     dispatchSyntheticCode('ArrowUp');
     expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('redirect');
 
-    for (let i = 0; i < 5; i++) dispatchSyntheticKey('ArrowDown');
+    for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
     await expect(pending).resolves.toBeNull();
   });
@@ -148,13 +148,13 @@ describe('gamepad modal navigation', () => {
     dispatchSyntheticKey('ArrowDown');
     expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('qr');
 
-    for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
+    for (let i = 0; i < 2; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
     await expect(pending).resolves.toBeNull();
   });
 
   it('synthetic arrows can escape a focused textarea', async () => {
-    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false, advancedMethods: [] });
     await settleMicrotasks();
 
     // Move to the nsec method and select it. This opens a sub-screen with a
@@ -180,7 +180,7 @@ describe('gamepad modal navigation', () => {
   });
 
   it('synthetic Escape prefers Back on sub-screens instead of cancelling the whole flow', async () => {
-    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false, advancedMethods: [] });
     await settleMicrotasks();
 
     // Move to the nsec method and select it. This opens a sub-screen with Back.
@@ -220,6 +220,83 @@ describe('gamepad modal navigation', () => {
     expect(document.getElementById('signet-login-dialog')).toBeNull();
   });
 
+  it('groups power-user methods behind Advanced by default', async () => {
+    const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
+    await settleMicrotasks();
+
+    expect(document.querySelector('[data-choice="bunker"]')).toBeNull();
+    expect(document.querySelector('[data-choice="nostrconnect"]')).toBeNull();
+    expect(document.querySelector('[data-choice="nsec"]')).toBeNull();
+
+    const advanced = document.querySelector<HTMLButtonElement>('[data-action="advanced"]');
+    expect(advanced).toBeInstanceOf(HTMLButtonElement);
+    advanced?.click();
+    await settleMicrotasks();
+
+    expect(document.querySelector('[data-choice="bunker"]')).toBeInstanceOf(HTMLButtonElement);
+    expect(document.querySelector('[data-choice="nostrconnect"]')).toBeInstanceOf(HTMLButtonElement);
+    expect(document.querySelector('[data-choice="nsec"]')).toBeInstanceOf(HTMLButtonElement);
+
+    document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('honours method filtering and order', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      persist: false,
+      methods: ['qr', 'redirect'],
+      advancedMethods: [],
+    });
+    await settleMicrotasks();
+
+    const choices = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-choice]'))
+      .map(button => button.dataset.choice);
+    expect(choices).toEqual(['qr', 'redirect', 'cancel']);
+    expect(document.querySelector('[data-action="advanced"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('hides bunker QR scanning when camera APIs are unavailable', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      persist: false,
+      preferredMethod: 'bunker',
+    });
+    await settleMicrotasks();
+
+    expect(document.querySelector('#signet-login-bunker-input')).toBeInstanceOf(HTMLTextAreaElement);
+    expect(document.querySelector('[data-action="scan"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('shows bunker QR scanning when camera APIs are available', async () => {
+    Object.defineProperty(window.navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: async () => ({ getTracks: () => [] }) },
+    });
+
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      persist: false,
+      preferredMethod: 'bunker',
+    });
+    await settleMicrotasks();
+
+    expect(document.querySelector('#signet-login-bunker-input')).toBeInstanceOf(HTMLTextAreaElement);
+    expect(document.querySelector('[data-action="scan"]')).toBeInstanceOf(HTMLButtonElement);
+
+    document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
   it('handles Prague booth player count combinations without modal leaks', async () => {
     const cases = [
       ['one booth / one player', ['Prague Booth A P1']],
@@ -254,7 +331,7 @@ describe('gamepad modal navigation', () => {
       '04'.repeat(32),
     ];
     const appNames = ['Prague Booth A P1', 'Prague Booth A P2', 'Prague Booth B P1', 'Prague Booth B P2'];
-    const pending = appNames.map(appName => login({ appName, theme: 'dark', persist: false }));
+    const pending = appNames.map(appName => login({ appName, theme: 'dark', persist: false, advancedMethods: [] }));
 
     for (let i = 0; i < appNames.length; i++) {
       await waitForActiveDialog();

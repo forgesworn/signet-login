@@ -1,14 +1,19 @@
-# signet-login
+# Signet Access
 
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/TheCryptoDonkey?logo=githubsponsors&color=ea4aaa&label=Sponsor)](https://github.com/sponsors/TheCryptoDonkey)
 
-**Sign in with Signet** for Nostr-aware websites. One picker, three backends:
+Published as `signet-login`.
 
-- **Browser extension** (NIP-07 — bark, Alby, nos2x, Flamingo, …)
-- **Sign in with Signet** (cross-device QR via NIP-17 gift-wrap)
-- **Paste bunker URI** (NIP-46 remote signer — Heartwood, nsecBunker, Amber)
+**Signet Access** is a drop-in auth and signer-access SDK for Nostr-aware websites. One picker, one session shape, multiple ways to prove identity and, when available, keep a live signer:
 
-Returns a unified `SignetSigner` your code can use to sign Nostr events going forward.
+- **Sign in with Signet** on this device or by cross-device QR
+- **Browser extension** via NIP-07 (bark, Alby, nos2x, Flamingo, ...)
+- **Connect a Nostr signer** via app-initiated NIP-46 / NostrConnect
+- **Paste or scan bunker URI** for Heartwood, nsecBunker, Amber, or compatible signers
+- **Sign in with Amber** via Android NIP-55
+- **Paste private key** as an in-memory, advanced fallback only
+
+Returns a unified `SignetSigner` plus a signed kind-21236 auth proof your server can verify before granting privileges.
 
 ## Install
 
@@ -58,26 +63,90 @@ Show the picker, return a `SignetSession` on success or `null` on cancel/timeout
 
 ```ts
 interface LoginOptions {
-  appName: string;                                      // shown in modal
-  challenge?: string;                                   // 64 hex; auto if omitted
-  preferredMethod?: 'nip07' | 'redirect' | 'bunker';    // skip the picker
-  relayUrl?: string;                                    // default wss://relay.damus.io
-  theme?: 'light' | 'dark' | 'auto';                    // default 'auto'
-  timeout?: number;                                     // default 120_000ms; clamped to [5k, 600k]
-  signetAppOrigin?: string;                             // default https://mysignet.app
-  redirectCallback?: string;                            // for same-device redirect (future)
-  persist?: boolean;                                    // default true (localStorage)
+  appName: string;                              // shown in modal
+  challenge?: string;                           // 64 hex; auto if omitted
+  preferredMethod?: LoginPickerMethod;          // skip the picker
+  methods?: LoginPickerMethod[];                // picker methods, in order
+  advancedMethods?: LoginPickerMethod[];        // grouped behind Advanced; [] = flat list
+  relayUrl?: string;                            // default wss://relay.damus.io
+  relayUrls?: string[];                         // repeated relay= params for NostrConnect
+  nostrConnectPerms?: string[];                 // default sign_event + NIP-44
+  theme?: 'light' | 'dark' | 'auto';            // default 'auto'
+  timeout?: number;                             // default 120_000ms; clamped to [5k, 600k]
+  signetAppOrigin?: string;                     // default https://mysignet.app
+  redirectCallback?: string;                    // for same-device redirect / Amber return
+  mode?: 'relay' | 'redirect';                  // Signet delivery mode
+  persist?: boolean;                            // default true (localStorage)
 }
+
+type LoginPickerMethod =
+  | 'nip07'
+  | 'redirect'      // same-device Signet, relay delivery
+  | 'qr'            // cross-device Signet QR
+  | 'bunker'        // paste bunker://
+  | 'nostrconnect'  // show nostrconnect:// QR
+  | 'amber'         // Android NIP-55
+  | 'nsec';         // in-memory private key fallback
 
 interface SignetSession {
   pubkey: string;                  // hex
-  method: 'nip07' | 'redirect' | 'bunker';
+  method: 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
   signer: SignetSigner;
   authEvent: SignetAuthEvent;      // signed kind-21236 challenge proof
   expiresAt?: number;
   displayName?: string;
 }
 ```
+
+By default, the picker shows ordinary user-facing methods first and groups `bunker`, `nostrconnect`, and `nsec` behind **Advanced**. Control the surface per app:
+
+```js
+await Signet.login({
+  appName: 'My Game',
+  methods: ['redirect', 'qr', 'nip07'],
+});
+
+await Signet.login({
+  appName: 'Power User Tool',
+  methods: ['nip07', 'bunker', 'nostrconnect', 'nsec'],
+  advancedMethods: [], // flat picker
+  relayUrls: ['wss://relay.nsec.app', 'wss://relay.damus.io'],
+});
+```
+
+When camera APIs are available, the bunker URI screen can scan `bunker://` QR codes directly. Paste remains the fallback.
+
+### Headless/custom UI
+
+Use the exported signer constructors and proof helpers when your app owns the UI:
+
+```ts
+import {
+  createBunkerSigner,
+  createLoginAuthEvent,
+  createSessionFromSigner,
+  createLocalSignerFromNsec,
+} from 'signet-login';
+
+const signer = await createBunkerSigner({
+  uri: bunkerUri,
+  timeoutMs: 30_000,
+});
+
+const session = await createSessionFromSigner(signer, {
+  appName: 'My App',
+  challenge: challengeFromServer,
+  origin: 'https://my-app.example',
+});
+
+await fetch('/api/login', {
+  method: 'POST',
+  body: JSON.stringify({ authEvent: session.authEvent }),
+});
+```
+
+Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
+The IIFE bundle attaches the same helpers to `window.Signet`.
 
 ### `Signet.restoreSession(opts?)`
 
@@ -98,14 +167,14 @@ Clear stored session and close the active signer.
 
 Run on your callback page when using the same-device redirect flow. Parses URL params and posts them to `window.opener` (if popup-opened), then closes the popup.
 
-## The three signers
+## Signers and capabilities
 
-All three implement `SignetSigner`:
+All session signers implement `SignetSigner`:
 
 ```ts
 interface SignetSigner {
   readonly pubkey: string;
-  readonly method: 'nip07' | 'redirect' | 'bunker';
+  readonly method: 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
   readonly capabilities: { canSignEvents: boolean; hasNip44: boolean };
   signEvent(template: EventTemplate): Promise<NostrEvent>;
   nip44?: { encrypt, decrypt };
@@ -117,9 +186,10 @@ interface SignetSigner {
 |---|---|---|
 | `Nip07Signer` | true | `window.nostr` (any NIP-07 extension) |
 | `BunkerSignerImpl` | true | `nostr-tools` BunkerSigner over NIP-46 relay |
-| `EphemeralSigner` | **false** | Auth-only — redirect returned only `authEvent` |
+| `LocalSigner` | true | In-memory nsec fallback; never persisted |
+| `EphemeralSigner` | **false** | Auth-only Signet redirect / QR / Amber callback |
 
-`EphemeralSigner` exists because the v0.1 redirect flow returns a single signed challenge but no ongoing-signing channel. Use `signer.capabilities.canSignEvents` to gate UI:
+`EphemeralSigner` exists because some redirect-style flows return a signed challenge but no ongoing signing channel. Use `signer.capabilities.canSignEvents` to gate UI:
 
 ```js
 if (session.signer.capabilities.canSignEvents) {
@@ -129,7 +199,7 @@ if (session.signer.capabilities.canSignEvents) {
 }
 ```
 
-A future Option-B upgrade to signet-app will spawn a session-bunker per origin during the redirect approval, at which point redirect sessions will be full signers transparently. The SDK API does not change.
+When Signet or a signer app returns a `bunker://` handoff, the SDK upgrades the auth-only proof into a live `BunkerSignerImpl` if the handoff connects and matches the authenticated pubkey.
 
 ## Server-side verification
 
@@ -161,7 +231,7 @@ Session data is stored in localStorage under `signet:login.*`:
 | Key | Purpose |
 |---|---|
 | `signet:login.pubkey` | Authenticated pubkey |
-| `signet:login.method` | `nip07` / `redirect` / `bunker` |
+| `signet:login.method` | `nip07` / `redirect` / `bunker` / `amber` |
 | `signet:login.authEvent` | Serialised kind-21236 auth event |
 | `signet:login.bunkerUri` | Bunker URI for reconnect (bunker only) |
 | `signet:login.bunkerClientSk` | Client secret key hex (bunker only) |
@@ -190,7 +260,7 @@ Each SDK manages its own slice of `window.Signet` and `localStorage` namespaces.
 
 ## Bundle size
 
-Approx **48.5 KB gzipped** (135 KB unminified). The bulk is `nostr-tools` `BunkerSigner` for NIP-46 + `signet-verify` for the cross-device QR primitive. A future split-bundle could lazy-load the bunker path to halve the initial size.
+The ESM entry is approx **5.9 KB gzipped** before bundling dependencies. The standalone IIFE is approx **114.7 KB gzipped** because it includes NIP-46, Signet QR/relay support, and camera QR decoding. A future split-bundle could lazy-load advanced signer paths for smaller first-load pages.
 
 ## Browser support
 
@@ -207,9 +277,12 @@ npm test            # vitest in jsdom
 
 Examples in `examples/`:
 - `basic.html` — full demo with login / sign / logout / restore
+- `headless.html` — custom UI demo using signer constructors and proof helpers
 - `callback.html` — redirect-back receiver page
 
-Build the IIFE bundle first, then serve the repo root with any static server and open `examples/basic.html`.
+Build the IIFE bundle first, then serve the repo root with any static server and open `examples/basic.html` or `examples/headless.html`.
+
+See [docs/competitive-audit.md](docs/competitive-audit.md) for the current competitor comparison and roadmap priorities.
 
 ## Out of scope
 
