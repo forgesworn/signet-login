@@ -7,7 +7,21 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { hasNip07, createNip07Signer, Nip07Signer, EphemeralSigner, createLocalSignerFromNsec, LocalSigner, buildNostrConnectUri, DeferredBunkerSigner, type BunkerSignerImpl } from '../src/signers.js';
+import {
+  hasNip07,
+  createNip07Signer,
+  Nip07Signer,
+  EphemeralSigner,
+  createLocalSignerFromNsec,
+  LocalSigner,
+  buildNostrConnectUri,
+  buildBunkerUriFromNostrConnectUri,
+  isBunkerUri,
+  isNostrConnectUri,
+  isSupportedPairingUri,
+  DeferredBunkerSigner,
+  type BunkerSignerImpl,
+} from '../src/signers.js';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
 
@@ -333,5 +347,65 @@ describe('buildNostrConnectUri', () => {
     expect(() =>
       buildNostrConnectUri({ clientPubkeyHex: validPubkey, relayUrl: 'http://r', secret: 's' }),
     ).toThrow(/invalid-relay-url/);
+  });
+});
+
+describe('buildBunkerUriFromNostrConnectUri', () => {
+  const clientPubkey = 'a'.repeat(64);
+  const signerPubkey = 'B'.repeat(64);
+
+  it('normalizes app-generated nostrconnect:// into signer-published bunker://', () => {
+    const nostrConnectUri = buildNostrConnectUri({
+      clientPubkeyHex: clientPubkey,
+      relayUrls: ['wss://relay-one.example', 'wss://relay-two.example'],
+      secret: 'pair-secret',
+      perms: ['sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+      appName: 'Test App',
+      appUrl: 'https://app.example',
+    });
+
+    const bunkerUri = buildBunkerUriFromNostrConnectUri(nostrConnectUri, signerPubkey);
+    const parsed = new URL(bunkerUri);
+
+    expect(bunkerUri).toMatch(/^bunker:\/\/b{64}\?/);
+    expect(parsed.searchParams.getAll('relay')).toEqual([
+      'wss://relay-one.example',
+      'wss://relay-two.example',
+    ]);
+    expect(parsed.searchParams.get('secret')).toBe('pair-secret');
+    expect(parsed.searchParams.has('perms')).toBe(false);
+    expect(parsed.searchParams.has('name')).toBe(false);
+    expect(parsed.searchParams.has('url')).toBe(false);
+  });
+
+  it('rejects non-nostrconnect input', () => {
+    expect(() =>
+      buildBunkerUriFromNostrConnectUri('bunker://' + clientPubkey + '?relay=wss://relay.example', signerPubkey),
+    ).toThrow(/invalid-nostrconnect-uri/);
+  });
+
+  it('rejects invalid signer pubkeys', () => {
+    const nostrConnectUri = buildNostrConnectUri({
+      clientPubkeyHex: clientPubkey,
+      relayUrl: 'wss://relay.example',
+      secret: 's',
+    });
+    expect(() => buildBunkerUriFromNostrConnectUri(nostrConnectUri, 'not-hex')).toThrow(/invalid-signer-pubkey/);
+  });
+
+  it('rejects nostrconnect URIs without relays', () => {
+    expect(() =>
+      buildBunkerUriFromNostrConnectUri(`nostrconnect://${clientPubkey}?secret=s`, signerPubkey),
+    ).toThrow(/relay-url-required/);
+  });
+});
+
+describe('pairing URI helpers', () => {
+  it('classifies bunker and nostrconnect URIs', () => {
+    expect(isBunkerUri(' bunker://abc ')).toBe(true);
+    expect(isNostrConnectUri(' nostrconnect://abc ')).toBe(true);
+    expect(isSupportedPairingUri('bunker://abc')).toBe(true);
+    expect(isSupportedPairingUri('nostrconnect://abc')).toBe(true);
+    expect(isSupportedPairingUri('nsec1abc')).toBe(false);
   });
 });

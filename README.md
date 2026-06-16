@@ -164,8 +164,21 @@ await fetch('/api/login', {
 });
 ```
 
-Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
+Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
 The IIFE bundle attaches the same helpers to `window.Signet`.
+
+### NostrConnect and bunker roles
+
+NIP-46 has two URI directions:
+
+| URI | Producer | Consumer | Use |
+|---|---|---|---|
+| `nostrconnect://...` | The app / Signet Access client | Signer app scans or opens it | First pairing, where the app advertises its client pubkey, relays, requested permissions, and one-time secret |
+| `bunker://...` | The signer / bunker | App connects to it | Reconnect, paste/scan bunker flows, native clients, and persisted sessions |
+
+`createBunkerSignerFromNostrConnect()` waits for the signer response and then stores the equivalent `bunker://` reconnect URI internally, preserving the relay list and secret. This matters for apps such as Canary, Pallasite, and Axenstax: the user can pair once with NostrConnect, then `restoreSession()` can reconnect with the same stable client key instead of showing a fresh pairing request.
+
+Signet Access is the app-side session broker. Identity creation, recovery, and derived personas belong in Signet, Heartwood, and `nsec-tree`; app integrations should consume the returned pubkey and capability flags instead of deriving identities inside the login SDK.
 
 ### Custom storage
 

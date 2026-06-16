@@ -153,7 +153,8 @@ export async function createBunkerSignerFromNostrConnect(input: {
     throw new Error('invalid-pubkey-from-bunker');
   }
 
-  return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, uri, clientSecretKey);
+  const normalizedBunkerUri = buildBunkerUriFromNostrConnectUri(uri, pubkey);
+  return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 
 /**
@@ -190,6 +191,49 @@ export function buildNostrConnectUri(input: {
 }
 
 /**
+ * Convert an app-generated `nostrconnect://` pairing URI into the equivalent
+ * signer-published `bunker://` reconnect URI once the signer pubkey is known.
+ *
+ * `nostrconnect://` is a one-time app-to-signer invitation; it only contains
+ * the client pubkey. After the signer responds, future restores should use
+ * `bunker://signerPubkey?...` with the same relays and secret.
+ */
+export function buildBunkerUriFromNostrConnectUri(nostrConnectUri: string, signerPubkeyHex: string): string {
+  if (!/^[0-9a-f]{64}$/i.test(signerPubkeyHex)) throw new Error('invalid-signer-pubkey');
+  let parsed: URL;
+  try {
+    parsed = new URL(nostrConnectUri);
+  } catch {
+    throw new Error('invalid-nostrconnect-uri');
+  }
+  if (parsed.protocol !== 'nostrconnect:') throw new Error('invalid-nostrconnect-uri');
+
+  const relays = parsed.searchParams.getAll('relay').map(relay => relay.trim()).filter(Boolean);
+  if (relays.length === 0) throw new Error('relay-url-required');
+  for (const relayUrl of relays) {
+    if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
+  }
+
+  const secret = parsed.searchParams.get('secret');
+  const params = new URLSearchParams();
+  for (const relayUrl of relays) params.append('relay', relayUrl);
+  if (secret) params.set('secret', secret);
+  return `bunker://${signerPubkeyHex.toLowerCase()}?${params.toString()}`;
+}
+
+export function isBunkerUri(value: string): boolean {
+  return value.trim().toLowerCase().startsWith('bunker://');
+}
+
+export function isNostrConnectUri(value: string): boolean {
+  return value.trim().toLowerCase().startsWith('nostrconnect://');
+}
+
+export function isSupportedPairingUri(value: string): boolean {
+  return isBunkerUri(value) || isNostrConnectUri(value);
+}
+
+/**
  * Race a bunker handshake against a deadline. nostr-tools' `BunkerSigner`
  * `sendRequest` has no per-request timeout — it publishes the request and only
  * settles when a matching response arrives on the subscription. If the remote
@@ -220,11 +264,11 @@ async function raceBunkerHandshake<T>(
 }
 
 /**
- * Connect a bunker session from a `bunker://` or `nostr+connect://` URI (or a
- * NIP-05 identifier). Pass `clientSecretKey` to bind a stable client pubkey the
- * signer can auto-approve (see `loadOrCreatePersistentClientSk`); when omitted a
- * fresh ephemeral key is generated, which a per-pubkey-approving bunker will
- * treat as a new, unapproved client.
+ * Connect a bunker session from a `bunker://` URI or NIP-05 identifier. Pass
+ * `clientSecretKey` to bind a stable client pubkey the signer can auto-approve
+ * (see `loadOrCreatePersistentClientSk`); when omitted a fresh ephemeral key is
+ * generated, which a per-pubkey-approving bunker will treat as a new,
+ * unapproved client.
  */
 export async function createBunkerSigner(input: {
   uri: string;
