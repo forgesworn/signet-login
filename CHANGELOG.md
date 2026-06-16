@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.2 (2026-06-16)
+
+### Changed
+
+- restore Local Signet and Remote Signet as first-class picker method names, while keeping `redirect` and `qr` as backwards-compatible aliases
+
 ## 0.10.1 (2026-06-16)
 
 ### Features
