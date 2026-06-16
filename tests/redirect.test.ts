@@ -15,11 +15,13 @@ import {
 } from '../src/redirect.js';
 import {
   savePendingRedirect,
+  savePendingRedirectToStorage,
   loadPendingRedirect,
   clearPendingRedirect,
   loadSession,
+  loadSessionFromStorage,
 } from '../src/storage.js';
-import { STORAGE_KEYS, PENDING_REDIRECT_TTL_MS } from '../src/types.js';
+import { STORAGE_KEYS, PENDING_REDIRECT_TTL_MS, type SignetStorage } from '../src/types.js';
 import { handleRedirectCallback } from '../src/signet-login.js';
 
 const ORIGIN = 'https://pallasite.example';
@@ -42,6 +44,21 @@ const EVENT_ID = 'd'.repeat(64);
  * cleanup.
  */
 const JSDOM_ORIGIN = window.location.origin;
+
+function memoryStorage(): SignetStorage {
+  const data = new Map<string, string>();
+  return {
+    async getItem(key: string) {
+      return data.get(key) ?? null;
+    },
+    async setItem(key: string, value: string) {
+      data.set(key, value);
+    },
+    async removeItem(key: string) {
+      data.delete(key);
+    },
+  };
+}
 
 function setLocation(search: string): void {
   const fullSearch = search.startsWith('?') ? search : (search ? `?${search}` : '');
@@ -277,6 +294,26 @@ describe('handleRedirectCallback', () => {
     const result = await handleRedirectCallback();
     expect(result.kind).toBe('denied');
     expect(loadSession()).toBeNull();
+  });
+
+  it('uses custom storage for pending state and persisted sessions', async () => {
+    const storage = memoryStorage();
+    await savePendingRedirectToStorage({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    }, storage);
+    const t = Math.floor(Date.now() / 1000);
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}&t=${t}`);
+
+    const result = await handleRedirectCallback({ storage });
+    expect(result.kind).toBe('session');
+    expect(loadSession()).toBeNull();
+
+    const persisted = await loadSessionFromStorage(storage);
+    expect(persisted?.pubkey).toBe(PUBKEY);
+    expect(persisted?.method).toBe('redirect');
   });
 });
 

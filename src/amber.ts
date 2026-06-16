@@ -19,14 +19,17 @@
  */
 import type {
   PendingRedirect,
+  SignetStorage,
   SignetAuthEvent,
   SignetSession,
 } from './types.js';
 import { PENDING_REDIRECT_TTL_MS } from './types.js';
 import {
   clearPendingRedirect,
+  clearPendingRedirectFromStorage,
   loadPendingRedirect,
-  savePendingRedirect,
+  loadPendingRedirectFromStorage,
+  savePendingRedirectToStorage,
 } from './storage.js';
 import { EphemeralSigner } from './signers.js';
 
@@ -45,6 +48,7 @@ export interface AmberStartOptions {
   origin: string;
   /** Optional override for the callback URL. Defaults to current page origin. */
   redirectCallback?: string;
+  storage?: SignetStorage;
 }
 
 /**
@@ -100,7 +104,7 @@ export function buildAmberSignerUrl(opts: AmberStartOptions): string {
  * web URL handled by signet-app. The promise never resolves — the page is
  * gone before it can.
  */
-export function startAmberSignIn(opts: AmberStartOptions): Promise<never> {
+export async function startAmberSignIn(opts: AmberStartOptions): Promise<never> {
   if (typeof window === 'undefined') {
     throw new Error('signet-login: amber mode requires a browser environment');
   }
@@ -110,7 +114,7 @@ export function startAmberSignIn(opts: AmberStartOptions): Promise<never> {
     appName: opts.appName,
     createdAt: Date.now(),
   };
-  savePendingRedirect(pending);
+  await savePendingRedirectToStorage(pending, opts.storage);
   window.location.href = buildAmberSignerUrl(opts);
   return new Promise<never>(() => { /* never resolves */ });
 }
@@ -140,30 +144,28 @@ export type ConsumeAmberResult =
   | { kind: 'no-callback' }
   | { kind: 'invalid'; reason: string };
 
+type ConsumeAmberFinalizer = <T extends ConsumeAmberResult>(result: T) => T | Promise<T>;
+
 /**
  * Consume an Amber callback. Detects `?event=<base64-or-json>` (or the
  * `signet_amber=1` flag) on the URL and reconstructs a session. Idempotent:
  * a second call after a successful consume returns 'no-callback' because
  * the params have been stripped.
  */
-export function consumeAmberCallback(): ConsumeAmberResult {
+function consumeAmberCallbackWithPending(
+  pending: PendingRedirect | null,
+  finalize: ConsumeAmberFinalizer,
+): ConsumeAmberResult | Promise<ConsumeAmberResult> {
   if (typeof window === 'undefined') return { kind: 'no-callback' };
 
   const params = new URLSearchParams(window.location.search);
   const flagged = params.has('signet_amber') || params.has('event');
   if (!flagged) return { kind: 'no-callback' };
 
-  const finalize = <T extends ConsumeAmberResult>(result: T): T => {
-    clearPendingRedirect();
-    cleanupAmberCallbackUrl();
-    return result;
-  };
-
   if (params.get('error') === 'denied') {
     return finalize({ kind: 'denied' });
   }
 
-  const pending = loadPendingRedirect();
   if (!pending) {
     return finalize({ kind: 'invalid', reason: 'no-pending-state' });
   }
@@ -237,4 +239,22 @@ export function consumeAmberCallback(): ConsumeAmberResult {
   };
 
   return finalize({ kind: 'session', session });
+}
+
+export function consumeAmberCallback(): ConsumeAmberResult {
+  const finalize = <T extends ConsumeAmberResult>(result: T): T => {
+    clearPendingRedirect();
+    cleanupAmberCallbackUrl();
+    return result;
+  };
+  return consumeAmberCallbackWithPending(loadPendingRedirect(), finalize) as ConsumeAmberResult;
+}
+
+export async function consumeAmberCallbackFromStorage(storage?: SignetStorage): Promise<ConsumeAmberResult> {
+  const finalize = async <T extends ConsumeAmberResult>(result: T): Promise<T> => {
+    await clearPendingRedirectFromStorage(storage);
+    cleanupAmberCallbackUrl();
+    return result;
+  };
+  return await consumeAmberCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
 }

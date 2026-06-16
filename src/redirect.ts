@@ -29,14 +29,17 @@
 
 import type {
   PendingRedirect,
+  SignetStorage,
   SignetAuthEvent,
   SignetSession,
 } from './types.js';
 import { DEFAULTS, PENDING_REDIRECT_TTL_MS } from './types.js';
 import {
   clearPendingRedirect,
+  clearPendingRedirectFromStorage,
   loadPendingRedirect,
-  savePendingRedirect,
+  loadPendingRedirectFromStorage,
+  savePendingRedirectToStorage,
 } from './storage.js';
 import { EphemeralSigner } from './signers.js';
 
@@ -47,6 +50,7 @@ export interface RedirectStartOptions {
   origin: string;
   signetAppOrigin: string;
   redirectCallback?: string;
+  storage?: SignetStorage;
 }
 
 /** Hex regexes — kept local to avoid pulling in @noble for two patterns. */
@@ -80,7 +84,7 @@ export function buildRedirectAuthUrl(opts: RedirectStartOptions): string {
  * mode in non-browser code is a programming error, not something to silently
  * swallow.
  */
-export function startRedirect(opts: RedirectStartOptions): Promise<never> {
+export async function startRedirect(opts: RedirectStartOptions): Promise<never> {
   if (typeof window === 'undefined') {
     throw new Error('signet-login: redirect mode requires a browser environment');
   }
@@ -90,7 +94,7 @@ export function startRedirect(opts: RedirectStartOptions): Promise<never> {
     appName: opts.appName,
     createdAt: Date.now(),
   };
-  savePendingRedirect(pending);
+  await savePendingRedirectToStorage(pending, opts.storage);
   const url = buildRedirectAuthUrl(opts);
   // Use assignment (not replace) so the user can hit back to abort. The
   // pending record stays put; consumeCallback will GC it via the freshness
@@ -164,7 +168,12 @@ export type ConsumeCallbackResult =
  * Idempotent: calling it twice on the same loaded page returns 'no-callback'
  * the second time because the URL params have been stripped.
  */
-export function consumeCallback(): ConsumeCallbackResult {
+type ConsumeCallbackFinalizer = <T extends ConsumeCallbackResult>(result: T) => T | Promise<T>;
+
+function consumeCallbackWithPending(
+  pending: PendingRedirect | null,
+  finalize: ConsumeCallbackFinalizer,
+): ConsumeCallbackResult | Promise<ConsumeCallbackResult> {
   if (typeof window === 'undefined') return { kind: 'no-callback' };
 
   const params = new URLSearchParams(window.location.search);
@@ -177,16 +186,6 @@ export function consumeCallback(): ConsumeCallbackResult {
   if (!error && !pubkey && !signature && !eventId) {
     return { kind: 'no-callback' };
   }
-
-  const pending = loadPendingRedirect();
-
-  // From here on we're handling a callback — pending state must always be
-  // cleared on exit so a stale record can't be reused.
-  const finalize = <T extends ConsumeCallbackResult>(result: T): T => {
-    clearPendingRedirect();
-    cleanupCallbackUrl();
-    return result;
-  };
 
   if (error === 'denied') {
     return finalize({ kind: 'denied' });
@@ -305,6 +304,26 @@ export function consumeCallback(): ConsumeCallbackResult {
   }
 
   return finalize(bunkerUri ? { kind: 'session', session, bunkerUri } : { kind: 'session', session });
+}
+
+export function consumeCallback(): ConsumeCallbackResult {
+  // From here on we're handling a callback — pending state must always be
+  // cleared on exit so a stale record can't be reused.
+  const finalize = <T extends ConsumeCallbackResult>(result: T): T => {
+    clearPendingRedirect();
+    cleanupCallbackUrl();
+    return result;
+  };
+  return consumeCallbackWithPending(loadPendingRedirect(), finalize) as ConsumeCallbackResult;
+}
+
+export async function consumeCallbackFromStorage(storage?: SignetStorage): Promise<ConsumeCallbackResult> {
+  const finalize = async <T extends ConsumeCallbackResult>(result: T): Promise<T> => {
+    await clearPendingRedirectFromStorage(storage);
+    cleanupCallbackUrl();
+    return result;
+  };
+  return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
 }
 
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid

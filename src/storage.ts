@@ -5,7 +5,7 @@
  * with `signet:verify.*` or any future Signet SDK.
  */
 
-import type { LoginMethod, PendingRedirect, SignetAuthEvent } from './types.js';
+import type { LoginMethod, PendingRedirect, SignetAuthEvent, SignetStorage } from './types.js';
 import { STORAGE_KEYS } from './types.js';
 
 /** Raw shape of a persisted session — flat string fields, JSON for the auth event. */
@@ -43,27 +43,87 @@ function safeRemove(key: string): void {
   }
 }
 
+async function safeGetFrom(storage: SignetStorage | undefined, key: string): Promise<string | null> {
+  if (!storage) return safeGet(key);
+  try {
+    return await storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+async function safeSetTo(storage: SignetStorage | undefined, key: string, value: string): Promise<void> {
+  if (!storage) {
+    safeSet(key, value);
+    return;
+  }
+  try {
+    await storage.setItem(key, value);
+  } catch {
+    // Custom storage may be unavailable/quota-limited. Match localStorage's
+    // best-effort behaviour and avoid failing the login itself.
+  }
+}
+
+async function safeRemoveFrom(storage: SignetStorage | undefined, key: string): Promise<void> {
+  if (!storage) {
+    safeRemove(key);
+    return;
+  }
+  try {
+    await storage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
 /** Save a session. Caller must serialise authEvent to JSON. */
 export function saveSession(s: PersistedSession): void {
   safeSet(STORAGE_KEYS.pubkey, s.pubkey);
   safeSet(STORAGE_KEYS.method, s.method);
   safeSet(STORAGE_KEYS.authEvent, s.authEventJson);
   if (s.bunkerUri !== undefined) safeSet(STORAGE_KEYS.bunkerUri, s.bunkerUri);
+  else safeRemove(STORAGE_KEYS.bunkerUri);
   if (s.bunkerClientSkHex !== undefined) safeSet(STORAGE_KEYS.bunkerClientSk, s.bunkerClientSkHex);
+  else safeRemove(STORAGE_KEYS.bunkerClientSk);
   if (s.expiresAt !== undefined) safeSet(STORAGE_KEYS.expiresAt, String(s.expiresAt));
+  else safeRemove(STORAGE_KEYS.expiresAt);
   if (s.displayName !== undefined) safeSet(STORAGE_KEYS.displayName, s.displayName);
+  else safeRemove(STORAGE_KEYS.displayName);
 }
 
-/** Load a session if one is present. Returns null if no session or it's malformed. */
-export function loadSession(): PersistedSession | null {
-  const pubkey = safeGet(STORAGE_KEYS.pubkey);
-  const method = safeGet(STORAGE_KEYS.method) as LoginMethod | null;
-  const authEventJson = safeGet(STORAGE_KEYS.authEvent);
+/** Async-storage variant of `saveSession`. */
+export async function saveSessionToStorage(s: PersistedSession, storage?: SignetStorage): Promise<void> {
+  await safeSetTo(storage, STORAGE_KEYS.pubkey, s.pubkey);
+  await safeSetTo(storage, STORAGE_KEYS.method, s.method);
+  await safeSetTo(storage, STORAGE_KEYS.authEvent, s.authEventJson);
+  if (s.bunkerUri !== undefined) await safeSetTo(storage, STORAGE_KEYS.bunkerUri, s.bunkerUri);
+  else await safeRemoveFrom(storage, STORAGE_KEYS.bunkerUri);
+  if (s.bunkerClientSkHex !== undefined) await safeSetTo(storage, STORAGE_KEYS.bunkerClientSk, s.bunkerClientSkHex);
+  else await safeRemoveFrom(storage, STORAGE_KEYS.bunkerClientSk);
+  if (s.expiresAt !== undefined) await safeSetTo(storage, STORAGE_KEYS.expiresAt, String(s.expiresAt));
+  else await safeRemoveFrom(storage, STORAGE_KEYS.expiresAt);
+  if (s.displayName !== undefined) await safeSetTo(storage, STORAGE_KEYS.displayName, s.displayName);
+  else await safeRemoveFrom(storage, STORAGE_KEYS.displayName);
+}
+
+interface LoadedSessionValues {
+  pubkey: string | null;
+  method: string | null;
+  authEventJson: string | null;
+  bunkerUri: string | null;
+  bunkerClientSkHex: string | null;
+  expiresAtRaw: string | null;
+  displayName: string | null;
+}
+
+function shapeSession(values: LoadedSessionValues): PersistedSession | null {
+  const { pubkey, authEventJson } = values;
+  const method = values.method as LoginMethod | null;
   if (!pubkey || !method || !authEventJson) return null;
   if (!/^[0-9a-f]{64}$/i.test(pubkey)) return null;
   if (method !== 'nip07' && method !== 'redirect' && method !== 'bunker' && method !== 'amber') return null;
 
-  // Sanity-parse the auth event before returning
   let authEvent: SignetAuthEvent;
   try {
     authEvent = JSON.parse(authEventJson);
@@ -73,22 +133,52 @@ export function loadSession(): PersistedSession | null {
     return null;
   }
 
-  const expiresAtRaw = safeGet(STORAGE_KEYS.expiresAt);
-  const expiresAt = expiresAtRaw ? Number(expiresAtRaw) : undefined;
-  if (expiresAt !== undefined && Number.isFinite(expiresAt) && Date.now() > expiresAt) {
-    // Session expired — drop it
+  const expiresAt = values.expiresAtRaw ? Number(values.expiresAtRaw) : undefined;
+  if (expiresAt !== undefined && !Number.isFinite(expiresAt)) return null;
+
+  const result: PersistedSession = { pubkey, method, authEventJson };
+  if (values.bunkerUri) result.bunkerUri = values.bunkerUri;
+  if (values.bunkerClientSkHex) result.bunkerClientSkHex = values.bunkerClientSkHex;
+  if (expiresAt !== undefined) result.expiresAt = expiresAt;
+  if (values.displayName) result.displayName = values.displayName;
+  return result;
+}
+
+/** Load a session if one is present. Returns null if no session or it's malformed. */
+export function loadSession(): PersistedSession | null {
+  const result = shapeSession({
+    pubkey: safeGet(STORAGE_KEYS.pubkey),
+    method: safeGet(STORAGE_KEYS.method),
+    authEventJson: safeGet(STORAGE_KEYS.authEvent),
+    bunkerUri: safeGet(STORAGE_KEYS.bunkerUri),
+    bunkerClientSkHex: safeGet(STORAGE_KEYS.bunkerClientSk),
+    expiresAtRaw: safeGet(STORAGE_KEYS.expiresAt),
+    displayName: safeGet(STORAGE_KEYS.displayName),
+  });
+  if (!result) return null;
+  if (result.expiresAt !== undefined && Date.now() > result.expiresAt) {
     clearSession();
     return null;
   }
+  return result;
+}
 
-  const result: PersistedSession = { pubkey, method, authEventJson };
-  const bunkerUri = safeGet(STORAGE_KEYS.bunkerUri);
-  const bunkerClientSkHex = safeGet(STORAGE_KEYS.bunkerClientSk);
-  const displayName = safeGet(STORAGE_KEYS.displayName);
-  if (bunkerUri) result.bunkerUri = bunkerUri;
-  if (bunkerClientSkHex) result.bunkerClientSkHex = bunkerClientSkHex;
-  if (expiresAt !== undefined && Number.isFinite(expiresAt)) result.expiresAt = expiresAt;
-  if (displayName) result.displayName = displayName;
+/** Async-storage variant of `loadSession`. */
+export async function loadSessionFromStorage(storage?: SignetStorage): Promise<PersistedSession | null> {
+  const result = shapeSession({
+    pubkey: await safeGetFrom(storage, STORAGE_KEYS.pubkey),
+    method: await safeGetFrom(storage, STORAGE_KEYS.method),
+    authEventJson: await safeGetFrom(storage, STORAGE_KEYS.authEvent),
+    bunkerUri: await safeGetFrom(storage, STORAGE_KEYS.bunkerUri),
+    bunkerClientSkHex: await safeGetFrom(storage, STORAGE_KEYS.bunkerClientSk),
+    expiresAtRaw: await safeGetFrom(storage, STORAGE_KEYS.expiresAt),
+    displayName: await safeGetFrom(storage, STORAGE_KEYS.displayName),
+  });
+  if (!result) return null;
+  if (result.expiresAt !== undefined && Date.now() > result.expiresAt) {
+    await clearSessionFromStorage(storage);
+    return null;
+  }
   return result;
 }
 
@@ -107,6 +197,17 @@ export function clearSession(): void {
   safeRemove(STORAGE_KEYS.bunkerClientSk);
   safeRemove(STORAGE_KEYS.expiresAt);
   safeRemove(STORAGE_KEYS.displayName);
+}
+
+/** Async-storage variant of `clearSession`. */
+export async function clearSessionFromStorage(storage?: SignetStorage): Promise<void> {
+  await safeRemoveFrom(storage, STORAGE_KEYS.pubkey);
+  await safeRemoveFrom(storage, STORAGE_KEYS.method);
+  await safeRemoveFrom(storage, STORAGE_KEYS.authEvent);
+  await safeRemoveFrom(storage, STORAGE_KEYS.bunkerUri);
+  await safeRemoveFrom(storage, STORAGE_KEYS.bunkerClientSk);
+  await safeRemoveFrom(storage, STORAGE_KEYS.expiresAt);
+  await safeRemoveFrom(storage, STORAGE_KEYS.displayName);
 }
 
 /**
@@ -135,9 +236,30 @@ export function loadOrCreatePersistentClientSk(): Uint8Array {
   return sk;
 }
 
+/** Async-storage variant of `loadOrCreatePersistentClientSk`. */
+export async function loadOrCreatePersistentClientSkFromStorage(storage?: SignetStorage): Promise<Uint8Array> {
+  const existing = await safeGetFrom(storage, STORAGE_KEYS.clientSk);
+  if (existing && /^[0-9a-f]{64}$/i.test(existing)) {
+    try {
+      return hexToBytesLocal(existing);
+    } catch {
+      // Corrupt value — fall through and regenerate.
+    }
+  }
+  const sk = new Uint8Array(32);
+  crypto.getRandomValues(sk);
+  await safeSetTo(storage, STORAGE_KEYS.clientSk, bytesToHexLocal(sk));
+  return sk;
+}
+
 /** Forget the persistent client key, forcing a fresh one on next connect. */
 export function clearPersistentClientSk(): void {
   safeRemove(STORAGE_KEYS.clientSk);
+}
+
+/** Async-storage variant of `clearPersistentClientSk`. */
+export async function clearPersistentClientSkFromStorage(storage?: SignetStorage): Promise<void> {
+  await safeRemoveFrom(storage, STORAGE_KEYS.clientSk);
 }
 
 // ── Pending-redirect persistence ──────────────────────────────────────────────
@@ -154,9 +276,12 @@ export function savePendingRedirect(p: PendingRedirect): void {
   safeSet(STORAGE_KEYS.pendingRedirect, JSON.stringify(p));
 }
 
-/** Load and shape-validate the pending redirect. Returns null if absent or malformed. */
-export function loadPendingRedirect(): PendingRedirect | null {
-  const raw = safeGet(STORAGE_KEYS.pendingRedirect);
+/** Async-storage variant of `savePendingRedirect`. */
+export async function savePendingRedirectToStorage(p: PendingRedirect, storage?: SignetStorage): Promise<void> {
+  await safeSetTo(storage, STORAGE_KEYS.pendingRedirect, JSON.stringify(p));
+}
+
+function shapePendingRedirect(raw: string | null): PendingRedirect | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -174,9 +299,24 @@ export function loadPendingRedirect(): PendingRedirect | null {
   }
 }
 
+/** Load and shape-validate the pending redirect. Returns null if absent or malformed. */
+export function loadPendingRedirect(): PendingRedirect | null {
+  return shapePendingRedirect(safeGet(STORAGE_KEYS.pendingRedirect));
+}
+
+/** Async-storage variant of `loadPendingRedirect`. */
+export async function loadPendingRedirectFromStorage(storage?: SignetStorage): Promise<PendingRedirect | null> {
+  return shapePendingRedirect(await safeGetFrom(storage, STORAGE_KEYS.pendingRedirect));
+}
+
 /** Clear the pending-redirect record. Safe to call when none exists. */
 export function clearPendingRedirect(): void {
   safeRemove(STORAGE_KEYS.pendingRedirect);
+}
+
+/** Async-storage variant of `clearPendingRedirect`. */
+export async function clearPendingRedirectFromStorage(storage?: SignetStorage): Promise<void> {
+  await safeRemoveFrom(storage, STORAGE_KEYS.pendingRedirect);
 }
 
 // ── Hex helpers (avoid pulling in @noble for two functions) ───────────────────

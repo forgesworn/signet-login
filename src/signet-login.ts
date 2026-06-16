@@ -26,6 +26,7 @@ export type {
   SignetSession,
   LoginOptions,
   RestoreOptions,
+  SignetStorage,
 } from './types.js';
 
 import type {
@@ -34,10 +35,17 @@ import type {
   RestoreOptions,
   SignetSession,
   SignetAuthEvent,
+  SignetStorage,
 } from './types.js';
 import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
-import { saveSession, loadSession, clearSession, bytesToHexLocal, loadOrCreatePersistentClientSk } from './storage.js';
+import {
+  saveSessionToStorage,
+  loadSessionFromStorage,
+  clearSessionFromStorage,
+  bytesToHexLocal,
+  loadOrCreatePersistentClientSkFromStorage,
+} from './storage.js';
 import {
   hasNip07,
   createNip07Signer,
@@ -52,10 +60,10 @@ import {
   BunkerSignerImpl,
   LocalSigner,
 } from './signers.js';
-import { consumeAmberCallback, type ConsumeAmberResult } from './amber.js';
+import { consumeAmberCallbackFromStorage, type ConsumeAmberResult } from './amber.js';
 
 import { handleCallback as handlePopupCallback } from './callback.js';
-import { consumeCallback, startRedirect } from './redirect.js';
+import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
 import type { ConsumeCallbackResult } from './redirect.js';
 export type { CallbackResult } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
@@ -93,6 +101,11 @@ export interface HandleRedirectCallbackOptions {
    * should set this true and reject auth-only returns at their boundary.
    */
   waitForBunker?: boolean;
+  /**
+   * Storage backend for pending redirect consumption and session persistence.
+   * Must match the backend passed to `login({ mode: 'redirect', storage })`.
+   */
+  storage?: SignetStorage;
 }
 
 export interface CreateLoginAuthEventOptions {
@@ -102,6 +115,11 @@ export interface CreateLoginAuthEventOptions {
   challenge?: string;
   /** Origin to bind into the proof. Defaults to `window.location.origin`. */
   origin?: string;
+}
+
+export interface LogoutOptions {
+  /** Storage backend to clear. Defaults to localStorage. */
+  storage?: SignetStorage;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -136,6 +154,7 @@ export async function login(opts: LoginOptions): Promise<SignetSession | null> {
       origin: window.location.origin,
       signetAppOrigin: opts.signetAppOrigin ?? DEFAULTS.signetAppOrigin,
       ...(opts.redirectCallback !== undefined ? { redirectCallback: opts.redirectCallback } : {}),
+      ...(opts.storage !== undefined ? { storage: opts.storage } : {}),
     });
   }
 
@@ -143,7 +162,7 @@ export async function login(opts: LoginOptions): Promise<SignetSession | null> {
   if (!session) return null;
 
   if (opts.persist !== false) {
-    persistSession(session);
+    await persistSession(session, opts.storage);
   }
 
   return session;
@@ -214,14 +233,14 @@ function generateChallenge(): string {
  * If the bunker is unreachable, returns null and clears the stored session.
  */
 export async function restoreSession(opts?: RestoreOptions): Promise<SignetSession | null> {
-  const stored = loadSession();
+  const stored = await loadSessionFromStorage(opts?.storage);
   if (!stored) return null;
 
   let authEvent: SignetAuthEvent;
   try {
     authEvent = JSON.parse(stored.authEventJson);
   } catch {
-    clearSession();
+    await clearSessionFromStorage(opts?.storage);
     return null;
   }
 
@@ -240,7 +259,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       const signer = await createNip07Signer();
       // Verify the same pubkey is selected — extension may have switched accounts
       if (signer.pubkey !== stored.pubkey) {
-        clearSession();
+        await clearSessionFromStorage(opts?.storage);
         return null;
       }
       return {
@@ -250,7 +269,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
         authEvent,
       };
     } catch {
-      clearSession();
+      await clearSessionFromStorage(opts?.storage);
       return null;
     }
   }
@@ -267,7 +286,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
     }
     if (!stored.bunkerUri || !stored.bunkerClientSkHex) {
       console.warn('[signet-login] restore: stored bunker session has no reconnect creds (bunkerUri/clientSk) — it was an auth-only login. Clearing.');
-      clearSession();
+      await clearSessionFromStorage(opts?.storage);
       return null;
     }
     try {
@@ -277,12 +296,12 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       // by this version the two are identical; legacy sessions converge here.
       const signer = await createBunkerSigner({
         uri: stored.bunkerUri,
-        clientSecretKey: loadOrCreatePersistentClientSk(),
+        clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts?.storage),
       });
       if (signer.pubkey !== stored.pubkey) {
         console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session', { connected: signer.pubkey, expected: stored.pubkey });
         await signer.close();
-        clearSession();
+        await clearSessionFromStorage(opts?.storage);
         return null;
       }
       return {
@@ -362,16 +381,16 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
   // signet-app's (pubkey/signature/eventId), so the order doesn't matter
   // for valid callbacks. Picking Amber first only affects the 'no-callback'
   // → 'no-callback' fall-through, where checking either side first is fine.
-  const amberResult = consumeAmberCallback();
+  const amberResult = await consumeAmberCallbackFromStorage(options.storage);
   if (amberResult.kind === 'session') {
-    persistSession(amberResult.session);
+    await persistSession(amberResult.session, options.storage);
     return amberResult;
   }
   if (amberResult.kind !== 'no-callback') {
     return amberResult;
   }
 
-  const result = consumeCallback();
+  const result = await consumeCallbackFromStorage(options.storage);
   if (result.kind !== 'session') return result;
 
   // Optional redirect-bunker upgrade. signet-app appends a `bunker://` URI
@@ -386,7 +405,7 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
     const expected = result.session.pubkey;
     const authEvent = result.session.authEvent;
     const displayName = result.session.displayName;
-    const clientSecretKey = loadOrCreatePersistentClientSk();
+    const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(options.storage);
     const upgrade: Promise<BunkerSignerImpl | null> = createBunkerSigner({
       uri: result.bunkerUri,
       clientSecretKey,
@@ -406,7 +425,7 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
         // restores a connected signer instead of an auth-only stub.
         const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
         if (displayName) liveSession.displayName = displayName;
-        persistSession(liveSession);
+        void persistSession(liveSession, options.storage);
         return bunkerSigner;
       })
       .catch((err): BunkerSignerImpl | null => {
@@ -419,7 +438,7 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
       if (bunkerSigner) {
         const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
         if (displayName) liveSession.displayName = displayName;
-        persistSession(liveSession);
+        await persistSession(liveSession, options.storage);
         return { kind: 'session', session: liveSession };
       }
     }
@@ -434,35 +453,35 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
     // Persist the deferred bunker session now so a reload mid-handshake keeps
     // the bunker URI + stable client key and restoreSession can reconnect.
     // The background upgrade re-persists with the live signer on success.
-    persistSession(session);
+    await persistSession(session, options.storage);
     return { kind: 'session', session };
   }
 
   console.warn('[signet-login] redirect login carried no bunkerUri — auth-only ephemeral (cannot sign). The signer device must enable its NIP-46 server to return a bunker:// URI.');
-  persistSession(result.session);
+  await persistSession(result.session, options.storage);
   return result;
 }
 
 /**
  * Clear the stored session and close the active signer.
  */
-export async function logout(currentSession?: SignetSession): Promise<void> {
+export async function logout(currentSession?: SignetSession, opts?: LogoutOptions): Promise<void> {
   if (currentSession) {
     try { await currentSession.signer.close(); } catch { /* ignore */ }
   }
-  clearSession();
+  await clearSessionFromStorage(opts?.storage);
 }
 
 // ── Persistence helpers (internal) ────────────────────────────────────────────
 
-function persistSession(session: SignetSession): void {
+async function persistSession(session: SignetSession, storage?: SignetStorage): Promise<void> {
   // nsec sessions are deliberately in-memory only — writing the pubkey or
   // even the method to storage would leak that this user has used a paste
   // path. Reload lands the user back on the picker, which is the contract
   // we surface in runNsecFlow's warning copy.
   if (session.method === 'nsec') return;
 
-  const payload: Parameters<typeof saveSession>[0] = {
+  const payload: Parameters<typeof saveSessionToStorage>[0] = {
     pubkey: session.pubkey,
     method: session.method,
     authEventJson: JSON.stringify(session.authEvent),
@@ -483,7 +502,7 @@ function persistSession(session: SignetSession): void {
   if (session.expiresAt !== undefined) payload.expiresAt = session.expiresAt;
   if (session.displayName !== undefined) payload.displayName = session.displayName;
 
-  saveSession(payload);
+  await saveSessionToStorage(payload, storage);
 }
 
 // ── Auto-attach to window.Signet (additive) ───────────────────────────────────

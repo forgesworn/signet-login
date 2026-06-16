@@ -76,7 +76,14 @@ interface LoginOptions {
   signetAppOrigin?: string;                     // default https://mysignet.app
   redirectCallback?: string;                    // for same-device redirect / Amber return
   mode?: 'relay' | 'redirect';                  // Signet delivery mode
-  persist?: boolean;                            // default true (localStorage)
+  storage?: SignetStorage;                      // default localStorage
+  persist?: boolean;                            // default true
+}
+
+interface SignetStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+  removeItem(key: string): void | Promise<void>;
 }
 
 type LoginPickerMethod =
@@ -148,9 +155,41 @@ await fetch('/api/login', {
 Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
 The IIFE bundle attaches the same helpers to `window.Signet`.
 
+### Custom storage
+
+By default, Signet Access stores session state in localStorage under `signet:login.*`. Pass `storage` when you need encrypted, async, IndexedDB, server-backed, or test storage:
+
+```js
+const encryptedStorage = {
+  async getItem(key) {
+    const value = localStorage.getItem(key);
+    return value ? await decrypt(value) : null;
+  },
+  async setItem(key, value) {
+    localStorage.setItem(key, await encrypt(value));
+  },
+  async removeItem(key) {
+    localStorage.removeItem(key);
+  },
+};
+
+const session = await Signet.login({
+  appName: 'My Game',
+  storage: encryptedStorage,
+});
+
+await Signet.restoreSession({ storage: encryptedStorage });
+await Signet.handleRedirectCallback({ storage: encryptedStorage });
+await Signet.logout(session, { storage: encryptedStorage });
+```
+
+Use the same storage adapter for `login`, `restoreSession`, `handleRedirectCallback`, and `logout`.
+
+This adapter is deliberately not called "Stash". `@forgesworn/stash` is the separate encrypted cloud-save vault for app data; Signet Access storage is local session/reconnect state needed before a signer is available.
+
 ### `Signet.restoreSession(opts?)`
 
-Restore a session from localStorage. For bunker sessions this attempts to reconnect to the stored bunker. Returns `null` if no session is stored, the session is malformed, or reconnection fails.
+Restore a session from configured storage. For bunker sessions this attempts to reconnect to the stored bunker. Returns `null` if no session is stored, the session is malformed, or reconnection fails.
 
 ```js
 const session = await Signet.restoreSession();
@@ -159,7 +198,7 @@ if (session?.signer.capabilities.canSignEvents) {
 }
 ```
 
-### `Signet.logout(currentSession?)`
+### `Signet.logout(currentSession?, opts?)`
 
 Clear stored session and close the active signer.
 
@@ -226,7 +265,7 @@ The verifier checks: schnorr signature, canonical event ID, kind=21236, challeng
 
 ## Storage
 
-Session data is stored in localStorage under `signet:login.*`:
+By default, session data is stored in localStorage under `signet:login.*`:
 
 | Key | Purpose |
 |---|---|
@@ -264,7 +303,7 @@ The ESM entry is approx **5.9 KB gzipped** before bundling dependencies. The sta
 
 ## Browser support
 
-ES2020 baseline. Tested on modern Chrome / Firefox / Safari. Requires `localStorage`, `crypto.subtle`, `WebSocket`, and the native `<dialog>` element.
+ES2020 baseline. Tested on modern Chrome / Firefox / Safari. Requires `crypto.subtle`, `WebSocket`, and the native `<dialog>` element. Session persistence defaults to `localStorage`, but apps can provide a custom storage adapter.
 
 ## Development
 
@@ -281,8 +320,6 @@ Examples in `examples/`:
 - `callback.html` — redirect-back receiver page
 
 Build the IIFE bundle first, then serve the repo root with any static server and open `examples/basic.html` or `examples/headless.html`.
-
-See [docs/competitive-audit.md](docs/competitive-audit.md) for the current competitor comparison and roadmap priorities.
 
 ## Out of scope
 

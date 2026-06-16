@@ -5,11 +5,11 @@
  * top-layer placement, theme-aware colours, no third-party UI deps.
  */
 
-import type { LoginOptions, SignetSession, LoginPickerMethod, SignetAuthEvent } from './types.js';
+import type { LoginOptions, SignetSession, LoginPickerMethod, SignetAuthEvent, SignetStorage } from './types.js';
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
-import { loadOrCreatePersistentClientSk } from './storage.js';
+import { loadOrCreatePersistentClientSkFromStorage } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -604,6 +604,7 @@ async function runRedirectFlow(
 async function buildSessionFromRedirectFlowResult(
   refs: ModalRefs,
   result: RedirectFlowResult,
+  opts: ResolvedOptions,
   _aborted: Promise<null>,
 ): Promise<SignetSession | null> {
   // Default: auth-only ephemeral signer (identity proof, no live signing).
@@ -617,7 +618,7 @@ async function buildSessionFromRedirectFlowResult(
   // DeferredBunkerSigner makes them classify the session as non-signing before
   // the relay handshake can finish.
   if (result.bunkerUri) {
-    const clientSecretKey = loadOrCreatePersistentClientSk();
+    const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
     const expected = result.pubkey;
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
     if (status) status.textContent = 'Connecting signer...';
@@ -749,7 +750,10 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
       }
       connectBtn.disabled = true;
       try {
-        const signer = await createBunkerSigner({ uri, clientSecretKey: loadOrCreatePersistentClientSk() });
+        const signer = await createBunkerSigner({
+          uri,
+          clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts.storage),
+        });
         settle(signer);
       } catch (err) {
         if (status) {
@@ -777,7 +781,7 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
   // Persistent client key so the advertised client pubkey is stable across
   // logins (bunkers auto-approve a bound client pubkey). The connect `secret`
   // stays fresh per handshake — it's a one-time challenge, not an identity.
-  const sk = loadOrCreatePersistentClientSk();
+  const sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
   const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
   const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
 
@@ -928,6 +932,7 @@ interface ResolvedOptions {
   timeout: number;
   signetAppOrigin: string;
   redirectCallback?: string;
+  storage?: SignetStorage;
 }
 
 function uniquePickerMethods(input: readonly LoginPickerMethod[] | undefined, fallback: readonly LoginPickerMethod[]): LoginPickerMethod[] {
@@ -976,6 +981,7 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
   };
   if (opts.preferredMethod !== undefined) result.preferredMethod = opts.preferredMethod;
   if (opts.redirectCallback !== undefined) result.redirectCallback = opts.redirectCallback;
+  if (opts.storage !== undefined) result.storage = opts.storage;
   return result;
 }
 
@@ -1054,7 +1060,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
           if (resolved.preferredMethod) return null;
           continue;
         }
-        const session = await buildSessionFromRedirectFlowResult(refs, result, aborted);
+        const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, aborted);
         if (userAborted) return null;
         if (!session) {
           if (resolved.preferredMethod) return null;
@@ -1072,6 +1078,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
           challenge: resolved.challenge,
           origin: resolved.origin,
           ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
+          ...(resolved.storage !== undefined ? { storage: resolved.storage } : {}),
         });
         return null;  // unreachable
       }
@@ -1083,7 +1090,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
           if (resolved.preferredMethod) return null;
           continue;
         }
-        const session = await buildSessionFromRedirectFlowResult(refs, result, aborted);
+        const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, aborted);
         if (userAborted) return null;
         if (!session) {
           if (resolved.preferredMethod) return null;

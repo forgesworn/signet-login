@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.1 (2026-06-16)
+
+### Features
+
+- add async `SignetStorage` adapter support for login, restore, redirect callbacks, logout, pending redirects, and the persistent NIP-46 client key
+
+### Changed
+
+- remove private research notes from public package docs
+
 ## 0.10.0 (2026-06-16)
 
 ### Features
@@ -9,7 +19,7 @@
 - emit multi-relay `nostrconnect://` URIs and configurable NIP-46 permissions
 - expose headless signer/auth helpers for custom UIs
 - add camera QR scanning for `bunker://` pairing codes when browser APIs are available
-- add a competitive audit and headless custom-UI example
+- add a headless custom-UI example
 
 
 ## 0.9.15 (2026-06-12)

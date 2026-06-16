@@ -87,6 +87,13 @@ export interface SignetSession {
  */
 export type SignetDeliveryMode = 'relay' | 'redirect';
 
+/** Key-value storage backend used for Signet Access session persistence. */
+export interface SignetStorage {
+  getItem(key: string): string | null | Promise<string | null>;
+  setItem(key: string, value: string): void | Promise<void>;
+  removeItem(key: string): void | Promise<void>;
+}
+
 /** Options for Signet.login(). */
 export interface LoginOptions {
   /** Required. Shown in the consent UI (e.g. "Asteroid Sats"). */
@@ -145,7 +152,13 @@ export interface LoginOptions {
    * `Signet.handleCallback()` on boot to receive the session on return.
    */
   mode?: SignetDeliveryMode;
-  /** Persist the session to localStorage. Default: true. */
+  /**
+   * Storage backend for sessions, pending redirects, and the persistent NIP-46
+   * client key. Defaults to localStorage. Use this for encrypted, async,
+   * server-backed, or test storage.
+   */
+  storage?: SignetStorage;
+  /** Persist the session. Default: true. */
   persist?: boolean;
 }
 
@@ -171,6 +184,11 @@ export interface RestoreOptions {
   reconnectBunker?: boolean;
   /** Default relay for bunker reconnection if URI omits it. */
   defaultRelay?: string;
+  /**
+   * Storage backend for session restore. Must match the backend passed to
+   * `login()` / `handleRedirectCallback()` if you override the default.
+   */
+  storage?: SignetStorage;
 }
 
 /** Default values applied when the consumer omits an option. */

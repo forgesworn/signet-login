@@ -4,7 +4,25 @@ import {
   createLocalSignerFromNsec,
   createLoginAuthEvent,
   createSessionFromSigner,
+  logout,
 } from '../src/signet-login.js';
+import { loadSessionFromStorage, saveSessionToStorage } from '../src/storage.js';
+import type { SignetStorage } from '../src/types.js';
+
+function memoryStorage(): SignetStorage {
+  const data = new Map<string, string>();
+  return {
+    async getItem(key: string) {
+      return data.get(key) ?? null;
+    },
+    async setItem(key: string, value: string) {
+      data.set(key, value);
+    },
+    async removeItem(key: string) {
+      data.delete(key);
+    },
+  };
+}
 
 describe('headless helpers', () => {
   const privateKeyHex = '01'.repeat(32);
@@ -45,5 +63,24 @@ describe('headless helpers', () => {
     const signer = createLocalSignerFromNsec(privateKeyHex);
     await expect(createLoginAuthEvent(signer, { appName: '', challenge })).rejects.toThrow(/appName-required/);
     await expect(createLoginAuthEvent(signer, { appName: 'Headless App', challenge: 'nope' })).rejects.toThrow(/challenge-must-be-64-hex/);
+  });
+
+  it('clears custom storage on logout', async () => {
+    const storage = memoryStorage();
+    const signer = createLocalSignerFromNsec(privateKeyHex);
+    const session = await createSessionFromSigner(signer, {
+      appName: 'Headless App',
+      challenge,
+      origin: 'https://example.com',
+    });
+    await saveSessionToStorage({
+      pubkey: session.pubkey,
+      method: 'redirect',
+      authEventJson: JSON.stringify(session.authEvent),
+    }, storage);
+
+    expect(await loadSessionFromStorage(storage)).not.toBeNull();
+    await logout(session, { storage });
+    expect(await loadSessionFromStorage(storage)).toBeNull();
   });
 });
