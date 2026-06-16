@@ -39,11 +39,11 @@ describe('same-device Signet modal flow', () => {
     document.body.innerHTML = '';
   });
 
-  it('uses relay delivery for preferredMethod=redirect so the signer tab stays alive', async () => {
+  it('uses relay delivery for preferredMethod=local-signet so the signer tab stays alive', async () => {
     const pending = login({
       appName: 'Pallasite',
       theme: 'dark',
-      preferredMethod: 'redirect',
+      preferredMethod: 'local-signet',
       relayUrl: 'wss://relay.trotters.cc',
       signetAppOrigin: 'https://mysignet.app',
       persist: false,
@@ -71,6 +71,27 @@ describe('same-device Signet modal flow', () => {
       relayUrl: 'wss://relay.trotters.cc',
       expectedOrigin: window.location.origin,
     }));
+
+    document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('keeps legacy preferredMethod=redirect as the local Signet alias', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      preferredMethod: 'redirect',
+      relayUrl: 'wss://relay.trotters.cc',
+      signetAppOrigin: 'https://mysignet.app',
+      persist: false,
+    });
+    await settleMicrotasks();
+
+    const link = document.getElementById('signet-login-open-signet') as HTMLAnchorElement | null;
+    expect(link).toBeInstanceOf(HTMLAnchorElement);
+    const url = new URL(link!.href);
+    expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
+    expect(url.searchParams.get('sessionPubkey')).toMatch(/^[0-9a-f]{64}$/);
 
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await expect(pending).resolves.toBeNull();

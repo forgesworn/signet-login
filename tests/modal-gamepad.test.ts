@@ -59,7 +59,7 @@ async function waitForActiveDialog(): Promise<HTMLDialogElement> {
 
 async function completeActiveNsecLogin(rawPrivateKeyHex: string): Promise<void> {
   // Flat desktop picker order without NIP-07/Amber:
-  // redirect, qr, bunker, nostrconnect, nsec, cancel.
+  // local-signet, remote-signet, bunker, nostrconnect, nsec, cancel.
   for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
   dispatchSyntheticKey('Enter');
   await settleMicrotasks();
@@ -102,7 +102,7 @@ describe('gamepad modal navigation', () => {
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
 
     // Default desktop picker order without NIP-07/Amber:
-    // redirect, qr, Advanced, cancel.
+    // local-signet, remote-signet, Advanced, cancel.
     for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     expect(document.activeElement?.textContent?.trim()).toBe('Cancel');
 
@@ -121,13 +121,13 @@ describe('gamepad modal navigation', () => {
     const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
     await settleMicrotasks();
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('redirect');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('local-signet');
 
     dispatchSyntheticCode('ArrowDown');
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('qr');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('remote-signet');
 
     dispatchSyntheticCode('ArrowUp');
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('redirect');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('local-signet');
 
     for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
@@ -146,7 +146,7 @@ describe('gamepad modal navigation', () => {
     await settleMicrotasks();
 
     dispatchSyntheticKey('ArrowDown');
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('qr');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('remote-signet');
 
     for (let i = 0; i < 2; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
@@ -192,7 +192,7 @@ describe('gamepad modal navigation', () => {
     dispatchSyntheticKey('Escape');
     await settleMicrotasks();
     expect(document.querySelector('#signet-login-nsec-input')).toBeNull();
-    expect(document.querySelector('[data-choice="redirect"]')).toBeInstanceOf(HTMLButtonElement);
+    expect(document.querySelector('[data-choice="local-signet"]')).toBeInstanceOf(HTMLButtonElement);
 
     // Cleanly resolve the still-open picker.
     for (let i = 0; i < 5; i++) dispatchSyntheticKey('ArrowDown');
@@ -246,6 +246,25 @@ describe('gamepad modal navigation', () => {
       appName: 'Pallasite',
       theme: 'dark',
       persist: false,
+      methods: ['remote-signet', 'local-signet'],
+      advancedMethods: [],
+    });
+    await settleMicrotasks();
+
+    const choices = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-choice]'))
+      .map(button => button.dataset.choice);
+    expect(choices).toEqual(['remote-signet', 'local-signet', 'cancel']);
+    expect(document.querySelector('[data-action="advanced"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('keeps legacy redirect and qr filters as aliases', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      persist: false,
       methods: ['qr', 'redirect'],
       advancedMethods: [],
     });
@@ -255,6 +274,29 @@ describe('gamepad modal navigation', () => {
       .map(button => button.dataset.choice);
     expect(choices).toEqual(['qr', 'redirect', 'cancel']);
     expect(document.querySelector('[data-action="advanced"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('normalizes legacy aliases when grouping advanced methods', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      persist: false,
+      methods: ['local-signet', 'remote-signet'],
+      advancedMethods: ['redirect'],
+    });
+    await settleMicrotasks();
+
+    expect(document.querySelector('[data-choice="local-signet"]')).toBeNull();
+    expect(document.querySelector('[data-choice="remote-signet"]')).toBeInstanceOf(HTMLButtonElement);
+
+    document.querySelector<HTMLButtonElement>('[data-action="advanced"]')?.click();
+    await settleMicrotasks();
+
+    expect(document.querySelector('[data-choice="local-signet"]')).toBeInstanceOf(HTMLButtonElement);
+    expect(document.querySelector('[data-choice="remote-signet"]')).toBeInstanceOf(HTMLButtonElement);
 
     document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
     await expect(pending).resolves.toBeNull();

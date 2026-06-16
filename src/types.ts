@@ -29,7 +29,12 @@ export interface EventTemplate {
 export type LoginMethod = 'nip07' | 'redirect' | 'bunker' | 'nsec' | 'amber';
 
 /** Method choices the login picker can show. Some choices resolve to the same session method. */
-export type LoginPickerMethod = LoginMethod | 'qr' | 'nostrconnect';
+export type LoginPickerMethod =
+  | LoginMethod
+  | 'local-signet'
+  | 'remote-signet'
+  | 'qr'
+  | 'nostrconnect';
 
 /** Capability flags exposed by a signer. */
 export interface SignerCapabilities {
@@ -83,7 +88,8 @@ export interface SignetSession {
  *   `Signet.handleCallback()` on boot to consume the params and resolve a
  *   session. Best for mobile / single-device flows.
  *
- * Only affects the 'redirect' login method. NIP-07 and bunker are unchanged.
+ * Only affects the Local Signet picker path (`local-signet`, legacy
+ * `redirect`). NIP-07 and bunker are unchanged.
  */
 export type SignetDeliveryMode = 'relay' | 'redirect';
 
@@ -101,8 +107,9 @@ export interface LoginOptions {
   /** Optional 64-hex challenge. Auto-generated if omitted. */
   challenge?: string;
   /**
-   * Skip the picker and force a specific method. `qr` means cross-device Signet;
-   * `nostrconnect` means app-initiated NIP-46. Both resolve to normal sessions.
+   * Skip the picker and force a specific method. `local-signet` opens Signet on
+   * this device; `remote-signet` shows a cross-device Signet QR. Legacy aliases
+   * `redirect` and `qr` still work for those two Signet paths.
    */
   preferredMethod?: LoginPickerMethod;
   /**
@@ -140,7 +147,7 @@ export interface LoginOptions {
   /**
    * Callback URL used by the same-device redirect path. Must be same-origin
    * as the calling page. Defaults to `${origin}/`. Only used when `mode` is
-   * 'redirect'.
+   * 'redirect', not by the default Local Signet relay flow.
    */
   redirectCallback?: string;
   /**

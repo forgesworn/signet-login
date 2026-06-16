@@ -20,21 +20,21 @@ import jsQR from 'jsqr';
  * Picker tokens.
  *
  *   - 'nip07'        — browser extension (Bark, Alby, nos2x, …)
- *   - 'redirect'     — Sign in with Signet on this device (relay delivery)
- *   - 'qr'           — Sign in with Signet on another device (QR + relay delivery)
+ *   - 'local-signet' — Sign in with Signet on this device (relay delivery)
+ *   - 'remote-signet' — Sign in with Signet on another device (QR + relay delivery)
  *   - 'bunker'       — paste a NIP-46 bunker URI
  *   - 'nostrconnect' — app-initiated NIP-46 URI for signer apps to scan
  *   - 'amber'        — Android NIP-55 signer handoff
  *   - 'nsec'         — local in-memory private key fallback
  *
- * `redirect` and `qr` both terminate at signet-app and publish a gift-wrapped
- * response over the relay. Keeping the consumer tab alive is important on
- * desktop: a same-tab redirect can navigate away from the signet-app page that
- * is supposed to stay up as the live NIP-46 bunker.
+ * `local-signet` and `remote-signet` both terminate at signet-app and publish
+ * a gift-wrapped response over the relay. Legacy picker values `redirect` and
+ * `qr` remain supported aliases.
  */
 type PickerChoice = LoginPickerMethod | 'cancel';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
-const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'redirect', 'qr', 'bunker', 'nostrconnect', 'nsec'];
+const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'local-signet', 'remote-signet', 'bunker', 'nostrconnect', 'nsec'];
+const ALL_PICKER_METHODS: LoginPickerMethod[] = [...DEFAULT_PICKER_METHODS, 'redirect', 'qr'];
 const DEFAULT_ADVANCED_METHODS: LoginPickerMethod[] = ['bunker', 'nostrconnect', 'nsec'];
 const DEFAULT_NOSTR_CONNECT_PERMS = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
 
@@ -305,12 +305,26 @@ async function startCameraQrScanner(input: {
 const METHOD_META: Record<LoginPickerMethod, { icon: string; title: string; hint: string }> = {
   nip07: { icon: '🌐', title: 'Browser extension', hint: 'bark, Alby, nos2x' },
   amber: { icon: '🤖', title: 'Sign in with Amber', hint: 'Android signer (NIP-55)' },
-  redirect: { icon: '🪪', title: 'Sign in with Signet', hint: 'Open Signet on this device' },
-  qr: { icon: '📱', title: 'Signet on another device', hint: 'Scan QR with your phone' },
+  'local-signet': { icon: '🪪', title: 'Local Signet', hint: 'Open Signet on this device' },
+  'remote-signet': { icon: '📱', title: 'Remote Signet', hint: 'Scan with Signet on another device' },
+  redirect: { icon: '🪪', title: 'Local Signet', hint: 'Open Signet on this device' },
+  qr: { icon: '📱', title: 'Remote Signet', hint: 'Scan with Signet on another device' },
   bunker: { icon: '🔑', title: 'Paste bunker URI', hint: 'For NIP-46 power users' },
   nostrconnect: { icon: '📡', title: 'Connect a Nostr signer', hint: 'Scan with nsec.app, Amber, Keychat...' },
   nsec: { icon: '⚠️', title: 'Paste private key', hint: 'In-memory only - risky, last resort' },
 };
+
+function pickerMethodKey(method: LoginPickerMethod): string {
+  if (method === 'local-signet' || method === 'redirect') return 'local-signet';
+  if (method === 'remote-signet' || method === 'qr') return 'remote-signet';
+  return method;
+}
+
+function routePickerChoice(choice: PickerChoice): PickerChoice {
+  if (choice === 'local-signet') return 'redirect';
+  if (choice === 'remote-signet') return 'qr';
+  return choice;
+}
 
 function isMethodAvailable(method: LoginPickerMethod): boolean {
   if (method === 'nip07') return hasNip07();
@@ -330,9 +344,9 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
   return new Promise<PickerChoice>(resolve => {
     let advancedOpen = false;
     const availableMethods = opts.methods.filter(isMethodAvailable);
-    const advancedSet = new Set(opts.advancedMethods);
-    const primaryMethods = availableMethods.filter(method => !advancedSet.has(method));
-    const advancedMethods = availableMethods.filter(method => advancedSet.has(method));
+    const advancedSet = new Set(opts.advancedMethods.map(pickerMethodKey));
+    const primaryMethods = availableMethods.filter(method => !advancedSet.has(pickerMethodKey(method)));
+    const advancedMethods = availableMethods.filter(method => advancedSet.has(pickerMethodKey(method)));
 
     const attachChoiceHandlers = (): void => {
       refs.dialog.querySelectorAll<HTMLButtonElement>('button[data-choice]').forEach(btn => {
@@ -469,7 +483,7 @@ async function runNip07Flow(
   }
 }
 
-// ── Sign in with Signet (cross-device QR + same-device redirect) ──────────────
+// ── Signet paths (Local Signet + Remote Signet relay delivery) ────────────────
 
 interface RedirectFlowResult {
   pubkey: string;
@@ -937,19 +951,24 @@ interface ResolvedOptions {
 
 function uniquePickerMethods(input: readonly LoginPickerMethod[] | undefined, fallback: readonly LoginPickerMethod[]): LoginPickerMethod[] {
   const source = input ?? fallback;
-  const allowed = new Set<LoginPickerMethod>(DEFAULT_PICKER_METHODS);
+  const allowed = new Set<LoginPickerMethod>(ALL_PICKER_METHODS);
+  const seen = new Set<string>();
   const out: LoginPickerMethod[] = [];
   for (const method of source) {
     if (!allowed.has(method)) continue;
-    if (!out.includes(method)) out.push(method);
+    const key = pickerMethodKey(method);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(method);
   }
   return input === undefined && out.length === 0 ? [...fallback] : out;
 }
 
 function resolveMethodConfig(opts: LoginOptions): ResolvedMethodConfig {
   const methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
+  const methodKeys = new Set(methods.map(pickerMethodKey));
   const advancedMethods = uniquePickerMethods(opts.advancedMethods, DEFAULT_ADVANCED_METHODS)
-    .filter(method => methods.includes(method));
+    .filter(method => methodKeys.has(pickerMethodKey(method)));
   return { methods, advancedMethods };
 }
 
@@ -1026,11 +1045,12 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       const choice = resolved.preferredMethod
         ? (resolved.preferredMethod as PickerChoice)
         : await Promise.race([renderPicker(refs, resolved), aborted]);
+      const routeChoice = choice === null ? null : routePickerChoice(choice);
 
       if (userAborted) return null;
-      if (choice === null || choice === 'cancel') return null;
+      if (routeChoice === null || routeChoice === 'cancel') return null;
 
-      if (choice === 'nip07') {
+      if (routeChoice === 'nip07') {
         const result = await Promise.race([runNip07Flow(refs, resolved), aborted]);
         if (userAborted) return null;
         if (!result) {
@@ -1049,7 +1069,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         };
       }
 
-      if (choice === 'redirect') {
+      if (routeChoice === 'redirect') {
         // Same-device Signet in the modal must keep this app tab alive and keep
         // the My Signet tab alive as the ongoing bunker. Use the relay-backed
         // auth response path here; explicit `login({ mode: 'redirect' })`
@@ -1069,7 +1089,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         return session;
       }
 
-      if (choice === 'amber') {
+      if (routeChoice === 'amber') {
         // Same-tab navigation to a `nostrsigner:` URL. Android dispatches
         // it to Amber; the page comes back via callbackUrl with the signed
         // event in `?event=`. Picked up on next boot by handleRedirectCallback.
@@ -1083,7 +1103,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         return null;  // unreachable
       }
 
-      if (choice === 'qr') {
+      if (routeChoice === 'qr') {
         const result = await Promise.race([runRedirectFlow(refs, resolved), aborted]);
         if (userAborted) return null;
         if (!result) {
@@ -1099,7 +1119,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         return session;
       }
 
-      if (choice === 'bunker') {
+      if (routeChoice === 'bunker') {
         const signer = await Promise.race([runBunkerFlow(refs, resolved), aborted]);
         if (userAborted) return null;
         if (!signer) {
@@ -1126,7 +1146,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         };
       }
 
-      if (choice === 'nostrconnect') {
+      if (routeChoice === 'nostrconnect') {
         const signer = await Promise.race([runNostrConnectFlow(refs, resolved), aborted]);
         if (userAborted) return null;
         if (!signer) {
@@ -1156,7 +1176,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         };
       }
 
-      if (choice === 'nsec') {
+      if (routeChoice === 'nsec') {
         const signer = await Promise.race([runNsecFlow(refs, resolved), aborted]);
         if (userAborted) return null;
         if (!signer) {

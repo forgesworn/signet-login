@@ -6,7 +6,8 @@ Published as `signet-login`.
 
 **Signet Access** is a drop-in auth and signer-access SDK for Nostr-aware websites. One picker, one session shape, multiple ways to prove identity and, when available, keep a live signer:
 
-- **Sign in with Signet** on this device or by cross-device QR
+- **Local Signet** on this device, against hosted or local-dev Signet
+- **Remote Signet** by cross-device QR, so a phone or second machine can approve
 - **Browser extension** via NIP-07 (bark, Alby, nos2x, Flamingo, ...)
 - **Connect a Nostr signer** via app-initiated NIP-46 / NostrConnect
 - **Paste or scan bunker URI** for Heartwood, nsecBunker, Amber, or compatible signers
@@ -88,8 +89,10 @@ interface SignetStorage {
 
 type LoginPickerMethod =
   | 'nip07'
-  | 'redirect'      // same-device Signet, relay delivery
-  | 'qr'            // cross-device Signet QR
+  | 'local-signet'  // same-device Signet, relay delivery
+  | 'remote-signet' // cross-device Signet QR
+  | 'redirect'      // legacy alias for local-signet
+  | 'qr'            // legacy alias for remote-signet
   | 'bunker'        // paste bunker://
   | 'nostrconnect'  // show nostrconnect:// QR
   | 'amber'         // Android NIP-55
@@ -110,7 +113,14 @@ By default, the picker shows ordinary user-facing methods first and groups `bunk
 ```js
 await Signet.login({
   appName: 'My Game',
-  methods: ['redirect', 'qr', 'nip07'],
+  methods: ['local-signet', 'remote-signet', 'nip07'],
+});
+
+await Signet.login({
+  appName: 'My Local Dev Game',
+  preferredMethod: 'local-signet',
+  signetAppOrigin: 'http://localhost:5174',
+  relayUrl: 'ws://localhost:7777',
 });
 
 await Signet.login({
@@ -120,6 +130,8 @@ await Signet.login({
   relayUrls: ['wss://relay.nsec.app', 'wss://relay.damus.io'],
 });
 ```
+
+`redirect` and `qr` remain supported picker aliases for existing apps, but new integrations should use `local-signet` and `remote-signet`.
 
 When camera APIs are available, the bunker URI screen can scan `bunker://` QR codes directly. Paste remains the fallback.
 
