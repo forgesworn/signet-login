@@ -1,6 +1,6 @@
 {
   "name": "signet-login",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "description": "Signet Access — drop-in auth and signer-access SDK for Nostr-aware websites. Signet QR/redirect, NIP-07, NIP-46, Amber, and nsec fallback in one API.",
   "type": "module",
   "main": "./dist/signet-login.js",

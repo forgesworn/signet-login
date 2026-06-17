@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.5 (2026-06-17)
+
+### Bug Fixes
+
+- keep nostrconnect relays separate
+
+
+
 ## 0.10.4 (2026-06-17)
 
 ### Bug Fixes
