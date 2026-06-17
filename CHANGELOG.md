@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4 (2026-06-17)
+
+### Bug Fixes
+
+- make nostrconnect qr easier to scan
+
+
+
 ## 0.10.3 (2026-06-16)
 
 ### Bug Fixes
