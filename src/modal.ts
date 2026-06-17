@@ -37,6 +37,7 @@ const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'local-si
 const ALL_PICKER_METHODS: LoginPickerMethod[] = [...DEFAULT_PICKER_METHODS, 'redirect', 'qr'];
 const DEFAULT_ADVANCED_METHODS: LoginPickerMethod[] = ['bunker', 'nostrconnect', 'nsec'];
 const DEFAULT_NOSTR_CONNECT_PERMS = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
+const LARGE_QR_SIZE_PX = 360;
 
 interface ResolvedMethodConfig {
   methods: LoginPickerMethod[];
@@ -58,6 +59,14 @@ function generateChallenge(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function keepQrCanvasResponsive(canvas: HTMLCanvasElement, sizePx = LARGE_QR_SIZE_PX): void {
+  // qrcode mutates canvas.style.width/height after rendering. Reset height so
+  // max-width scaling on narrow phones preserves the square QR aspect ratio.
+  canvas.style.width = `${sizePx}px`;
+  canvas.style.height = 'auto';
+  canvas.style.maxWidth = '100%';
 }
 
 function isDarkMode(theme: 'light' | 'dark' | 'auto'): boolean {
@@ -531,7 +540,7 @@ async function runRedirectFlow(
     <h2 style="margin:0 0 8px;font-size:1.2rem;">${sameDevice ? 'Open My Signet' : 'Sign in with Signet'}</h2>
     <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Approve in My Signet and keep that tab open so it can sign for this app.' : 'Open the link on your phone, or scan the QR if rendered.'}</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
-      <canvas id="signet-login-qr" width="360" height="360" style="display:block;width:360px;height:360px;max-width:100%;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
+      <canvas id="signet-login-qr" width="${LARGE_QR_SIZE_PX}" height="${LARGE_QR_SIZE_PX}" style="display:block;width:${LARGE_QR_SIZE_PX}px;height:auto;max-width:100%;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
       <a id="signet-login-open-signet" href="${escapeHtml(authUrl)}" target="_blank" rel="noopener" style="${sameDevice ? buttonStyle(dark, true) + 'justify-content:center;text-align:center;text-decoration:none;' : 'display:block;color:#5b6dff;font-size:0.75rem;word-break:break-all;text-decoration:none;'}">${sameDevice ? 'Open My Signet' : `${escapeHtml(authUrl.slice(0, 80))}…`}</a>
     </div>
     <p id="signet-login-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Waiting for My Signet approval…' : 'Waiting for approval…'}</p>
@@ -550,11 +559,11 @@ async function runRedirectFlow(
   const qrCanvas = refs.dialog.querySelector<HTMLCanvasElement>('#signet-login-qr');
   if (qrCanvas) {
     void QRCode.toCanvas(qrCanvas, authUrl, {
-      width: 360,
+      width: LARGE_QR_SIZE_PX,
       margin: 1,
       errorCorrectionLevel: 'H',
       color: { dark: '#0a0418', light: '#ffffff' },
-    }).catch(() => {
+    }).then(() => { keepQrCanvasResponsive(qrCanvas); }).catch(() => {
       // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
       // — the visible link below the canvas still gets the user across.
     });
@@ -810,9 +819,10 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Connect a Nostr signer</h2>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan or paste this into your signer (nsec.app, Amber, Keychat...). The connection happens over your configured relay${opts.relayUrls.length > 1 ? 's' : ''}.</p>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan this with your signer (nsec.app, Amber, Keychat...), or copy/paste the URI below. The connection happens over your configured relay${opts.relayUrls.length > 1 ? 's' : ''}.</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
-      <canvas id="signet-login-nc-qr" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
+      <canvas id="signet-login-nc-qr" width="${LARGE_QR_SIZE_PX}" height="${LARGE_QR_SIZE_PX}" style="display:block;width:${LARGE_QR_SIZE_PX}px;height:auto;max-width:100%;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
+      <textarea id="signet-login-nc-uri" readonly rows="4" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="NostrConnect URI" style="width:100%;background:${dark ? '#050510' : '#ffffff'};color:${dark ? '#e7e7f0' : '#141427'};border:1px solid ${dark ? '#34344d' : '#d8dae3'};border-radius:6px;padding:8px;font-size:0.7rem;line-height:1.35;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;box-sizing:border-box;resize:vertical;margin:0 0 10px;overflow-wrap:anywhere;">${escapeHtml(uri)}</textarea>
       <button data-action="copy" style="${buttonStyle(dark)}width:auto;font-size:0.75rem;padding:6px 10px;margin:0 auto;display:block;">Copy URI</button>
     </div>
     <p id="signet-login-nc-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">Waiting for signer to connect…</p>
@@ -825,21 +835,49 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
   const qrCanvas = refs.dialog.querySelector<HTMLCanvasElement>('#signet-login-nc-qr');
   if (qrCanvas) {
     void QRCode.toCanvas(qrCanvas, uri, {
-      width: 200, margin: 1, errorCorrectionLevel: 'M',
+      width: LARGE_QR_SIZE_PX, margin: 2, errorCorrectionLevel: 'L',
       color: { dark: '#0a0418', light: '#ffffff' },
-    }).catch(() => { /* link/copy fallback below */ });
+    }).then(() => { keepQrCanvasResponsive(qrCanvas); }).catch(() => { /* link/copy fallback below */ });
   }
+
+  const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nc-status');
+  const uriText = refs.dialog.querySelector<HTMLTextAreaElement>('#signet-login-nc-uri');
+  const selectUriText = (): void => {
+    if (!uriText) return;
+    uriText.focus();
+    uriText.select();
+    uriText.setSelectionRange(0, uriText.value.length);
+  };
+  uriText?.addEventListener('focus', selectUriText);
+  uriText?.addEventListener('click', selectUriText);
 
   const copyBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="copy"]');
   copyBtn?.addEventListener('click', () => {
-    void navigator.clipboard?.writeText(uri).then(() => {
-      copyBtn.textContent = 'Copied ✓';
-      window.setTimeout(() => { copyBtn.textContent = 'Copy URI'; }, 1500);
-    });
+    void (async () => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(uri);
+        } else {
+          selectUriText();
+          if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+            throw new Error('clipboard-unavailable');
+          }
+        }
+        copyBtn.textContent = 'Copied ✓';
+        window.setTimeout(() => { copyBtn.textContent = 'Copy URI'; }, 1500);
+      } catch {
+        selectUriText();
+        copyBtn.textContent = 'URI selected';
+        if (status) {
+          status.textContent = 'URI selected. Copy it manually if needed.';
+          status.style.color = '';
+        }
+        window.setTimeout(() => { copyBtn.textContent = 'Copy URI'; }, 2000);
+      }
+    })();
   });
 
   const ac = new AbortController();
-  const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nc-status');
 
   return new Promise<BunkerSignerImpl | null>(resolve => {
     let settled = false;
