@@ -71,6 +71,10 @@ function matchesAnyFilter(filters: Filter[], event: NostrEvent): boolean {
   return filters.some(filter => matchesFilter(filter, event));
 }
 
+interface LocalNostrRelayOptions {
+  dropLimitZeroLiveEvents?: boolean;
+}
+
 class LocalNostrRelay {
   private readonly clients = new Map<WebSocket, Map<string, Filter[]>>();
   private readonly waiters: Array<{
@@ -83,13 +87,14 @@ class LocalNostrRelay {
   private constructor(
     private readonly server: WebSocketServer,
     public readonly url: string,
+    private readonly options: LocalNostrRelayOptions = {},
   ) {}
 
-  static async start(): Promise<LocalNostrRelay> {
+  static async start(options: LocalNostrRelayOptions = {}): Promise<LocalNostrRelay> {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await once(server, 'listening');
     const address = server.address() as AddressInfo;
-    const relay = new LocalNostrRelay(server, `ws://127.0.0.1:${address.port}`);
+    const relay = new LocalNostrRelay(server, `ws://127.0.0.1:${address.port}`, options);
     server.on('connection', ws => relay.attach(ws));
     return relay;
   }
@@ -169,7 +174,10 @@ class LocalNostrRelay {
   private broadcast(event: NostrEvent): void {
     for (const [ws, subscriptions] of this.clients.entries()) {
       for (const [subscriptionId, filters] of subscriptions.entries()) {
-        if (matchesAnyFilter(filters, event)) {
+        const deliverableFilters = this.options.dropLimitZeroLiveEvents
+          ? filters.filter(filter => filter.limit !== 0)
+          : filters;
+        if (matchesAnyFilter(deliverableFilters, event)) {
           sendJson(ws, ['EVENT', subscriptionId, event]);
         }
       }
@@ -385,5 +393,45 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     expect(signed.kind).toBe(1);
 
     await restored!.signer.close();
+  });
+
+  it('pairs when the relay does not deliver live events to limit-zero subscriptions', async () => {
+    relay = await LocalNostrRelay.start({ dropLimitZeroLiveEvents: true });
+    testSigner = new TestNip46Signer(relay.url, generateSecretKey());
+    await testSigner.start();
+
+    const storage = memoryStorage();
+    const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(storage);
+    const clientPubkey = getPublicKey(clientSecretKey);
+    const uri = buildNostrConnectUri({
+      clientPubkeyHex: clientPubkey,
+      relayUrl: relay.url,
+      secret: 'limit-zero-pair-secret',
+      perms: ['sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+      appName: 'Limit Zero E2E',
+      appUrl: 'https://limit-zero.example',
+    });
+
+    const pairing = createBunkerSignerFromNostrConnect({ uri, clientSecretKey });
+    await relay.waitForSubscription(filters =>
+      filters.some(filter =>
+        filter.kinds?.includes(NostrConnect)
+        && filter['#p']?.includes(clientPubkey)
+        && filter.limit !== 0,
+      ),
+    );
+    await testSigner.approveNostrConnect(uri);
+
+    const pairedSigner = await pairing;
+    expect(pairedSigner.pubkey).toBe(testSigner.pubkey);
+
+    const signed = await pairedSigner.signEvent({
+      kind: 1,
+      content: 'hello from robust nostrconnect',
+      tags: [],
+      created_at: Math.floor(Date.now() / 1000),
+    });
+    expect(signed.pubkey).toBe(testSigner.pubkey);
+    await pairedSigner.close();
   });
 });

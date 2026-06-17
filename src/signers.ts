@@ -8,7 +8,10 @@
 
 import type { EventTemplate, NostrEvent, SignetSigner, SignerCapabilities, SignetAuthEvent } from './types.js';
 import { BunkerSigner, parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
-import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { NostrConnect } from 'nostr-tools/kinds';
+import { SimplePool } from 'nostr-tools/pool';
+import type { SubCloser } from 'nostr-tools/abstract-pool';
 import { decode as nip19Decode } from 'nostr-tools/nip19';
 import { encrypt as nip44Encrypt, decrypt as nip44Decrypt, getConversationKey } from 'nostr-tools/nip44';
 
@@ -85,7 +88,15 @@ export async function createNip07Signer(): Promise<Nip07Signer> {
 
 // ── NIP-46 bunker ─────────────────────────────────────────────────────────────
 
-/** Wraps nostr-tools' BunkerSigner with our SignetSigner interface. */
+interface Nip46SignerClient {
+  getPublicKey(): Promise<string>;
+  signEvent(event: EventTemplate): Promise<NostrEvent>;
+  nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
+  nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+  close(): Promise<void>;
+}
+
+/** Wraps a NIP-46 client with our SignetSigner interface. */
 export class BunkerSignerImpl implements SignetSigner {
   readonly method = 'bunker' as const;
   readonly capabilities: SignerCapabilities = { canSignEvents: true, hasNip44: true };
@@ -93,7 +104,7 @@ export class BunkerSignerImpl implements SignetSigner {
 
   constructor(
     public readonly pubkey: string,
-    private readonly bunker: BunkerSigner,
+    private readonly bunker: Nip46SignerClient,
     /** Original bunker URI — kept for persistence/reconnect. */
     public readonly bunkerUri: string,
     /** The 32-byte client secret key used in this session — kept for reconnect. */
@@ -125,6 +136,244 @@ export class BunkerSignerImpl implements SignetSigner {
   }
 }
 
+const NIP46_PAIRING_WAIT_MS = 5 * 60_000;
+const NIP46_REQUEST_TIMEOUT_MS = 15_000;
+
+interface Nip46Response {
+  id?: string;
+  result?: string;
+  error?: string;
+}
+
+function firstFulfilled<T>(promises: Promise<T>[]): Promise<T> {
+  if (promises.length === 0) return Promise.reject(new Error('no-promises'));
+  return new Promise((resolve, reject) => {
+    let rejected = 0;
+    let lastError: unknown;
+    for (const promise of promises) {
+      promise.then(resolve).catch(err => {
+        rejected += 1;
+        lastError = err;
+        if (rejected === promises.length) {
+          reject(lastError instanceof Error ? lastError : new Error(String(lastError)));
+        }
+      });
+    }
+  });
+}
+
+function parseNostrConnectUriForClient(uri: string, clientPubkey: string): {
+  relays: string[];
+  secret: string;
+} {
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    throw new Error('invalid-nostrconnect-uri');
+  }
+  if (parsed.protocol !== 'nostrconnect:') throw new Error('invalid-nostrconnect-uri');
+  if (parsed.hostname.toLowerCase() !== clientPubkey.toLowerCase()) throw new Error('nostrconnect-client-pubkey-mismatch');
+  const relays = parsed.searchParams.getAll('relay').map(relay => relay.trim()).filter(Boolean);
+  if (relays.length === 0) throw new Error('relay-url-required');
+  for (const relayUrl of relays) {
+    if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
+  }
+  const secret = parsed.searchParams.get('secret');
+  if (!secret) throw new Error('nostrconnect-secret-required');
+  return {
+    relays: Array.from(new Set(relays)),
+    secret,
+  };
+}
+
+async function waitForNostrConnectApproval(input: {
+  uri: string;
+  clientSecretKey: Uint8Array;
+  abortSignal?: AbortSignal;
+}): Promise<{ signerPubkey: string; relays: string[]; secret: string }> {
+  const clientPubkey = getPublicKey(input.clientSecretKey);
+  const { relays, secret } = parseNostrConnectUriForClient(input.uri, clientPubkey);
+  const pool = new SimplePool({ enableReconnect: true });
+  let sub: SubCloser | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (err: Error | null, signerPubkey?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      sub?.close(err ? 'nostrconnect-failed' : 'nostrconnect-paired');
+      pool.destroy();
+      if (err) reject(err);
+      else resolve({ signerPubkey: signerPubkey!.toLowerCase(), relays, secret });
+    };
+
+    if (input.abortSignal?.aborted) {
+      finish(new Error('nostrconnect-aborted'));
+      return;
+    }
+    input.abortSignal?.addEventListener('abort', () => finish(new Error('nostrconnect-aborted')), { once: true });
+    timer = setTimeout(() => finish(new Error('nostrconnect-timeout')), NIP46_PAIRING_WAIT_MS);
+
+    sub = pool.subscribe(
+      relays,
+      {
+        kinds: [NostrConnect],
+        '#p': [clientPubkey],
+        since: Math.floor(Date.now() / 1000) - 60,
+      },
+      {
+        maxWait: NIP46_REQUEST_TIMEOUT_MS,
+        abort: input.abortSignal,
+        onevent(event) {
+          try {
+            const response = JSON.parse(
+              nip44Decrypt(event.content, getConversationKey(input.clientSecretKey, event.pubkey)),
+            ) as Nip46Response;
+            if (response.result === secret && /^[0-9a-f]{64}$/i.test(event.pubkey)) {
+              finish(null, event.pubkey);
+            }
+          } catch {
+            // Ignore unrelated/malformed events addressed to the temporary client pubkey.
+          }
+        },
+        onclose() {
+          finish(new Error('nostrconnect-subscription-closed'));
+        },
+      },
+    );
+  });
+}
+
+class RobustBunkerClient implements Nip46SignerClient {
+  private readonly pool = new SimplePool({ enableReconnect: true });
+  private readonly conversationKey: Uint8Array;
+  private readonly clientPubkey: string;
+  private sub?: SubCloser;
+  private serial = 0;
+  private closed = false;
+  private readonly idPrefix = Math.random().toString(36).slice(2);
+  private readonly listeners = new Map<string, {
+    resolve: (result: string) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+
+  constructor(
+    private readonly clientSecretKey: Uint8Array,
+    private readonly pointer: BunkerPointer,
+  ) {
+    this.clientPubkey = getPublicKey(clientSecretKey);
+    this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
+  }
+
+  private setupSubscription(): void {
+    if (this.sub || this.closed) return;
+    this.sub = this.pool.subscribe(
+      this.pointer.relays,
+      {
+        kinds: [NostrConnect],
+        authors: [this.pointer.pubkey],
+        '#p': [this.clientPubkey],
+        since: Math.floor(Date.now() / 1000) - 60,
+      },
+      {
+        maxWait: NIP46_REQUEST_TIMEOUT_MS,
+        onevent: event => this.handleResponseEvent(event),
+        onclose: () => {
+          this.sub = undefined;
+        },
+      },
+    );
+  }
+
+  private handleResponseEvent(event: NostrEvent): void {
+    try {
+      const response = JSON.parse(nip44Decrypt(event.content, this.conversationKey)) as Nip46Response;
+      if (!response.id) return;
+      const listener = this.listeners.get(response.id);
+      if (!listener) return;
+      clearTimeout(listener.timer);
+      this.listeners.delete(response.id);
+      if (response.error) listener.reject(new Error(response.error));
+      else listener.resolve(response.result ?? '');
+    } catch {
+      // Ignore unrelated/malformed events.
+    }
+  }
+
+  private async sendRequest(method: string, params: string[]): Promise<string> {
+    if (this.closed) throw new Error('this signer is not open anymore, create a new one');
+    this.setupSubscription();
+    const id = `${this.idPrefix}-${++this.serial}`;
+    const content = nip44Encrypt(
+      JSON.stringify({ id, method, params }),
+      this.conversationKey,
+    );
+    const event = finalizeEvent({
+      kind: NostrConnect,
+      tags: [['p', this.pointer.pubkey]],
+      content,
+      created_at: Math.floor(Date.now() / 1000),
+    }, this.clientSecretKey) as NostrEvent;
+
+    const response = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.listeners.delete(id);
+        reject(new Error(`nip46-${method}-timeout`));
+      }, NIP46_REQUEST_TIMEOUT_MS);
+      this.listeners.set(id, { resolve, reject, timer });
+    });
+
+    void firstFulfilled(this.pool.publish(this.pointer.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }))
+      .catch(() => {
+        const listener = this.listeners.get(id);
+        if (!listener) return;
+        clearTimeout(listener.timer);
+        this.listeners.delete(id);
+        listener.reject(new Error(`nip46-${method}-publish-failed`));
+      });
+
+    return response;
+  }
+
+  async connect(): Promise<void> {
+    await this.sendRequest('connect', [this.pointer.pubkey, this.pointer.secret ?? '']);
+  }
+
+  async getPublicKey(): Promise<string> {
+    return this.pointer.pubkey;
+  }
+
+  async signEvent(event: EventTemplate): Promise<NostrEvent> {
+    const signed = JSON.parse(await this.sendRequest('sign_event', [JSON.stringify(event)])) as NostrEvent;
+    if (!verifyEvent(signed)) throw new Error(`event returned from bunker is improperly signed: ${JSON.stringify(signed)}`);
+    return signed;
+  }
+
+  async nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string> {
+    return this.sendRequest('nip44_encrypt', [peerPubkey, plaintext]);
+  }
+
+  async nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string> {
+    return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext]);
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.sub?.close('closed by caller');
+    this.sub = undefined;
+    for (const [id, listener] of this.listeners) {
+      clearTimeout(listener.timer);
+      listener.reject(new Error('bunker-closed'));
+      this.listeners.delete(id);
+    }
+    this.pool.destroy();
+  }
+}
+
 /**
  * App-initiated NIP-46: we generate a `nostrconnect://` URI containing our
  * client pubkey, relay, secret, and requested perms. The user pastes/scans
@@ -144,17 +393,16 @@ export async function createBunkerSignerFromNostrConnect(input: {
   const { uri, clientSecretKey, abortSignal } = input;
   if (clientSecretKey.length !== 32) throw new Error('invalid-client-secret-key');
 
-  const bunker = abortSignal
-    ? await BunkerSigner.fromURI(clientSecretKey, uri, undefined, abortSignal)
-    : await BunkerSigner.fromURI(clientSecretKey, uri);
-  const pubkey = await bunker.getPublicKey();
-  if (!/^[0-9a-f]{64}$/i.test(pubkey)) {
-    await bunker.close().catch(() => {});
-    throw new Error('invalid-pubkey-from-bunker');
-  }
+  const { signerPubkey, relays, secret } = await waitForNostrConnectApproval({ uri, clientSecretKey, abortSignal });
+  if (!/^[0-9a-f]{64}$/i.test(signerPubkey)) throw new Error('invalid-pubkey-from-bunker');
 
-  const normalizedBunkerUri = buildBunkerUriFromNostrConnectUri(uri, pubkey);
-  return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
+  const normalizedBunkerUri = buildBunkerUriFromNostrConnectUri(uri, signerPubkey);
+  const bunker = new RobustBunkerClient(clientSecretKey, {
+    pubkey: signerPubkey,
+    relays,
+    secret,
+  });
+  return new BunkerSignerImpl(signerPubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 
 /**
