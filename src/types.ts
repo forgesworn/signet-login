@@ -126,8 +126,8 @@ export interface LoginOptions {
   /** Relay URL for cross-device communication. Default wss://relay.damus.io */
   relayUrl?: string;
   /**
-   * Relay URLs for NIP-46 / NostrConnect. The first relay is also used for
-   * Signet QR/relay delivery until signet-verify grows multi-relay waiting.
+   * Relay URLs for NIP-46 / NostrConnect. Use `relayUrl` separately when the
+   * Signet QR/relay delivery path should stay on a different primary relay.
    */
   relayUrls?: string[];
   /**

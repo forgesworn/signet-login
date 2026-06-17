@@ -1016,12 +1016,18 @@ function resolveRelayUrls(opts: LoginOptions): string[] {
   return cleanRelayUrls.length > 0 ? cleanRelayUrls : [DEFAULTS.relayUrl];
 }
 
+function resolvePrimaryRelayUrl(opts: LoginOptions, relayUrls: readonly string[]): string {
+  const relayUrl = opts.relayUrl?.trim();
+  return relayUrl || relayUrls[0] || DEFAULTS.relayUrl;
+}
+
 function resolveOptions(opts: LoginOptions): ResolvedOptions {
   const challenge = opts.challenge ?? generateChallenge();
   if (!/^[0-9a-f]{64}$/i.test(challenge)) throw new Error('challenge-must-be-64-hex');
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
   const timeout = Math.max(5_000, Math.min(opts.timeout ?? DEFAULTS.timeout, 600_000));
   const relayUrls = resolveRelayUrls(opts);
+  const relayUrl = resolvePrimaryRelayUrl(opts, relayUrls);
   const methodConfig = resolveMethodConfig(opts);
   const result: ResolvedOptions = {
     appName: opts.appName,
@@ -1029,7 +1035,7 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
     origin,
     methods: methodConfig.methods,
     advancedMethods: methodConfig.advancedMethods,
-    relayUrl: relayUrls[0],
+    relayUrl,
     relayUrls,
     nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
     theme: opts.theme ?? DEFAULTS.theme,

@@ -76,6 +76,31 @@ describe('same-device Signet modal flow', () => {
     await expect(pending).resolves.toBeNull();
   });
 
+  it('keeps relayUrl as the Signet relay when NostrConnect relayUrls are also configured', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      preferredMethod: 'local-signet',
+      relayUrl: 'wss://relay.trotters.cc',
+      relayUrls: ['wss://relay.primal.net', 'wss://nos.lol'],
+      signetAppOrigin: 'https://mysignet.app',
+      persist: false,
+    });
+    await settleMicrotasks();
+
+    const link = document.getElementById('signet-login-open-signet') as HTMLAnchorElement | null;
+    expect(link).toBeInstanceOf(HTMLAnchorElement);
+
+    const url = new URL(link!.href);
+    expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
+    expect(waitForAuthResponse).toHaveBeenCalledWith(expect.objectContaining({
+      relayUrl: 'wss://relay.trotters.cc',
+    }));
+
+    document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
+
   it('keeps legacy preferredMethod=redirect as the local Signet alias', async () => {
     const pending = login({
       appName: 'Pallasite',

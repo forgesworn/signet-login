@@ -74,7 +74,8 @@ describe('NostrConnect modal flow', () => {
       theme: 'dark',
       persist: false,
       preferredMethod: 'nostrconnect',
-      relayUrls: ['wss://relay.trotters.cc'],
+      relayUrl: 'wss://relay.trotters.cc',
+      relayUrls: ['wss://relay.primal.net', 'wss://relay.trotters.cc'],
     });
 
     const qr = await waitForElement<HTMLCanvasElement>('#signet-login-nc-qr');
@@ -88,7 +89,11 @@ describe('NostrConnect modal flow', () => {
     const uriText = await waitForElement<HTMLTextAreaElement>('#signet-login-nc-uri');
     expect(uriText.readOnly).toBe(true);
     expect(uriText.value).toMatch(/^nostrconnect:\/\/[0-9a-f]{64}\?/);
-    expect(uriText.value).toContain('relay=wss%3A%2F%2Frelay.trotters.cc');
+    const parsed = new URL(uriText.value);
+    expect(parsed.searchParams.getAll('relay')).toEqual([
+      'wss://relay.primal.net',
+      'wss://relay.trotters.cc',
+    ]);
     expect(uriText.value).toContain('name=Canary');
 
     await settleMicrotasks();
