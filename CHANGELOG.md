@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.8 (2026-06-17)
+
+### Bug Fixes
+
+- restore bunker sessions with robust nip46 client
+
+
+
 ## 0.10.7 (2026-06-17)
 
 ### Bug Fixes
