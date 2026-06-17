@@ -297,6 +297,14 @@ class TestNip46Signer {
           const signed = finalizeEvent(template, this.secretKey);
           return { id: request.id, result: JSON.stringify(signed) };
         }
+        case 'nip44_encrypt': {
+          const [peerPubkey, plaintext] = request.params;
+          return { id: request.id, result: encrypt(plaintext, getConversationKey(this.secretKey, peerPubkey)) };
+        }
+        case 'nip44_decrypt': {
+          const [peerPubkey, ciphertext] = request.params;
+          return { id: request.id, result: decrypt(ciphertext, getConversationKey(this.secretKey, peerPubkey)) };
+        }
         default:
           return { id: request.id, error: `unsupported-method:${request.method}` };
       }
@@ -332,8 +340,8 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     relay = undefined;
   });
 
-  it('pairs with nostrconnect:// once, persists bunker://, and restores without re-pairing', async () => {
-    relay = await LocalNostrRelay.start();
+  it('pairs with nostrconnect:// once, persists bunker://, and restores signing plus NIP-44 without limit-zero live delivery', async () => {
+    relay = await LocalNostrRelay.start({ dropLimitZeroLiveEvents: true });
     testSigner = new TestNip46Signer(relay.url, generateSecretKey());
     await testSigner.start();
 
@@ -352,7 +360,9 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     const pairing = createBunkerSignerFromNostrConnect({ uri, clientSecretKey });
     await relay.waitForSubscription(filters =>
       filters.some(filter =>
-        filter.kinds?.includes(NostrConnect) && filter['#p']?.includes(clientPubkey),
+        filter.kinds?.includes(NostrConnect)
+        && filter['#p']?.includes(clientPubkey)
+        && filter.limit !== 0,
       ),
     );
     await testSigner.approveNostrConnect(uri);
@@ -391,6 +401,10 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     });
     expect(signed.pubkey).toBe(testSigner.pubkey);
     expect(signed.kind).toBe(1);
+
+    const ciphertext = await restored!.signer.nip44!.encrypt(testSigner.pubkey, 'restored-nip44-secret');
+    expect(ciphertext).not.toBe('restored-nip44-secret');
+    await expect(restored!.signer.nip44!.decrypt(testSigner.pubkey, ciphertext)).resolves.toBe('restored-nip44-secret');
 
     await restored!.signer.close();
   });

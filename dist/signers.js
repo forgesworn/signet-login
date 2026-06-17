@@ -5,7 +5,7 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
-import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46';
+import { parseBunkerInput } from 'nostr-tools/nip46';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
 import { SimplePool } from 'nostr-tools/pool';
@@ -443,14 +443,21 @@ export async function createBunkerSigner(input) {
     const sk = input.clientSecretKey ?? generateSecretKey();
     if (sk.length !== 32)
         throw new Error('invalid-client-secret-key');
-    const bunker = BunkerSigner.fromBunker(sk, pointer, { onauth: input.onauth });
+    const bunker = new RobustBunkerClient(sk, pointer);
     const handshake = (async () => {
         await bunker.connect();
         return bunker.getPublicKey();
     })();
-    const pubkey = input.timeoutMs && input.timeoutMs > 0
-        ? await raceBunkerHandshake(handshake, input.timeoutMs, bunker)
-        : await handshake;
+    let pubkey;
+    try {
+        pubkey = input.timeoutMs && input.timeoutMs > 0
+            ? await raceBunkerHandshake(handshake, input.timeoutMs, bunker)
+            : await handshake;
+    }
+    catch (err) {
+        await bunker.close().catch(() => { });
+        throw err;
+    }
     if (!/^[0-9a-f]{64}$/i.test(pubkey)) {
         await bunker.close().catch(() => { });
         throw new Error('invalid-pubkey-from-bunker');

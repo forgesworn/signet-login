@@ -1,69 +1,115 @@
 /**
- * Regression test for the `createBunkerSigner` timeout guard.
+ * Regression tests for the createBunkerSigner handshake guard.
  *
- * This deliberately does NOT exercise the real NIP-46 round-trip (that stays
- * integration-only, per signers.test.ts). It covers only the timeout wrapper:
- * nostr-tools' `BunkerSigner.sendRequest` has no per-request timeout, so a
- * remote signer that never replies hangs `connect()`/`getPublicKey()` forever.
- * That is exactly what happens to the redirect-bunker auto-pair when signet-app
- * hands over a `bunker://` URI for its own in-page NIP-46 server and then a
- * same-tab redirect navigates that server away before the consumer connects —
- * the consumer's boot stalled on a blank screen. `timeoutMs` must race the
- * handshake, close the half-open signer, and reject.
+ * The implementation now uses Signet's relay-compatible NIP-46 client for both
+ * nostrconnect:// pairing and bunker:// restore. These tests mock the relay pool
+ * directly so we can prove timeout and success behavior without opening sockets.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  close: vi.fn(async () => {}),
-  state: { connect: (async () => {}) as () => Promise<void> },
+  signerPubkey: '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  mode: 'hang' as 'hang' | 'respond',
+  destroy: vi.fn(),
+  subClose: vi.fn(),
+  handlers: undefined as undefined | { onevent?: (event: unknown) => void },
+  publishedMethods: [] as string[],
 }));
 
 vi.mock('nostr-tools/nip46', () => ({
   parseBunkerInput: async () => ({
-    pubkey: 'b'.repeat(64),
+    pubkey: h.signerPubkey,
     relays: ['wss://relay.test'],
     secret: 'sekret',
   }),
-  BunkerSigner: {
-    fromBunker: () => ({
-      connect: () => h.state.connect(),
-      getPublicKey: async () => 'b'.repeat(64),
-      close: h.close,
-    }),
-  },
 }));
+
+vi.mock('nostr-tools/pool', async () => {
+  const { encrypt, decrypt, getConversationKey } = await import('nostr-tools/nip44');
+  const { finalizeEvent } = await import('nostr-tools/pure');
+  const { NostrConnect } = await import('nostr-tools/kinds');
+  const signerSecretKey = new Uint8Array(32);
+  signerSecretKey[31] = 1;
+
+  return {
+    SimplePool: vi.fn().mockImplementation(function () {
+      return {
+        subscribe: (_relays: string[], _filter: unknown, handlers: { onevent?: (event: unknown) => void }) => {
+          h.handlers = handlers;
+          return { close: h.subClose };
+        },
+        publish: (_relays: string[], event: { pubkey: string; content: string }) => {
+          if (h.mode === 'respond') {
+            queueMicrotask(() => {
+              const conversationKey = getConversationKey(signerSecretKey, event.pubkey);
+              const request = JSON.parse(decrypt(event.content, conversationKey)) as { id: string; method: string };
+              h.publishedMethods.push(request.method);
+              const response = finalizeEvent({
+                kind: NostrConnect,
+                tags: [['p', event.pubkey]],
+                content: encrypt(JSON.stringify({ id: request.id, result: 'ack' }), conversationKey),
+                created_at: Math.floor(Date.now() / 1000),
+              }, signerSecretKey);
+              h.handlers?.onevent?.(response);
+            });
+          }
+          return [Promise.resolve('ok')];
+        },
+        destroy: h.destroy,
+      };
+    }),
+  };
+});
 
 import { createBunkerSigner } from '../src/signers.js';
 
-const URI = `bunker://${'b'.repeat(64)}?relay=wss://relay.test&secret=sekret`;
-const NEVER = (): Promise<void> => new Promise<void>(() => {});
+const URI = `bunker://${h.signerPubkey}?relay=wss://relay.test&secret=sekret`;
 
 describe('createBunkerSigner timeout guard', () => {
-  it('rejects with bunker-connect-timeout and closes the signer when the handshake hangs', async () => {
-    h.close.mockClear();
-    h.state.connect = NEVER;
-    await expect(createBunkerSigner({ uri: URI, timeoutMs: 30 })).rejects.toThrow('bunker-connect-timeout');
-    expect(h.close).toHaveBeenCalled();
+  beforeEach(() => {
+    h.mode = 'hang';
+    h.destroy.mockClear();
+    h.subClose.mockClear();
+    h.handlers = undefined;
+    h.publishedMethods = [];
   });
 
-  it('resolves normally when the handshake completes before the deadline', async () => {
-    h.close.mockClear();
-    h.state.connect = async () => {};
-    const signer = await createBunkerSigner({ uri: URI, timeoutMs: 1000 });
-    expect(signer.pubkey).toBe('b'.repeat(64));
-    expect(h.close).not.toHaveBeenCalled();
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('does not arm a timeout when timeoutMs is omitted (opt-in only)', async () => {
-    h.close.mockClear();
-    h.state.connect = NEVER;
+  it('rejects with bunker-connect-timeout and closes the signer when the explicit deadline wins', async () => {
+    vi.useFakeTimers();
+    const pending = createBunkerSigner({ uri: URI, timeoutMs: 30 });
+    const rejection = expect(pending).rejects.toThrow('bunker-connect-timeout');
+
+    await vi.advanceTimersByTimeAsync(31);
+
+    await rejection;
+    expect(h.subClose).toHaveBeenCalled();
+    expect(h.destroy).toHaveBeenCalled();
+  });
+
+  it('resolves normally when the connect response arrives before the explicit deadline', async () => {
+    h.mode = 'respond';
+
+    const signer = await createBunkerSigner({ uri: URI, timeoutMs: 1_000 });
+
+    expect(signer.pubkey).toBe(h.signerPubkey);
+    expect(h.publishedMethods).toContain('connect');
+    expect(h.destroy).not.toHaveBeenCalled();
+    await signer.close();
+  });
+
+  it('uses the built-in NIP-46 request timeout when timeoutMs is omitted', async () => {
+    vi.useFakeTimers();
     const pending = createBunkerSigner({ uri: URI });
-    const sentinel = Symbol('still-pending');
-    const winner = await Promise.race([
-      pending.then(() => 'settled', () => 'settled'),
-      new Promise(resolve => setTimeout(() => resolve(sentinel), 60)),
-    ]);
-    expect(winner).toBe(sentinel);
-    expect(h.close).not.toHaveBeenCalled();
+    const rejection = expect(pending).rejects.toThrow('nip46-connect-timeout');
+
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    await rejection;
+    expect(h.subClose).toHaveBeenCalled();
+    expect(h.destroy).toHaveBeenCalled();
   });
 });
