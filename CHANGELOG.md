@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.1 (2026-06-19)
+
+### Bug Fixes
+
+- add nostrconnect status reference docs
+
+
+
 ## 0.11.0 (2026-06-19)
 
 ### Features
