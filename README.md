@@ -72,6 +72,7 @@ interface LoginOptions {
   relayUrl?: string;                            // default wss://relay.damus.io
   relayUrls?: string[];                         // repeated relay= params for NostrConnect
   nostrConnectPerms?: string[];                 // default sign_event + NIP-44
+  onNostrConnectStatus?: NostrConnectStatusHandler;
   theme?: 'light' | 'dark' | 'auto';            // default 'auto'
   timeout?: number;                             // default 120_000ms; clamped to [5k, 600k]
   signetAppOrigin?: string;                     // default https://mysignet.app
@@ -179,6 +180,72 @@ NIP-46 has two URI directions:
 `createBunkerSignerFromNostrConnect()` waits for the signer response and then stores the equivalent `bunker://` reconnect URI internally, preserving the relay list and secret. This matters for apps such as Canary, Pallasite, and Axenstax: the user can pair once with NostrConnect, then `restoreSession()` can reconnect with the same stable client key instead of showing a fresh pairing request.
 
 Signet Access is the app-side session broker. Identity creation, recovery, and derived personas belong in Signet, Heartwood, and `nsec-tree`; app integrations should consume the returned pubkey and capability flags instead of deriving identities inside the login SDK.
+
+### NostrConnect status diagnostics
+
+Use `onNostrConnectStatus` when your app needs a reliable progress panel, telemetry, or support diagnostics for app-initiated NostrConnect. Do not scrape the built-in modal text.
+
+```ts
+import type { NostrConnectStatus } from 'signet-login';
+import { login, restoreSession } from 'signet-login';
+
+function renderNostrConnectStatus(status: NostrConnectStatus) {
+  const relay = status.relay ?? status.relays[0] ?? 'the relay';
+  const method = status.method ? ` ${status.method}` : '';
+
+  switch (status.type) {
+    case 'uri-created':
+      return 'Pairing code ready. Scan it with your signer.';
+    case 'relay-connecting':
+      return `Connecting to ${relay}...`;
+    case 'relay-connected':
+      return `Connected to ${relay}. Waiting for signer approval...`;
+    case 'signer-seen':
+      return 'Signer responded. Waiting for approval payload...';
+    case 'request-sent':
+      return `Sent${method} request. Waiting for signer response...`;
+    case 'response-received':
+      return `Signer approved${method}.`;
+    case 'timeout':
+      return 'Signer did not respond before the timeout.';
+    case 'error':
+      return status.message ?? 'NostrConnect failed.';
+  }
+}
+
+const session = await login({
+  appName: 'My App',
+  preferredMethod: 'nostrconnect',
+  relayUrls: ['wss://relay.primal.net', 'wss://relay.damus.io'],
+  timeout: 120_000,
+  onNostrConnectStatus(status) {
+    console.log(status);
+    statusText.textContent = renderNostrConnectStatus(status);
+  },
+});
+
+// The same callback works for persisted bunker reconnects.
+await restoreSession({
+  onNostrConnectStatus(status) {
+    reconnectText.textContent = renderNostrConnectStatus(status);
+  },
+});
+```
+
+Status events are best-effort diagnostics. Handler errors are ignored so a broken dashboard cannot break login.
+
+| Event | Meaning | Useful fields |
+|---|---|---|
+| `uri-created` | The app created a `nostrconnect://` URI for the QR/link. | `uri`, `clientPubkey`, `relays`, `timeoutMs` |
+| `relay-connecting` | The SDK is opening relay/subscription state. | `relays`, `clientPubkey`, `signerPubkey` |
+| `relay-connected` | A relay connection succeeded. | `relay`, `relays` |
+| `signer-seen` | An encrypted response event arrived from a signer pubkey. | `signerPubkey`, `clientPubkey` |
+| `request-sent` | A NIP-46 request was published, such as `connect`, `sign_event`, or `nip44_encrypt`. | `method`, `requestId`, `signerPubkey` |
+| `response-received` | Pairing or a NIP-46 request received a response. | `phase`, `method`, `requestId` |
+| `timeout` | Pairing or a request hit its timeout. | `phase`, `method`, `requestId`, `timeoutMs`, `message` |
+| `error` | Relay, subscription, publish, response, or abort failure. | `phase`, `relay`, `method`, `message`, `error` |
+
+For support triage: no `relay-connected` usually means relay/network trouble; `signer-seen` without `response-received` usually means the signer saw the request but did not complete approval; `request-sent` without a response usually means the saved bunker session exists but the signer device is unavailable or rejecting that method.
 
 ### Custom storage
 
@@ -342,9 +409,10 @@ npm test            # vitest in jsdom
 Examples in `examples/`:
 - `basic.html` — full demo with login / sign / logout / restore
 - `headless.html` — custom UI demo using signer constructors and proof helpers
+- `nostrconnect-status.html` — NostrConnect pairing with a diagnostic event log
 - `callback.html` — redirect-back receiver page
 
-Build the IIFE bundle first, then serve the repo root with any static server and open `examples/basic.html` or `examples/headless.html`.
+Build the IIFE bundle first, then serve the repo root with any static server and open an example page.
 
 ## Out of scope
 

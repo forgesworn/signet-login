@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Signet Access - NostrConnect status demo</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8f5;
+      --fg: #181a18;
+      --muted: #5f665f;
+      --panel: #ffffff;
+      --border: #d8ded6;
+      --primary: #245f73;
+      --primary-hover: #1d4d5c;
+      --ok: #166534;
+      --warn: #9a3412;
+      --bad: #b42318;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101311;
+        --fg: #f0f4ef;
+        --muted: #a5aea6;
+        --panel: #171c18;
+        --border: #2e3931;
+        --primary: #6bb8ce;
+        --primary-hover: #83c9dc;
+        --ok: #86efac;
+        --warn: #fdba74;
+        --bad: #fca5a5;
+      }
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 15px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(960px, calc(100vw - 32px));
+      margin: 32px auto;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.5rem;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.95fr) minmax(320px, 1.4fr);
+      gap: 14px;
+      margin-top: 18px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      font-weight: 650;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--fg);
+      padding: 10px;
+      font: 0.9rem/1.4 var(--mono);
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--primary);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 10px 14px;
+    }
+    button:hover {
+      background: var(--primary-hover);
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      align-items: center;
+    }
+    .status {
+      margin-top: 12px;
+      min-height: 1.4em;
+      color: var(--muted);
+    }
+    .status.ok {
+      color: var(--ok);
+    }
+    .status.warn {
+      color: var(--warn);
+    }
+    .status.bad {
+      color: var(--bad);
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 48px;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 2px;
+      font: 0.85rem/1.35 var(--mono);
+      overflow-wrap: anywhere;
+    }
+    .events {
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .event {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .event header {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+    }
+    .event strong {
+      font-family: var(--mono);
+      font-size: 0.86rem;
+    }
+    .event time {
+      color: var(--muted);
+      font: 0.78rem/1.3 var(--mono);
+      white-space: nowrap;
+    }
+    .event pre,
+    #output {
+      margin: 8px 0 0;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 0.78rem/1.4 var(--mono);
+      color: var(--muted);
+    }
+    #output {
+      min-height: 120px;
+      max-height: 300px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    @media (max-width: 760px) {
+      .grid,
+      .summary {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>NostrConnect status demo</h1>
+    <p>Use the built-in modal while rendering your own reliable diagnostics from <code>onNostrConnectStatus</code>.</p>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>Pairing</h2>
+        <label for="relays">Relays</label>
+        <input id="relays" value="wss://relay.primal.net,wss://relay.damus.io" spellcheck="false" />
+        <label for="timeout">Timeout in milliseconds</label>
+        <input id="timeout" value="120000" inputmode="numeric" />
+        <div class="row">
+          <button id="connect">Connect with NostrConnect</button>
+          <button id="restore" class="secondary">Restore saved session</button>
+          <button id="clear" class="secondary">Clear log</button>
+        </div>
+        <p id="status" class="status">No status events yet.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Current state</h2>
+        <div class="summary">
+          <div class="metric">
+            <span>Last event</span>
+            <strong id="last-event">none</strong>
+          </div>
+          <div class="metric">
+            <span>Relay</span>
+            <strong id="relay">none</strong>
+          </div>
+          <div class="metric">
+            <span>Client pubkey</span>
+            <strong id="client-pubkey">none</strong>
+          </div>
+          <div class="metric">
+            <span>Signer pubkey</span>
+            <strong id="signer-pubkey">none</strong>
+          </div>
+        </div>
+        <pre id="output"></pre>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:14px;">
+      <h2>Event log</h2>
+      <div id="events" class="events"></div>
+    </section>
+  </main>
+
+  <script src="../dist/signet-login.iife.js"></script>
+  <script>
+    const statusEl = document.getElementById('status');
+    const eventsEl = document.getElementById('events');
+    const outputEl = document.getElementById('output');
+    const lastEventEl = document.getElementById('last-event');
+    const relayEl = document.getElementById('relay');
+    const clientPubkeyEl = document.getElementById('client-pubkey');
+    const signerPubkeyEl = document.getElementById('signer-pubkey');
+
+    let session = null;
+
+    function readRelays() {
+      return document.getElementById('relays').value
+        .split(',')
+        .map(relay => relay.trim())
+        .filter(Boolean);
+    }
+
+    function readTimeout() {
+      const value = Number(document.getElementById('timeout').value);
+      return Number.isFinite(value) && value > 0 ? value : 120000;
+    }
+
+    function statusMessage(status) {
+      const relay = status.relay || status.relays[0] || 'the relay';
+      const method = status.method ? ` ${status.method}` : '';
+      switch (status.type) {
+        case 'uri-created':
+          return 'Pairing code ready. Scan it with your signer.';
+        case 'relay-connecting':
+          return `Connecting to ${relay}...`;
+        case 'relay-connected':
+          return `Connected to ${relay}. Waiting for signer approval...`;
+        case 'signer-seen':
+          return 'Signer responded. Waiting for approval payload...';
+        case 'request-sent':
+          return `Sent${method} request. Waiting for signer response...`;
+        case 'response-received':
+          return `Signer approved${method}.`;
+        case 'timeout':
+          return 'Signer did not respond before the timeout.';
+        case 'error':
+          return status.message || 'NostrConnect failed.';
+        default:
+          return status.type;
+      }
+    }
+
+    function statusTone(status) {
+      if (status.type === 'error') return 'bad';
+      if (status.type === 'timeout') return 'warn';
+      if (status.type === 'response-received') return 'ok';
+      return '';
+    }
+
+    function renderStatus(status) {
+      lastEventEl.textContent = status.type;
+      relayEl.textContent = status.relay || status.relays.join(', ') || 'none';
+      clientPubkeyEl.textContent = status.clientPubkey || 'none';
+      signerPubkeyEl.textContent = status.signerPubkey || 'none';
+      statusEl.textContent = statusMessage(status);
+      statusEl.className = `status ${statusTone(status)}`.trim();
+
+      const row = document.createElement('article');
+      row.className = 'event';
+
+      const header = document.createElement('header');
+      const title = document.createElement('strong');
+      title.textContent = status.type;
+      const time = document.createElement('time');
+      time.textContent = new Date(status.timestamp).toLocaleTimeString();
+      header.append(title, time);
+
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(status, null, 2);
+      row.append(header, pre);
+      eventsEl.prepend(row);
+    }
+
+    function onNostrConnectStatus(status) {
+      console.log('[signet-login nostrconnect]', status);
+      renderStatus(status);
+    }
+
+    function show(value) {
+      outputEl.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    }
+
+    document.getElementById('connect').addEventListener('click', async () => {
+      try {
+        show('Opening NostrConnect modal...');
+        session = await Signet.login({
+          appName: 'NostrConnect Status Demo',
+          preferredMethod: 'nostrconnect',
+          relayUrls: readRelays(),
+          timeout: readTimeout(),
+          onNostrConnectStatus,
+        });
+        if (!session) {
+          show('Cancelled or timed out.');
+          return;
+        }
+        show({
+          pubkey: session.pubkey,
+          method: session.method,
+          capabilities: session.signer.capabilities,
+        });
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.className = 'status bad';
+        show(`Login error: ${err.message}`);
+      }
+    });
+
+    document.getElementById('restore').addEventListener('click', async () => {
+      try {
+        show('Restoring saved session...');
+        session = await Signet.restoreSession({ onNostrConnectStatus });
+        if (!session) {
+          show('No restorable session found.');
+          return;
+        }
+        show({
+          pubkey: session.pubkey,
+          method: session.method,
+          capabilities: session.signer.capabilities,
+        });
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.className = 'status bad';
+        show(`Restore error: ${err.message}`);
+      }
+    });
+
+    document.getElementById('clear').addEventListener('click', () => {
+      eventsEl.textContent = '';
+      outputEl.textContent = '';
+      lastEventEl.textContent = 'none';
+      relayEl.textContent = 'none';
+      clientPubkeyEl.textContent = 'none';
+      signerPubkeyEl.textContent = 'none';
+      statusEl.textContent = 'No status events yet.';
+      statusEl.className = 'status';
+    });
+  </script>
+</body>
+</html>
