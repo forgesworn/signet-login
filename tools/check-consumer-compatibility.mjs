@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 const dryRun = process.argv.includes('--dry-run');
 const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
 const requestId = process.env.SIGNET_COMPATIBILITY_REQUEST_ID || randomUUID();
 const signetLoginRef = process.env.SIGNET_LOGIN_REF || process.env.GITHUB_REF_NAME || 'local';
 const signetLoginSha = process.env.SIGNET_LOGIN_SHA || process.env.GITHUB_SHA || '';
+const signetLoginPackageVersion = process.env.SIGNET_LOGIN_PACKAGE_VERSION || readPackageVersion();
 const timeoutMinutes = Number(process.env.CONSUMER_COMPATIBILITY_TIMEOUT_MINUTES || '45');
 const physicalSmokeMaxAgeDays = Number(process.env.PHYSICAL_MOBILE_SMOKE_MAX_AGE_DAYS || '7');
 
@@ -60,6 +62,15 @@ function log(message) {
 function fail(message) {
   console.error(`[signet-compat] ${message}`);
   process.exit(1);
+}
+
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '';
+  } catch {
+    return '';
+  }
 }
 
 function workflowUrl(repo, workflow, suffix = '') {
@@ -118,8 +129,10 @@ async function dispatchConsumer(consumer) {
   const startedAt = new Date();
   const inputs = {
     ...(consumer.inputs || {}),
+    signet_login_candidate: 'true',
     signet_login_ref: signetLoginRef,
     signet_login_sha: signetLoginSha,
+    signet_login_package_version: signetLoginPackageVersion,
     request_id: requestId,
   };
 
@@ -197,13 +210,17 @@ function printDryRun() {
   log(`request_id=${requestId}`);
   log(`signet_login_ref=${signetLoginRef}`);
   log(`signet_login_sha=${signetLoginSha || '<empty>'}`);
+  log(`signet_login_candidate=true`);
+  log(`signet_login_package_version=${signetLoginPackageVersion || '<empty>'}`);
   log(`physical smoke max age: ${physicalSmokeMaxAgeDays} day(s)`);
   log(`consumer timeout: ${timeoutMinutes} minute(s)`);
   for (const consumer of consumers) {
     const inputs = {
       ...(consumer.inputs || {}),
+      signet_login_candidate: 'true',
       signet_login_ref: signetLoginRef,
       signet_login_sha: signetLoginSha,
+      signet_login_package_version: signetLoginPackageVersion,
       request_id: requestId,
     };
     log(`${consumer.name}: ${consumer.repo}/${consumer.workflow}@${consumer.ref} inputs=${JSON.stringify(inputs)}`);
@@ -215,6 +232,10 @@ async function main() {
   if (dryRun) {
     printDryRun();
     return;
+  }
+
+  if ((!signetLoginRef || signetLoginRef === 'local') && !signetLoginSha) {
+    fail('SIGNET_LOGIN_REF or SIGNET_LOGIN_SHA must identify the candidate commit/tag for consumer compatibility.');
   }
 
   await checkRecentPhysicalMobileSmoke();
