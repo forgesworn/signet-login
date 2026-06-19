@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 (2026-06-19)
+
+### Features
+
+- expose nostrconnect status events
+
+
+
 ## 0.10.8 (2026-06-17)
 
 ### Bug Fixes
