@@ -332,6 +332,8 @@ if (session.signer.capabilities.canSignEvents) {
 
 When Signet or a signer app returns a `bunker://` handoff, the SDK upgrades the auth-only proof into a live `BunkerSignerImpl` if the handoff connects and matches the authenticated pubkey.
 
+Amber / NIP-55 is currently auth-only in Signet Access. It can prove identity on Android, but it does not leave the web app with a persistent signer or NIP-44 channel. Signing-required consumers should reject Amber/auth-only sessions unless a future Amber flow returns a verified live signer handoff. See `docs/amber-policy.md`.
+
 ## Server-side verification
 
 The client sends `session.authEvent` to your server. Verify it before granting any privileges or paying out sats:

@@ -29,6 +29,8 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc && npm run build:iife",
     "build:iife": "esbuild src/signet-login.ts --bundle --format=iife --global-name=__SignetLoginIIFE --outfile=dist/signet-login.iife.js --minify --target=es2020 --footer:js='Object.assign((globalThis.Signet||={}),__SignetLoginIIFE);'",
+    "check:consumer-compatibility": "node tools/check-consumer-compatibility.mjs",
+    "check:consumer-compatibility:dry-run": "node tools/check-consumer-compatibility.mjs --dry-run",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
