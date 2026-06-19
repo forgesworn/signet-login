@@ -14,7 +14,7 @@
  * already there (so `signet-verify.iife.js` and `signet-login.iife.js` coexist
  * in either load order on the same page).
  */
-export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignetSigner, SignetAuthEvent, SignetSession, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
+export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
 import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';

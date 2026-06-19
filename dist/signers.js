@@ -98,6 +98,47 @@ export class BunkerSignerImpl {
 }
 const NIP46_PAIRING_WAIT_MS = 5 * 60000;
 const NIP46_REQUEST_TIMEOUT_MS = 15000;
+function errorMessage(err) {
+    return err instanceof Error ? err.message : String(err);
+}
+function emitNostrConnectStatus(onStatus, relays, status) {
+    if (!onStatus)
+        return;
+    try {
+        onStatus({
+            ...status,
+            timestamp: Date.now(),
+            relays: [...relays],
+        });
+    }
+    catch {
+        // Consumer diagnostics must never break the login flow.
+    }
+}
+function createInstrumentedNostrConnectPool(input) {
+    const poolOptions = {
+        enableReconnect: true,
+        onRelayConnectionSuccess: relay => {
+            emitNostrConnectStatus(input.onStatus, input.relays, {
+                type: 'relay-connected',
+                relay,
+                clientPubkey: input.clientPubkey,
+                signerPubkey: input.signerPubkey,
+            });
+        },
+        onRelayConnectionFailure: relay => {
+            emitNostrConnectStatus(input.onStatus, input.relays, {
+                type: 'error',
+                phase: 'relay',
+                relay,
+                clientPubkey: input.clientPubkey,
+                signerPubkey: input.signerPubkey,
+                message: 'relay-connection-failed',
+            });
+        },
+    };
+    return new SimplePool(poolOptions);
+}
 function firstFulfilled(promises) {
     if (promises.length === 0)
         return Promise.reject(new Error('no-promises'));
@@ -145,7 +186,23 @@ function parseNostrConnectUriForClient(uri, clientPubkey) {
 async function waitForNostrConnectApproval(input) {
     const clientPubkey = getPublicKey(input.clientSecretKey);
     const { relays, secret } = parseNostrConnectUriForClient(input.uri, clientPubkey);
-    const pool = new SimplePool({ enableReconnect: true });
+    const timeoutMs = input.timeoutMs && input.timeoutMs > 0 ? input.timeoutMs : NIP46_PAIRING_WAIT_MS;
+    emitNostrConnectStatus(input.onStatus, relays, {
+        type: 'uri-created',
+        uri: input.uri,
+        clientPubkey,
+        timeoutMs,
+    });
+    emitNostrConnectStatus(input.onStatus, relays, {
+        type: 'relay-connecting',
+        clientPubkey,
+        timeoutMs,
+    });
+    const pool = createInstrumentedNostrConnectPool({
+        relays,
+        onStatus: input.onStatus,
+        clientPubkey,
+    });
     let sub;
     let timer;
     return new Promise((resolve, reject) => {
@@ -158,17 +215,39 @@ async function waitForNostrConnectApproval(input) {
                 clearTimeout(timer);
             sub?.close(err ? 'nostrconnect-failed' : 'nostrconnect-paired');
             pool.destroy();
-            if (err)
+            if (err) {
+                const message = errorMessage(err);
+                if (message === 'nostrconnect-timeout') {
+                    emitNostrConnectStatus(input.onStatus, relays, {
+                        type: 'timeout',
+                        phase: 'pairing',
+                        clientPubkey,
+                        timeoutMs,
+                        message,
+                        error: err,
+                    });
+                }
+                else {
+                    emitNostrConnectStatus(input.onStatus, relays, {
+                        type: 'error',
+                        phase: message === 'nostrconnect-aborted' ? 'abort' : 'pairing',
+                        clientPubkey,
+                        message,
+                        error: err,
+                    });
+                }
                 reject(err);
-            else
+            }
+            else {
                 resolve({ signerPubkey: signerPubkey.toLowerCase(), relays, secret });
+            }
         };
         if (input.abortSignal?.aborted) {
             finish(new Error('nostrconnect-aborted'));
             return;
         }
         input.abortSignal?.addEventListener('abort', () => finish(new Error('nostrconnect-aborted')), { once: true });
-        timer = setTimeout(() => finish(new Error('nostrconnect-timeout')), NIP46_PAIRING_WAIT_MS);
+        timer = setTimeout(() => finish(new Error('nostrconnect-timeout')), timeoutMs);
         sub = pool.subscribe(relays, {
             kinds: [NostrConnect],
             '#p': [clientPubkey],
@@ -177,9 +256,23 @@ async function waitForNostrConnectApproval(input) {
             maxWait: NIP46_REQUEST_TIMEOUT_MS,
             abort: input.abortSignal,
             onevent(event) {
+                const signerPubkey = /^[0-9a-f]{64}$/i.test(event.pubkey) ? event.pubkey.toLowerCase() : undefined;
+                if (signerPubkey) {
+                    emitNostrConnectStatus(input.onStatus, relays, {
+                        type: 'signer-seen',
+                        clientPubkey,
+                        signerPubkey,
+                    });
+                }
                 try {
                     const response = JSON.parse(nip44Decrypt(event.content, getConversationKey(input.clientSecretKey, event.pubkey)));
                     if (response.result === secret && /^[0-9a-f]{64}$/i.test(event.pubkey)) {
+                        emitNostrConnectStatus(input.onStatus, relays, {
+                            type: 'response-received',
+                            phase: 'pairing',
+                            clientPubkey,
+                            signerPubkey: event.pubkey.toLowerCase(),
+                        });
                         finish(null, event.pubkey);
                     }
                 }
@@ -187,27 +280,49 @@ async function waitForNostrConnectApproval(input) {
                     // Ignore unrelated/malformed events addressed to the temporary client pubkey.
                 }
             },
-            onclose() {
+            onclose(reasons) {
+                if (settled)
+                    return;
+                emitNostrConnectStatus(input.onStatus, relays, {
+                    type: 'error',
+                    phase: 'subscription',
+                    clientPubkey,
+                    message: Array.isArray(reasons) ? reasons.join(',') : 'nostrconnect-subscription-closed',
+                });
                 finish(new Error('nostrconnect-subscription-closed'));
             },
         });
     });
 }
 class RobustBunkerClient {
-    constructor(clientSecretKey, pointer) {
+    constructor(clientSecretKey, pointer, onStatus) {
         this.clientSecretKey = clientSecretKey;
         this.pointer = pointer;
-        this.pool = new SimplePool({ enableReconnect: true });
+        this.onStatus = onStatus;
         this.serial = 0;
         this.closed = false;
         this.idPrefix = Math.random().toString(36).slice(2);
         this.listeners = new Map();
         this.clientPubkey = getPublicKey(clientSecretKey);
         this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
+        this.pool = createInstrumentedNostrConnectPool({
+            relays: pointer.relays,
+            onStatus,
+            clientPubkey: this.clientPubkey,
+            signerPubkey: pointer.pubkey,
+        });
+    }
+    emit(status) {
+        emitNostrConnectStatus(this.onStatus, this.pointer.relays, {
+            clientPubkey: this.clientPubkey,
+            signerPubkey: this.pointer.pubkey,
+            ...status,
+        });
     }
     setupSubscription() {
         if (this.sub || this.closed)
             return;
+        this.emit({ type: 'relay-connecting', phase: 'request' });
         this.sub = this.pool.subscribe(this.pointer.relays, {
             kinds: [NostrConnect],
             authors: [this.pointer.pubkey],
@@ -231,10 +346,27 @@ class RobustBunkerClient {
                 return;
             clearTimeout(listener.timer);
             this.listeners.delete(response.id);
-            if (response.error)
-                listener.reject(new Error(response.error));
-            else
+            this.emit({
+                type: 'response-received',
+                phase: 'response',
+                method: listener.method,
+                requestId: response.id,
+            });
+            if (response.error) {
+                const err = new Error(response.error);
+                this.emit({
+                    type: 'error',
+                    phase: 'response',
+                    method: listener.method,
+                    requestId: response.id,
+                    message: err.message,
+                    error: err,
+                });
+                listener.reject(err);
+            }
+            else {
                 listener.resolve(response.result ?? '');
+            }
         }
         catch {
             // Ignore unrelated/malformed events.
@@ -255,9 +387,25 @@ class RobustBunkerClient {
         const response = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.listeners.delete(id);
-                reject(new Error(`nip46-${method}-timeout`));
+                const err = new Error(`nip46-${method}-timeout`);
+                this.emit({
+                    type: 'timeout',
+                    phase: 'request',
+                    method,
+                    requestId: id,
+                    timeoutMs: NIP46_REQUEST_TIMEOUT_MS,
+                    message: err.message,
+                    error: err,
+                });
+                reject(err);
             }, NIP46_REQUEST_TIMEOUT_MS);
-            this.listeners.set(id, { resolve, reject, timer });
+            this.listeners.set(id, { resolve, reject, timer, method });
+        });
+        this.emit({
+            type: 'request-sent',
+            phase: 'request',
+            method,
+            requestId: id,
         });
         void firstFulfilled(this.pool.publish(this.pointer.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }))
             .catch(() => {
@@ -266,7 +414,16 @@ class RobustBunkerClient {
                 return;
             clearTimeout(listener.timer);
             this.listeners.delete(id);
-            listener.reject(new Error(`nip46-${method}-publish-failed`));
+            const err = new Error(`nip46-${method}-publish-failed`);
+            this.emit({
+                type: 'error',
+                phase: 'publish',
+                method,
+                requestId: id,
+                message: err.message,
+                error: err,
+            });
+            listener.reject(err);
         });
         return response;
     }
@@ -310,12 +467,20 @@ class RobustBunkerClient {
  *                      the caller via buildNostrConnectUri)
  *   clientSecretKey  — the 32-byte session key the URI was built with
  *   abortSignal      — cancel a long-running wait when the modal closes
+ *   timeoutMs        — pairing wait deadline; defaults to 5 minutes
+ *   onStatus         — detailed pairing and NIP-46 request progress events
  */
 export async function createBunkerSignerFromNostrConnect(input) {
-    const { uri, clientSecretKey, abortSignal } = input;
+    const { uri, clientSecretKey, abortSignal, timeoutMs, onStatus } = input;
     if (clientSecretKey.length !== 32)
         throw new Error('invalid-client-secret-key');
-    const { signerPubkey, relays, secret } = await waitForNostrConnectApproval({ uri, clientSecretKey, abortSignal });
+    const { signerPubkey, relays, secret } = await waitForNostrConnectApproval({
+        uri,
+        clientSecretKey,
+        abortSignal,
+        timeoutMs,
+        onStatus,
+    });
     if (!/^[0-9a-f]{64}$/i.test(signerPubkey))
         throw new Error('invalid-pubkey-from-bunker');
     const normalizedBunkerUri = buildBunkerUriFromNostrConnectUri(uri, signerPubkey);
@@ -323,7 +488,7 @@ export async function createBunkerSignerFromNostrConnect(input) {
         pubkey: signerPubkey,
         relays,
         secret,
-    });
+    }, onStatus);
     return new BunkerSignerImpl(signerPubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 /**
@@ -443,7 +608,7 @@ export async function createBunkerSigner(input) {
     const sk = input.clientSecretKey ?? generateSecretKey();
     if (sk.length !== 32)
         throw new Error('invalid-client-secret-key');
-    const bunker = new RobustBunkerClient(sk, pointer);
+    const bunker = new RobustBunkerClient(sk, pointer, input.onStatus);
     const handshake = (async () => {
         await bunker.connect();
         return bunker.getPublicKey();

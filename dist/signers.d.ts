@@ -5,7 +5,7 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
-import type { EventTemplate, NostrEvent, SignetSigner, SignerCapabilities, SignetAuthEvent } from './types.js';
+import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEvent, SignetSigner, SignerCapabilities } from './types.js';
 /** The shape of `window.nostr` exposed by NIP-07 extensions. */
 interface Nip07Provider {
     getPublicKey(): Promise<string>;
@@ -70,11 +70,15 @@ export declare class BunkerSignerImpl implements SignetSigner {
  *                      the caller via buildNostrConnectUri)
  *   clientSecretKey  — the 32-byte session key the URI was built with
  *   abortSignal      — cancel a long-running wait when the modal closes
+ *   timeoutMs        — pairing wait deadline; defaults to 5 minutes
+ *   onStatus         — detailed pairing and NIP-46 request progress events
  */
 export declare function createBunkerSignerFromNostrConnect(input: {
     uri: string;
     clientSecretKey: Uint8Array;
     abortSignal?: AbortSignal;
+    timeoutMs?: number;
+    onStatus?: NostrConnectStatusHandler;
 }): Promise<BunkerSignerImpl>;
 /**
  * Build a NIP-46 `nostrconnect://` URI for the app-initiated flow. The
@@ -113,6 +117,7 @@ export declare function createBunkerSigner(input: {
     uri: string;
     clientSecretKey?: Uint8Array;
     onauth?: (url: string) => void;
+    onStatus?: NostrConnectStatusHandler;
     /**
      * Bound the NIP-46 `connect` + `get_public_key` handshake, in milliseconds.
      * Omit for the interactive paste flow, where a cold remote signer may

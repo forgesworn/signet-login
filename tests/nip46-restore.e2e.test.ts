@@ -20,7 +20,7 @@ import {
   loadOrCreatePersistentClientSkFromStorage,
   saveSessionToStorage,
 } from '../src/storage.js';
-import type { SignetStorage } from '../src/types.js';
+import type { NostrConnectStatus, SignetStorage } from '../src/types.js';
 
 type RelayRequest = ['REQ', string, ...Filter[]];
 type RelayEvent = ['EVENT', NostrEvent];
@@ -387,11 +387,19 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     }, storage);
     await pairedSigner.close();
 
-    const restored = await restoreSession({ storage });
+    const restoreStatuses: NostrConnectStatus[] = [];
+    const restored = await restoreSession({
+      storage,
+      onNostrConnectStatus: event => restoreStatuses.push(event),
+    });
     expect(restored?.pubkey).toBe(testSigner.pubkey);
     expect(restored?.method).toBe('bunker');
     expect(restored?.signer.capabilities).toEqual({ canSignEvents: true, hasNip44: true });
     expect(testSigner.connectRequests).toBe(1);
+    expect(restoreStatuses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'request-sent', method: 'connect' }),
+      expect.objectContaining({ type: 'response-received', method: 'connect' }),
+    ]));
 
     const signed = await restored!.signer.signEvent({
       kind: 1,

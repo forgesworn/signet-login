@@ -24,6 +24,10 @@ export type {
   SignetSigner,
   SignetAuthEvent,
   SignetSession,
+  NostrConnectStatus,
+  NostrConnectStatusHandler,
+  NostrConnectStatusPhase,
+  NostrConnectStatusType,
   LoginOptions,
   RestoreOptions,
   SignetStorage,
@@ -305,6 +309,7 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       const signer = await createBunkerSigner({
         uri: stored.bunkerUri,
         clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts?.storage),
+        onStatus: opts?.onNostrConnectStatus,
       });
       if (signer.pubkey !== stored.pubkey) {
         console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session', { connected: signer.pubkey, expected: stored.pubkey });

@@ -114,4 +114,43 @@ describe('NostrConnect modal flow', () => {
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await expect(pending).resolves.toBeNull();
   });
+
+  it('passes timeout and status events through the NostrConnect modal flow', async () => {
+    const events: Array<{ type: string; relay?: string }> = [];
+    const pending = login({
+      appName: 'Canary',
+      theme: 'dark',
+      persist: false,
+      preferredMethod: 'nostrconnect',
+      relayUrl: 'wss://relay.trotters.cc',
+      timeout: 7_000,
+      onNostrConnectStatus: event => events.push(event),
+    });
+
+    await waitForElement<HTMLTextAreaElement>('#signet-login-nc-uri');
+    const call = vi.mocked(createBunkerSignerFromNostrConnect).mock.calls.at(-1)?.[0];
+    expect(call).toEqual(expect.objectContaining({
+      timeoutMs: 7_000,
+      onStatus: expect.any(Function),
+    }));
+
+    call!.onStatus?.({
+      type: 'relay-connected',
+      timestamp: 1,
+      relays: ['wss://relay.trotters.cc'],
+      relay: 'wss://relay.trotters.cc',
+    });
+
+    const status = await waitForElement<HTMLElement>('#signet-login-nc-status');
+    expect(status.textContent).toContain('Connected to relay wss://relay.trotters.cc');
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'relay-connected',
+        relay: 'wss://relay.trotters.cc',
+      }),
+    ]);
+
+    document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+    await expect(pending).resolves.toBeNull();
+  });
 });

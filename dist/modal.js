@@ -691,6 +691,30 @@ async function runBunkerFlow(refs, opts) {
     });
 }
 // ── Connect a Nostr signer (NostrConnect URI, app-initiated NIP-46) ──────────
+function nostrConnectStatusText(status) {
+    switch (status.type) {
+        case 'uri-created':
+            return 'NostrConnect URI ready. Scan or copy it into your signer.';
+        case 'relay-connecting':
+            return 'Connecting to NostrConnect relay...';
+        case 'relay-connected':
+            return `Connected to relay${status.relay ? ` ${status.relay}` : ''}. Waiting for signer approval...`;
+        case 'signer-seen':
+            return 'Signer seen. Verifying approval...';
+        case 'request-sent':
+            return status.method === 'connect'
+                ? 'Signer approved. Confirming connection...'
+                : `Sent ${status.method ?? 'NIP-46'} request to signer...`;
+        case 'response-received':
+            return status.phase === 'pairing'
+                ? 'Approval received. Preparing signer...'
+                : `Signer responded${status.method ? ` to ${status.method}` : ''}.`;
+        case 'timeout':
+            return status.message ? `Timed out: ${status.message}` : 'Timed out waiting for signer.';
+        case 'error':
+            return status.message ? `Error: ${status.message}` : 'NostrConnect failed.';
+    }
+}
 /**
  * App-initiated NIP-46. Mirror image of bunker URI: instead of the user
  * pasting a bunker URI from their signer, we generate a `nostrconnect://`
@@ -790,7 +814,21 @@ async function runNostrConnectFlow(refs, opts) {
             ac.abort();
             settle(null);
         });
-        createBunkerSignerFromNostrConnect({ uri, clientSecretKey: sk, abortSignal: ac.signal })
+        const handleStatus = (event) => {
+            const text = nostrConnectStatusText(event);
+            if (status && text) {
+                status.textContent = text;
+                status.style.color = event.type === 'error' || event.type === 'timeout' ? '#d04848' : muted;
+            }
+            opts.onNostrConnectStatus?.(event);
+        };
+        createBunkerSignerFromNostrConnect({
+            uri,
+            clientSecretKey: sk,
+            abortSignal: ac.signal,
+            timeoutMs: opts.timeout,
+            onStatus: handleStatus,
+        })
             .then(signer => settle(signer))
             .catch(err => {
             if (settled)
@@ -920,6 +958,8 @@ function resolveOptions(opts) {
         result.redirectCallback = opts.redirectCallback;
     if (opts.storage !== undefined)
         result.storage = opts.storage;
+    if (opts.onNostrConnectStatus !== undefined)
+        result.onNostrConnectStatus = opts.onNostrConnectStatus;
     return result;
 }
 let modalQueue = Promise.resolve();

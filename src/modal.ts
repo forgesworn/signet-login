@@ -5,7 +5,14 @@
  * top-layer placement, theme-aware colours, no third-party UI deps.
  */
 
-import type { LoginOptions, SignetSession, LoginPickerMethod, SignetAuthEvent, SignetStorage } from './types.js';
+import type {
+  LoginOptions,
+  LoginPickerMethod,
+  NostrConnectStatus,
+  SignetAuthEvent,
+  SignetSession,
+  SignetStorage,
+} from './types.js';
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
@@ -791,6 +798,31 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
 
 // ── Connect a Nostr signer (NostrConnect URI, app-initiated NIP-46) ──────────
 
+function nostrConnectStatusText(status: NostrConnectStatus): string | null {
+  switch (status.type) {
+    case 'uri-created':
+      return 'NostrConnect URI ready. Scan or copy it into your signer.';
+    case 'relay-connecting':
+      return 'Connecting to NostrConnect relay...';
+    case 'relay-connected':
+      return `Connected to relay${status.relay ? ` ${status.relay}` : ''}. Waiting for signer approval...`;
+    case 'signer-seen':
+      return 'Signer seen. Verifying approval...';
+    case 'request-sent':
+      return status.method === 'connect'
+        ? 'Signer approved. Confirming connection...'
+        : `Sent ${status.method ?? 'NIP-46'} request to signer...`;
+    case 'response-received':
+      return status.phase === 'pairing'
+        ? 'Approval received. Preparing signer...'
+        : `Signer responded${status.method ? ` to ${status.method}` : ''}.`;
+    case 'timeout':
+      return status.message ? `Timed out: ${status.message}` : 'Timed out waiting for signer.';
+    case 'error':
+      return status.message ? `Error: ${status.message}` : 'NostrConnect failed.';
+  }
+}
+
 /**
  * App-initiated NIP-46. Mirror image of bunker URI: instead of the user
  * pasting a bunker URI from their signer, we generate a `nostrconnect://`
@@ -896,7 +928,22 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
       settle(null);
     });
 
-    createBunkerSignerFromNostrConnect({ uri, clientSecretKey: sk, abortSignal: ac.signal })
+    const handleStatus = (event: NostrConnectStatus): void => {
+      const text = nostrConnectStatusText(event);
+      if (status && text) {
+        status.textContent = text;
+        status.style.color = event.type === 'error' || event.type === 'timeout' ? '#d04848' : muted;
+      }
+      opts.onNostrConnectStatus?.(event);
+    };
+
+    createBunkerSignerFromNostrConnect({
+      uri,
+      clientSecretKey: sk,
+      abortSignal: ac.signal,
+      timeoutMs: opts.timeout,
+      onStatus: handleStatus,
+    })
       .then(signer => settle(signer))
       .catch(err => {
         if (settled) return;  // already cancelled
@@ -980,6 +1027,7 @@ interface ResolvedOptions {
   relayUrl: string;
   relayUrls: string[];
   nostrConnectPerms: string[];
+  onNostrConnectStatus?: LoginOptions['onNostrConnectStatus'];
   theme: 'light' | 'dark' | 'auto';
   timeout: number;
   signetAppOrigin: string;
@@ -1045,6 +1093,7 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
   if (opts.preferredMethod !== undefined) result.preferredMethod = opts.preferredMethod;
   if (opts.redirectCallback !== undefined) result.redirectCallback = opts.redirectCallback;
   if (opts.storage !== undefined) result.storage = opts.storage;
+  if (opts.onNostrConnectStatus !== undefined) result.onNostrConnectStatus = opts.onNostrConnectStatus;
   return result;
 }
 

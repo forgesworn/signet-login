@@ -75,6 +75,43 @@ export interface SignetSession {
   displayName?: string;
 }
 
+export type NostrConnectStatusType =
+  | 'uri-created'
+  | 'relay-connecting'
+  | 'relay-connected'
+  | 'signer-seen'
+  | 'request-sent'
+  | 'response-received'
+  | 'timeout'
+  | 'error';
+
+export type NostrConnectStatusPhase =
+  | 'pairing'
+  | 'relay'
+  | 'subscription'
+  | 'request'
+  | 'publish'
+  | 'response'
+  | 'abort';
+
+export interface NostrConnectStatus {
+  type: NostrConnectStatusType;
+  timestamp: number;
+  relays: string[];
+  clientPubkey?: string;
+  signerPubkey?: string;
+  relay?: string;
+  uri?: string;
+  method?: string;
+  requestId?: string;
+  timeoutMs?: number;
+  phase?: NostrConnectStatusPhase;
+  message?: string;
+  error?: unknown;
+}
+
+export type NostrConnectStatusHandler = (status: NostrConnectStatus) => void;
+
 /**
  * Delivery mode for the "Sign in with Signet" method.
  *
@@ -135,6 +172,12 @@ export interface LoginOptions {
    * Default: sign_event, nip44_encrypt, nip44_decrypt.
    */
   nostrConnectPerms?: string[];
+  /**
+   * Receives detailed app-initiated NostrConnect progress events. Use this for
+   * diagnostics, custom UI, and telemetry instead of scraping the built-in
+   * modal text.
+   */
+  onNostrConnectStatus?: NostrConnectStatusHandler;
   /** Modal colour scheme. Default: 'auto'. */
   theme?: 'light' | 'dark' | 'auto';
   /** Timeout in milliseconds. Default: 120_000. Clamped to [5_000, 600_000]. */
@@ -191,6 +234,8 @@ export interface RestoreOptions {
   reconnectBunker?: boolean;
   /** Default relay for bunker reconnection if URI omits it. */
   defaultRelay?: string;
+  /** Receives detailed NIP-46 reconnect progress events for stored bunker sessions. */
+  onNostrConnectStatus?: NostrConnectStatusHandler;
   /**
    * Storage backend for session restore. Must match the backend passed to
    * `login()` / `handleRedirectCallback()` if you override the default.
