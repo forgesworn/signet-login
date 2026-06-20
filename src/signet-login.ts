@@ -480,6 +480,15 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
  */
 export async function logout(currentSession?: SignetSession, opts?: LogoutOptions): Promise<void> {
   if (currentSession) {
+    try {
+      const remoteLogout = currentSession.signer.nip46?.logout();
+      if (remoteLogout) {
+        await Promise.race([
+          remoteLogout,
+          new Promise(resolve => setTimeout(resolve, 1_500)),
+        ]);
+      }
+    } catch { /* ignore */ }
     try { await currentSession.signer.close(); } catch { /* ignore */ }
   }
   await clearSessionFromStorage(opts?.storage);

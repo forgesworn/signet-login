@@ -11,6 +11,7 @@ import { NostrConnect } from 'nostr-tools/kinds';
 import { SimplePool } from 'nostr-tools/pool';
 import { decode as nip19Decode } from 'nostr-tools/nip19';
 import { encrypt as nip44Encrypt, decrypt as nip44Decrypt, getConversationKey } from 'nostr-tools/nip44';
+import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
 /** Returns true if a NIP-07 extension is present on the page. */
 export function hasNip07() {
     return typeof window !== 'undefined' && !!window.nostr && typeof window.nostr.signEvent === 'function';
@@ -21,6 +22,12 @@ export class Nip07Signer {
         this.provider = provider;
         this.method = 'nip07';
         this.capabilities = { canSignEvents: true, hasNip44: !!provider.nip44 };
+        if (provider.nip04) {
+            this.nip04 = {
+                encrypt: (peer, pt) => provider.nip04.encrypt(peer, pt),
+                decrypt: (peer, ct) => provider.nip04.decrypt(peer, ct),
+            };
+        }
         if (provider.nip44) {
             this.nip44 = {
                 encrypt: (peer, pt) => provider.nip44.encrypt(peer, pt),
@@ -73,9 +80,18 @@ export class BunkerSignerImpl {
         this.clientSecretKey = clientSecretKey;
         this.method = 'bunker';
         this.capabilities = { canSignEvents: true, hasNip44: true };
+        this.nip04 = {
+            encrypt: (peer, pt) => bunker.nip04Encrypt(peer, pt),
+            decrypt: (peer, ct) => bunker.nip04Decrypt(peer, ct),
+        };
         this.nip44 = {
             encrypt: (peer, pt) => bunker.nip44Encrypt(peer, pt),
             decrypt: (peer, ct) => bunker.nip44Decrypt(peer, ct),
+        };
+        this.nip46 = {
+            ping: () => bunker.ping(),
+            switchRelays: () => bunker.switchRelays(),
+            logout: () => bunker.logout(),
         };
     }
     async signEvent(template) {
@@ -305,15 +321,16 @@ class RobustBunkerClient {
         this.listeners = new Map();
         this.clientPubkey = getPublicKey(clientSecretKey);
         this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
+        this.relays = [...pointer.relays];
         this.pool = createInstrumentedNostrConnectPool({
-            relays: pointer.relays,
+            relays: this.relays,
             onStatus,
             clientPubkey: this.clientPubkey,
             signerPubkey: pointer.pubkey,
         });
     }
     emit(status) {
-        emitNostrConnectStatus(this.onStatus, this.pointer.relays, {
+        emitNostrConnectStatus(this.onStatus, this.relays, {
             clientPubkey: this.clientPubkey,
             signerPubkey: this.pointer.pubkey,
             ...status,
@@ -323,7 +340,7 @@ class RobustBunkerClient {
         if (this.sub || this.closed)
             return;
         this.emit({ type: 'relay-connecting', phase: 'request' });
-        this.sub = this.pool.subscribe(this.pointer.relays, {
+        const sub = this.pool.subscribe(this.relays, {
             kinds: [NostrConnect],
             authors: [this.pointer.pubkey],
             '#p': [this.clientPubkey],
@@ -332,9 +349,11 @@ class RobustBunkerClient {
             maxWait: NIP46_REQUEST_TIMEOUT_MS,
             onevent: event => this.handleResponseEvent(event),
             onclose: () => {
-                this.sub = undefined;
+                if (this.sub === sub)
+                    this.sub = undefined;
             },
         });
+        this.sub = sub;
     }
     handleResponseEvent(event) {
         try {
@@ -407,7 +426,7 @@ class RobustBunkerClient {
             method,
             requestId: id,
         });
-        void firstFulfilled(this.pool.publish(this.pointer.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }))
+        void firstFulfilled(this.pool.publish(this.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }))
             .catch(() => {
             const listener = this.listeners.get(id);
             if (!listener)
@@ -431,7 +450,13 @@ class RobustBunkerClient {
         await this.sendRequest('connect', [this.pointer.pubkey, this.pointer.secret ?? '']);
     }
     async getPublicKey() {
-        return this.pointer.pubkey;
+        if (!this.cachedPubkey) {
+            const pubkey = (await this.sendRequest('get_public_key', [])).trim().toLowerCase();
+            if (!/^[0-9a-f]{64}$/i.test(pubkey))
+                throw new Error('invalid-pubkey-from-bunker');
+            this.cachedPubkey = pubkey;
+        }
+        return this.cachedPubkey;
     }
     async signEvent(event) {
         const signed = JSON.parse(await this.sendRequest('sign_event', [JSON.stringify(event)]));
@@ -439,11 +464,54 @@ class RobustBunkerClient {
             throw new Error(`event returned from bunker is improperly signed: ${JSON.stringify(signed)}`);
         return signed;
     }
+    async nip04Encrypt(peerPubkey, plaintext) {
+        return this.sendRequest('nip04_encrypt', [peerPubkey, plaintext]);
+    }
+    async nip04Decrypt(peerPubkey, ciphertext) {
+        return this.sendRequest('nip04_decrypt', [peerPubkey, ciphertext]);
+    }
     async nip44Encrypt(peerPubkey, plaintext) {
         return this.sendRequest('nip44_encrypt', [peerPubkey, plaintext]);
     }
     async nip44Decrypt(peerPubkey, ciphertext) {
         return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext]);
+    }
+    async ping() {
+        const response = await this.sendRequest('ping', []);
+        if (response !== 'pong')
+            throw new Error(`result is not pong: ${response}`);
+    }
+    async switchRelays() {
+        try {
+            const response = await this.sendRequest('switch_relays', []);
+            const parsed = JSON.parse(response);
+            if (parsed === null)
+                return false;
+            if (!Array.isArray(parsed))
+                return false;
+            const nextRelays = Array.from(new Set(parsed
+                .map(relay => typeof relay === 'string' ? relay.trim() : '')
+                .filter(relay => /^wss?:\/\//.test(relay))));
+            if (nextRelays.length !== parsed.length || nextRelays.length === 0)
+                return false;
+            const same = JSON.stringify([...nextRelays].sort()) === JSON.stringify([...this.relays].sort());
+            if (same)
+                return false;
+            const previousSub = this.sub;
+            this.relays = nextRelays;
+            setTimeout(() => previousSub?.close('switch-relays'), 5000);
+            this.sub = undefined;
+            this.setupSubscription();
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    async logout() {
+        const response = await this.sendRequest('logout', []);
+        if (response !== 'ack')
+            throw new Error(`result is not ack: ${response}`);
     }
     async close() {
         this.closed = true;
@@ -489,7 +557,9 @@ export async function createBunkerSignerFromNostrConnect(input) {
         relays,
         secret,
     }, onStatus);
-    return new BunkerSignerImpl(signerPubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
+    const pubkey = await bunker.getPublicKey();
+    await bestEffortSwitchRelays(bunker);
+    return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 /**
  * Build a NIP-46 `nostrconnect://` URI for the app-initiated flow. The
@@ -591,6 +661,24 @@ async function raceBunkerHandshake(p, ms, bunker) {
             clearTimeout(timer);
     }
 }
+async function bestEffortSwitchRelays(bunker, timeoutMs = 1000) {
+    let timer;
+    try {
+        await Promise.race([
+            bunker.switchRelays(),
+            new Promise(resolve => {
+                timer = setTimeout(resolve, timeoutMs);
+            }),
+        ]);
+    }
+    catch {
+        // Relay migration is advisory; keep the session usable on the current relays.
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
+}
 /**
  * Connect a bunker session from a `bunker://` URI or NIP-05 identifier. Pass
  * `clientSecretKey` to bind a stable client pubkey the signer can auto-approve
@@ -627,6 +715,7 @@ export async function createBunkerSigner(input) {
         await bunker.close().catch(() => { });
         throw new Error('invalid-pubkey-from-bunker');
     }
+    await bestEffortSwitchRelays(bunker);
     return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, trimmed, sk);
 }
 /** Generate a 32-byte secret key. */
@@ -648,6 +737,10 @@ export class LocalSigner {
         this.privkey = privkey;
         this.method = 'nsec';
         this.capabilities = { canSignEvents: true, hasNip44: true };
+        this.nip04 = {
+            encrypt: async (peer, pt) => nip04Encrypt(this.privkey, peer, pt),
+            decrypt: async (peer, ct) => nip04Decrypt(this.privkey, peer, ct),
+        };
         this.nip44 = {
             encrypt: async (peer, pt) => nip44Encrypt(pt, getConversationKey(this.privkey, peer)),
             decrypt: async (peer, ct) => nip44Decrypt(ct, getConversationKey(this.privkey, peer)),
@@ -753,9 +846,18 @@ export class DeferredBunkerSigner {
                 this.capabilities.hasNip44 = true;
             }
         });
+        this.nip04 = {
+            encrypt: async (peer, pt) => (await this.live()).nip04.encrypt(peer, pt),
+            decrypt: async (peer, ct) => (await this.live()).nip04.decrypt(peer, ct),
+        };
         this.nip44 = {
             encrypt: async (peer, pt) => (await this.live()).nip44.encrypt(peer, pt),
             decrypt: async (peer, ct) => (await this.live()).nip44.decrypt(peer, ct),
+        };
+        this.nip46 = {
+            ping: async () => (await this.live()).nip46.ping(),
+            switchRelays: async () => (await this.live()).nip46.switchRelays(),
+            logout: async () => (await this.live()).nip46.logout(),
         };
     }
     async live() {

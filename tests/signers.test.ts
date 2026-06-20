@@ -75,6 +75,10 @@ describe('createNip07Signer', () => {
         encrypt: async (_p: string, t: string) => `enc(${t})`,
         decrypt: async (_p: string, c: string) => c.replace(/^enc\(|\)$/g, ''),
       },
+      nip04: {
+        encrypt: async (_p: string, t: string) => `legacy(${t})`,
+        decrypt: async (_p: string, c: string) => c.replace(/^legacy\(|\)$/g, ''),
+      },
     };
     const signer = await createNip07Signer();
     expect(signer.pubkey).toBe(fakePub); // lowercased
@@ -87,6 +91,8 @@ describe('createNip07Signer', () => {
 
     const ct = await signer.nip44!.encrypt('peer', 'hello');
     expect(ct).toBe('enc(hello)');
+    expect(await signer.nip04!.encrypt('peer', 'hello')).toBe('legacy(hello)');
+    expect(await signer.nip04!.decrypt('peer', 'legacy(hello)')).toBe('hello');
 
     await signer.close(); // no-op, just shouldn't throw
   });
@@ -184,7 +190,13 @@ describe('DeferredBunkerSigner', () => {
   const fakeBunker = {
     pubkey,
     signEvent: vi.fn(async () => signed),
+    nip04: { encrypt: async (_p: string, _t: string) => 'NIP04CT', decrypt: async (_p: string, _c: string) => 'NIP04PT' },
     nip44: { encrypt: async (_p: string, _t: string) => 'CT', decrypt: async (_p: string, _c: string) => 'PT' },
+    nip46: {
+      ping: vi.fn(async () => {}),
+      switchRelays: vi.fn(async () => false),
+      logout: vi.fn(async () => {}),
+    },
     close: vi.fn(async () => {}),
   } as unknown as BunkerSignerImpl;
 
@@ -224,6 +236,15 @@ describe('DeferredBunkerSigner', () => {
     expect(await s.nip44!.decrypt('peer', 'y')).toBe('PT');
   });
 
+  it('delegates nip04 and NIP-46 management helpers to the connected bunker', async () => {
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
+    expect(await s.nip04!.encrypt('peer', 'x')).toBe('NIP04CT');
+    expect(await s.nip04!.decrypt('peer', 'y')).toBe('NIP04PT');
+    await expect(s.nip46!.ping()).resolves.toBeUndefined();
+    await expect(s.nip46!.switchRelays()).resolves.toBe(false);
+    await expect(s.nip46!.logout()).resolves.toBeUndefined();
+  });
+
   it('rejects signEvent with the auth-only error when the bunker never connected', async () => {
     const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null));
     await expect(s.signEvent({ kind: 1, content: '', tags: [], created_at: 1 })).rejects.toThrow(/signer-auth-only/);
@@ -261,6 +282,15 @@ describe('createLocalSignerFromNsec', () => {
     const event = await signer.signEvent({ kind: 1, content: 'hi', tags: [], created_at: 1 });
     expect(event.pubkey).toBe(expectedPubkey);
     expect(event.sig).toMatch(/^[0-9a-f]{128}$/);
+  });
+
+  it('exposes NIP-04 on local nsec signers', async () => {
+    const alice = createLocalSignerFromNsec(nsecEncode(generateSecretKey()));
+    const bob = createLocalSignerFromNsec(nsecEncode(generateSecretKey()));
+
+    const ciphertext = await alice.nip04!.encrypt(bob.pubkey, 'legacy secret');
+    expect(ciphertext).not.toBe('legacy secret');
+    await expect(bob.nip04!.decrypt(alice.pubkey, ciphertext)).resolves.toBe('legacy secret');
   });
 
   it('accepts a 64-char hex private key', () => {

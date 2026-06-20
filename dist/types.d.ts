@@ -39,9 +39,18 @@ export interface SignetSigner {
     readonly method: LoginMethod;
     readonly capabilities: SignerCapabilities;
     signEvent(template: EventTemplate): Promise<NostrEvent>;
+    nip04?: {
+        encrypt(peerPubkey: string, plaintext: string): Promise<string>;
+        decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    };
     nip44?: {
         encrypt(peerPubkey: string, plaintext: string): Promise<string>;
         decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    };
+    nip46?: {
+        ping(): Promise<void>;
+        switchRelays(): Promise<boolean>;
+        logout(): Promise<void>;
     };
     close(): Promise<void>;
 }

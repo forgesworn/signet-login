@@ -368,6 +368,16 @@ export async function handleRedirectCallback(options = {}) {
 export async function logout(currentSession, opts) {
     if (currentSession) {
         try {
+            const remoteLogout = currentSession.signer.nip46?.logout();
+            if (remoteLogout) {
+                await Promise.race([
+                    remoteLogout,
+                    new Promise(resolve => setTimeout(resolve, 1500)),
+                ]);
+            }
+        }
+        catch { /* ignore */ }
+        try {
             await currentSession.signer.close();
         }
         catch { /* ignore */ }

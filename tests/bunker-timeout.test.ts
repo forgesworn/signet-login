@@ -44,10 +44,11 @@ vi.mock('nostr-tools/pool', async () => {
               const conversationKey = getConversationKey(signerSecretKey, event.pubkey);
               const request = JSON.parse(decrypt(event.content, conversationKey)) as { id: string; method: string };
               h.publishedMethods.push(request.method);
+              const result = request.method === 'get_public_key' ? h.signerPubkey : 'ack';
               const response = finalizeEvent({
                 kind: NostrConnect,
                 tags: [['p', event.pubkey]],
-                content: encrypt(JSON.stringify({ id: request.id, result: 'ack' }), conversationKey),
+                content: encrypt(JSON.stringify({ id: request.id, result }), conversationKey),
                 created_at: Math.floor(Date.now() / 1000),
               }, signerSecretKey);
               h.handlers?.onevent?.(response);

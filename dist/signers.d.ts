@@ -10,6 +10,10 @@ import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEv
 interface Nip07Provider {
     getPublicKey(): Promise<string>;
     signEvent(event: EventTemplate): Promise<NostrEvent>;
+    nip04?: {
+        encrypt(peerPubkey: string, plaintext: string): Promise<string>;
+        decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    };
     nip44?: {
         encrypt(peerPubkey: string, plaintext: string): Promise<string>;
         decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
@@ -27,6 +31,7 @@ export declare class Nip07Signer implements SignetSigner {
     private readonly provider;
     readonly method: "nip07";
     readonly capabilities: SignerCapabilities;
+    readonly nip04?: SignetSigner['nip04'];
     readonly nip44?: SignetSigner['nip44'];
     constructor(pubkey: string, provider: Nip07Provider);
     signEvent(template: EventTemplate): Promise<NostrEvent>;
@@ -37,8 +42,13 @@ export declare function createNip07Signer(): Promise<Nip07Signer>;
 interface Nip46SignerClient {
     getPublicKey(): Promise<string>;
     signEvent(event: EventTemplate): Promise<NostrEvent>;
+    nip04Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
+    nip04Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
     nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
     nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    ping(): Promise<void>;
+    switchRelays(): Promise<boolean>;
+    logout(): Promise<void>;
     close(): Promise<void>;
 }
 /** Wraps a NIP-46 client with our SignetSigner interface. */
@@ -51,7 +61,9 @@ export declare class BunkerSignerImpl implements SignetSigner {
     readonly clientSecretKey: Uint8Array;
     readonly method: "bunker";
     readonly capabilities: SignerCapabilities;
+    readonly nip04: SignetSigner['nip04'];
     readonly nip44: SignetSigner['nip44'];
+    readonly nip46: SignetSigner['nip46'];
     constructor(pubkey: string, bunker: Nip46SignerClient, 
     /** Original bunker URI — kept for persistence/reconnect. */
     bunkerUri: string, 
@@ -142,6 +154,7 @@ export declare class LocalSigner implements SignetSigner {
     private readonly privkey;
     readonly method: "nsec";
     readonly capabilities: SignerCapabilities;
+    readonly nip04: SignetSigner['nip04'];
     readonly nip44: SignetSigner['nip44'];
     constructor(pubkey: string, privkey: Uint8Array);
     signEvent(template: EventTemplate): Promise<NostrEvent>;
@@ -187,7 +200,9 @@ export declare class DeferredBunkerSigner implements SignetSigner {
     readonly clientSecretKey?: Uint8Array | undefined;
     readonly method: "bunker";
     readonly capabilities: SignerCapabilities;
+    readonly nip04: SignetSigner['nip04'];
     readonly nip44: SignetSigner['nip44'];
+    readonly nip46: SignetSigner['nip46'];
     constructor(pubkey: string, authEvent: SignetAuthEvent, 
     /** Resolves to the connected bunker, or null if the connect failed. */
     upgrade: Promise<BunkerSignerImpl | null>, 

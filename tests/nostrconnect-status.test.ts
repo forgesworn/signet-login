@@ -54,7 +54,9 @@ vi.mock('nostr-tools/pool', async () => {
             };
             h.publishedMethods.push(request.method);
             let result = 'ack';
-            if (request.method === 'sign_event') {
+            if (request.method === 'get_public_key') {
+              result = h.signerPubkey;
+            } else if (request.method === 'sign_event') {
               result = JSON.stringify(finalizeEvent(JSON.parse(request.params[0]), h.signerSecretKey));
             }
             const response = finalizeEvent({
@@ -95,7 +97,7 @@ function pairingUri(clientKey: Uint8Array): string {
     clientPubkeyHex: getPublicKey(clientKey),
     relayUrl: 'wss://relay.test',
     secret: 'status-secret',
-    perms: ['sign_event', 'nip44_encrypt', 'nip44_decrypt'],
+    perms: ['sign_event', 'nip04_encrypt', 'nip04_decrypt', 'nip44_encrypt', 'nip44_decrypt'],
     appName: 'Status Test',
     appUrl: 'https://status.example',
   });

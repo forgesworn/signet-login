@@ -7,6 +7,7 @@ import { NostrConnect } from 'nostr-tools/kinds';
 import type { Event as NostrEvent, EventTemplate } from 'nostr-tools/core';
 import type { Filter } from 'nostr-tools/filter';
 import { decrypt, encrypt, getConversationKey } from 'nostr-tools/nip44';
+import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 
 import {
@@ -305,6 +306,16 @@ class TestNip46Signer {
           const [peerPubkey, ciphertext] = request.params;
           return { id: request.id, result: decrypt(ciphertext, getConversationKey(this.secretKey, peerPubkey)) };
         }
+        case 'nip04_encrypt': {
+          const [peerPubkey, plaintext] = request.params;
+          return { id: request.id, result: nip04Encrypt(this.secretKey, peerPubkey, plaintext) };
+        }
+        case 'nip04_decrypt': {
+          const [peerPubkey, ciphertext] = request.params;
+          return { id: request.id, result: nip04Decrypt(this.secretKey, peerPubkey, ciphertext) };
+        }
+        case 'logout':
+          return { id: request.id, result: 'ack' };
         default:
           return { id: request.id, error: `unsupported-method:${request.method}` };
       }
@@ -413,6 +424,18 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     const ciphertext = await restored!.signer.nip44!.encrypt(testSigner.pubkey, 'restored-nip44-secret');
     expect(ciphertext).not.toBe('restored-nip44-secret');
     await expect(restored!.signer.nip44!.decrypt(testSigner.pubkey, ciphertext)).resolves.toBe('restored-nip44-secret');
+
+    const peerSk = generateSecretKey();
+    const peerPubkey = getPublicKey(peerSk);
+    const nip04Ciphertext = await restored!.signer.nip04!.encrypt(peerPubkey, 'restored-nip04-secret');
+    expect(nip04Ciphertext).not.toBe('restored-nip04-secret');
+    expect(nip04Decrypt(peerSk, testSigner.pubkey, nip04Ciphertext)).toBe('restored-nip04-secret');
+    const incomingNip04Ciphertext = nip04Encrypt(peerSk, testSigner.pubkey, 'incoming-nip04-secret');
+    await expect(restored!.signer.nip04!.decrypt(peerPubkey, incomingNip04Ciphertext)).resolves.toBe('incoming-nip04-secret');
+
+    await expect(restored!.signer.nip46!.ping()).resolves.toBeUndefined();
+    await expect(restored!.signer.nip46!.switchRelays()).resolves.toBe(false);
+    await expect(restored!.signer.nip46!.logout()).resolves.toBeUndefined();
 
     await restored!.signer.close();
   });
