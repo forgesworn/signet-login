@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.1 (2026-06-20)
+
+### Bug Fixes
+
+- unblock release compatibility gate
+
+
+
 ## 0.12.0 (2026-06-20)
 
 ### Features
