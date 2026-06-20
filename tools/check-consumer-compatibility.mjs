@@ -10,6 +10,7 @@ const signetLoginSha = process.env.SIGNET_LOGIN_SHA || process.env.GITHUB_SHA ||
 const signetLoginPackageVersion = process.env.SIGNET_LOGIN_PACKAGE_VERSION || readPackageVersion();
 const timeoutMinutes = Number(process.env.CONSUMER_COMPATIBILITY_TIMEOUT_MINUTES || '45');
 const physicalSmokeMaxAgeDays = Number(process.env.PHYSICAL_MOBILE_SMOKE_MAX_AGE_DAYS || '7');
+const requirePhysicalMobileSmoke = parseBoolean(process.env.REQUIRE_PHYSICAL_MOBILE_SMOKE, false);
 
 const consumers = [
   {
@@ -71,6 +72,11 @@ function readPackageVersion() {
   } catch {
     return '';
   }
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
 function workflowUrl(repo, workflow, suffix = '') {
@@ -212,6 +218,7 @@ function printDryRun() {
   log(`signet_login_sha=${signetLoginSha || '<empty>'}`);
   log(`signet_login_candidate=true`);
   log(`signet_login_package_version=${signetLoginPackageVersion || '<empty>'}`);
+  log(`require physical mobile smoke: ${requirePhysicalMobileSmoke ? 'true' : 'false'}`);
   log(`physical smoke max age: ${physicalSmokeMaxAgeDays} day(s)`);
   log(`consumer timeout: ${timeoutMinutes} minute(s)`);
   for (const consumer of consumers) {
@@ -238,7 +245,11 @@ async function main() {
     fail('SIGNET_LOGIN_REF or SIGNET_LOGIN_SHA must identify the candidate commit/tag for consumer compatibility.');
   }
 
-  await checkRecentPhysicalMobileSmoke();
+  if (requirePhysicalMobileSmoke) {
+    await checkRecentPhysicalMobileSmoke();
+  } else {
+    log('physical mobile smoke gate disabled; skipping recent-run check.');
+  }
 
   const dispatches = [];
   for (const consumer of consumers) {

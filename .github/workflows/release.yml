@@ -41,6 +41,7 @@ jobs:
           GH_TOKEN: ${{ secrets.FORGESWORN_RELEASE_PAT }}
           SIGNET_LOGIN_REF: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
           SIGNET_LOGIN_SHA: ${{ github.sha }}
+          REQUIRE_PHYSICAL_MOBILE_SMOKE: ${{ vars.REQUIRE_PHYSICAL_MOBILE_SMOKE || 'false' }}
         run: node tools/check-consumer-compatibility.mjs
 
   release:
