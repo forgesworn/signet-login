@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0 (2026-06-20)
+
+### Features
+
+- expand NIP-46 signer capabilities
+
+
+
 ## 0.11.1 (2026-06-19)
 
 ### Bug Fixes
