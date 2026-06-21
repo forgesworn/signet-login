@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.1 (2026-06-21)
+
+### Bug Fixes
+
+- keep device picker order stable, highlight the likely option
+
+
+
 ## 0.13.0 (2026-06-21)
 
 ### Features
