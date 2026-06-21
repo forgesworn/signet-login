@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.0 (2026-06-21)
+
+### Features
+
+- make the device picker platform-aware
+
+
+
 ## 0.12.1 (2026-06-20)
 
 ### Bug Fixes
