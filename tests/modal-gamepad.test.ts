@@ -58,8 +58,8 @@ async function waitForActiveDialog(): Promise<HTMLDialogElement> {
 }
 
 async function completeActiveNsecLogin(rawPrivateKeyHex: string): Promise<void> {
-  // Flat desktop picker order without NIP-07/Amber (desktop leads with the
-  // other device): remote-signet, local-signet, bunker, nostrconnect, nsec, cancel.
+  // Flat picker order without NIP-07/Amber (other device stays on top):
+  // remote-signet, local-signet, bunker, nostrconnect, nsec, cancel.
   for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
   dispatchSyntheticKey('Enter');
   await settleMicrotasks();
@@ -101,8 +101,8 @@ describe('gamepad modal navigation', () => {
     const dialog = document.getElementById('signet-login-dialog');
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
 
-    // Default desktop picker order without NIP-07/Amber (desktop leads with the
-    // other device): remote-signet, local-signet, Advanced, cancel.
+    // Default picker order without NIP-07/Amber (other device stays on top):
+    // remote-signet, local-signet, Advanced, cancel.
     for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     expect(document.activeElement?.textContent?.trim()).toBe('Cancel');
 

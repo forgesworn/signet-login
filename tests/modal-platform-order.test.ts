@@ -1,10 +1,13 @@
 /**
- * Platform-aware ordering and wording of the two Signet device options.
+ * Stable ordering with a platform-aware *highlight* for the two Signet options.
  *
- * Product guidance (mobile-first): lead the picker with the signer that lives on
- * the *other* device. On a phone that is the Signet app on "this device"; on a
- * desktop (or when the platform is unknown) it is "your phone". Only the default
- * method list adapts — an explicit `methods` order from the consumer is honoured.
+ * Switching the order between visits is disorienting, so the picker keeps the
+ * "other device" option (remote-signet) at the top on every platform. The
+ * platform only decides which option is highlighted as the likely choice: on a
+ * phone that is "use this device", on a desktop (or unknown) it is "use your
+ * phone". Wording adapts too — the remote option is "your phone" on desktop and
+ * "another device" on a phone. Only the default method list is affected; an
+ * explicit `methods` order from the consumer is honoured.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -39,6 +42,11 @@ function pickerChoices(): (string | undefined)[] {
   return Array.from(document.querySelectorAll<HTMLButtonElement>('[data-choice]')).map(button => button.dataset.choice);
 }
 
+/** The data-choice of the single highlighted (recommended) button, if any. */
+function highlightedChoice(): string | undefined {
+  return document.querySelector<HTMLButtonElement>('[data-choice][data-primary="true"]')?.dataset.choice;
+}
+
 function buttonText(choice: string): string {
   return document.querySelector(`[data-choice="${choice}"]`)?.textContent ?? '';
 }
@@ -62,44 +70,48 @@ describe('platform-aware device picker', () => {
     setUserAgent('Mozilla/5.0');
   });
 
-  it('leads with the other device (remote-signet) on desktop', async () => {
+  it('keeps the other-device option at the top and highlights it on desktop', async () => {
     setUserAgent(DESKTOP_UA);
     const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false, advancedMethods: [] });
     await settleMicrotasks();
 
     const choices = pickerChoices();
     expect(choices.indexOf('remote-signet')).toBeLessThan(choices.indexOf('local-signet'));
+    expect(highlightedChoice()).toBe('remote-signet');
     expect(buttonText('remote-signet')).toContain('Use your phone');
     expect(buttonText('local-signet')).toContain('Use this device');
 
     await cancelAndSettle(pending);
   });
 
-  it('leads with this device (local-signet) on a phone, calling the other one "another device"', async () => {
+  it('keeps the same order on a phone but highlights this device instead', async () => {
     setUserAgent(IPHONE_UA);
     const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false, advancedMethods: [] });
     await settleMicrotasks();
 
     const choices = pickerChoices();
-    expect(choices.indexOf('local-signet')).toBeLessThan(choices.indexOf('remote-signet'));
+    // Order is identical to desktop — only the highlight moves.
+    expect(choices.indexOf('remote-signet')).toBeLessThan(choices.indexOf('local-signet'));
+    expect(highlightedChoice()).toBe('local-signet');
     expect(buttonText('local-signet')).toContain('Use this device');
     expect(buttonText('remote-signet')).toContain('Use another device');
 
     await cancelAndSettle(pending);
   });
 
-  it('defaults to other-device-first when the platform cannot be determined', async () => {
+  it('highlights the other device when the platform cannot be determined', async () => {
     setUserAgent('');
     const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false, advancedMethods: [] });
     await settleMicrotasks();
 
     const choices = pickerChoices();
     expect(choices.indexOf('remote-signet')).toBeLessThan(choices.indexOf('local-signet'));
+    expect(highlightedChoice()).toBe('remote-signet');
 
     await cancelAndSettle(pending);
   });
 
-  it('honours an explicit methods order even on desktop', async () => {
+  it('honours an explicit methods order while still highlighting the likely option', async () => {
     setUserAgent(DESKTOP_UA);
     const pending = login({
       appName: 'Pallasite',
@@ -111,7 +123,10 @@ describe('platform-aware device picker', () => {
     await settleMicrotasks();
 
     const choices = pickerChoices();
+    // Explicit order preserved (local first), but the desktop-likely option is
+    // still the highlighted one even though it sits second.
     expect(choices.indexOf('local-signet')).toBeLessThan(choices.indexOf('remote-signet'));
+    expect(highlightedChoice()).toBe('remote-signet');
 
     await cancelAndSettle(pending);
   });

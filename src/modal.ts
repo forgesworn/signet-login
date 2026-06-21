@@ -41,7 +41,10 @@ import jsQR from 'jsqr';
  */
 type PickerChoice = LoginPickerMethod | 'cancel';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8_000;
-const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'local-signet', 'remote-signet', 'bunker', 'nostrconnect', 'nsec'];
+// "Another device" (remote-signet) sits above "this device" (local-signet) on
+// every platform — a stable order avoids the disorienting switch. The platform
+// only changes which option is highlighted (see renderPicker).
+const DEFAULT_PICKER_METHODS: LoginPickerMethod[] = ['nip07', 'amber', 'remote-signet', 'local-signet', 'bunker', 'nostrconnect', 'nsec'];
 const ALL_PICKER_METHODS: LoginPickerMethod[] = [...DEFAULT_PICKER_METHODS, 'redirect', 'qr'];
 const DEFAULT_ADVANCED_METHODS: LoginPickerMethod[] = ['bunker', 'nostrconnect', 'nsec'];
 const DEFAULT_NOSTR_CONNECT_PERMS = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
@@ -347,19 +350,12 @@ function resolveMethodMeta(method: LoginPickerMethod, mobile: boolean): { icon: 
 }
 
 /**
- * Lead the picker with the signer on the *other* device: phone → "this device"
- * (local) first, desktop/unknown → "your phone" (remote) first. Swaps only the
- * local/remote Signet pair, leaving every other method in place.
+ * The Signet option the user most likely wants, given their platform: on a phone
+ * the signer is on "this device" (local), on a desktop it is "your phone"
+ * (remote). The picker highlights this option without reordering anything.
  */
-function orderSignetPairForPlatform(methods: LoginPickerMethod[], mobile: boolean): LoginPickerMethod[] {
-  const localIdx = methods.findIndex(method => pickerMethodKey(method) === 'local-signet');
-  const remoteIdx = methods.findIndex(method => pickerMethodKey(method) === 'remote-signet');
-  if (localIdx === -1 || remoteIdx === -1) return methods;
-  const alreadyOrdered = mobile ? localIdx < remoteIdx : remoteIdx < localIdx;
-  if (alreadyOrdered) return methods;
-  const next = methods.slice();
-  [next[localIdx], next[remoteIdx]] = [next[remoteIdx], next[localIdx]];
-  return next;
+function likelySignetKey(mobile: boolean): string {
+  return mobile ? 'local-signet' : 'remote-signet';
 }
 
 function pickerMethodKey(method: LoginPickerMethod): string {
@@ -382,7 +378,8 @@ function isMethodAvailable(method: LoginPickerMethod): boolean {
 
 function methodButtonHtml(method: LoginPickerMethod, dark: boolean, muted: string, primary: boolean, mobile: boolean): string {
   const meta = resolveMethodMeta(method, mobile);
-  return `<button data-choice="${method}" style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${meta.icon}</span><span><strong>${meta.title}</strong><br><span style="font-size:0.8rem;color:${primary ? 'rgba(255,255,255,0.8)' : muted};">${meta.hint}</span></span></button>`;
+  const primaryAttr = primary ? ' data-primary="true"' : '';
+  return `<button data-choice="${method}"${primaryAttr} style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${meta.icon}</span><span><strong>${meta.title}</strong><br><span style="font-size:0.8rem;color:${primary ? 'rgba(255,255,255,0.8)' : muted};">${meta.hint}</span></span></button>`;
 }
 
 function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerChoice> {
@@ -396,6 +393,12 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
     const advancedSet = new Set(opts.advancedMethods.map(pickerMethodKey));
     const primaryMethods = availableMethods.filter(method => !advancedSet.has(pickerMethodKey(method)));
     const advancedMethods = availableMethods.filter(method => advancedSet.has(pickerMethodKey(method)));
+
+    // Highlight the platform-likely Signet option wherever it is shown; fall back
+    // to the first method when neither Signet option is available in that group.
+    const highlightKey = likelySignetKey(mobile);
+    const primaryHasHighlight = primaryMethods.some(method => pickerMethodKey(method) === highlightKey);
+    const advancedHasHighlight = advancedMethods.some(method => pickerMethodKey(method) === highlightKey);
 
     const attachChoiceHandlers = (): void => {
       refs.dialog.querySelectorAll<HTMLButtonElement>('button[data-choice]').forEach(btn => {
@@ -412,9 +415,13 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
 
     const paint = (): void => {
       const showAdvanced = advancedOpen || primaryMethods.length === 0;
-      const primaryHtml = primaryMethods.map((method, index) => methodButtonHtml(method, dark, muted, index === 0, mobile)).join('');
+      const primaryHtml = primaryMethods
+        .map((method, index) => methodButtonHtml(method, dark, muted, primaryHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0, mobile))
+        .join('');
       const advancedHtml = showAdvanced
-        ? advancedMethods.map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && index === 0, mobile)).join('')
+        ? advancedMethods
+            .map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && (advancedHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0), mobile))
+            .join('')
         : '';
       const advancedToggle = advancedMethods.length > 0 && !showAdvanced
         ? `<button data-action="advanced" style="${buttonStyle(dark)}justify-content:center;text-align:center;">Advanced</button>`
@@ -1085,11 +1092,8 @@ function uniquePickerMethods(input: readonly LoginPickerMethod[] | undefined, fa
   return input === undefined && out.length === 0 ? [...fallback] : out;
 }
 
-function resolveMethodConfig(opts: LoginOptions, mobile: boolean): ResolvedMethodConfig {
-  let methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
-  // Only the default list adapts to the platform; an explicit `methods` order is
-  // the consumer's deliberate choice and is honoured as given.
-  if (opts.methods === undefined) methods = orderSignetPairForPlatform(methods, mobile);
+function resolveMethodConfig(opts: LoginOptions): ResolvedMethodConfig {
+  const methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
   const methodKeys = new Set(methods.map(pickerMethodKey));
   const advancedMethods = uniquePickerMethods(opts.advancedMethods, DEFAULT_ADVANCED_METHODS)
     .filter(method => methodKeys.has(pickerMethodKey(method)));
@@ -1115,7 +1119,7 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
   const relayUrls = resolveRelayUrls(opts);
   const relayUrl = resolvePrimaryRelayUrl(opts, relayUrls);
   const mobile = isMobile();
-  const methodConfig = resolveMethodConfig(opts, mobile);
+  const methodConfig = resolveMethodConfig(opts);
   const result: ResolvedOptions = {
     appName: opts.appName,
     challenge: challenge.toLowerCase(),
