@@ -58,8 +58,8 @@ async function waitForActiveDialog(): Promise<HTMLDialogElement> {
 }
 
 async function completeActiveNsecLogin(rawPrivateKeyHex: string): Promise<void> {
-  // Flat desktop picker order without NIP-07/Amber:
-  // local-signet, remote-signet, bunker, nostrconnect, nsec, cancel.
+  // Flat desktop picker order without NIP-07/Amber (desktop leads with the
+  // other device): remote-signet, local-signet, bunker, nostrconnect, nsec, cancel.
   for (let i = 0; i < 4; i++) dispatchSyntheticKey('ArrowDown');
   dispatchSyntheticKey('Enter');
   await settleMicrotasks();
@@ -101,8 +101,8 @@ describe('gamepad modal navigation', () => {
     const dialog = document.getElementById('signet-login-dialog');
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
 
-    // Default desktop picker order without NIP-07/Amber:
-    // local-signet, remote-signet, Advanced, cancel.
+    // Default desktop picker order without NIP-07/Amber (desktop leads with the
+    // other device): remote-signet, local-signet, Advanced, cancel.
     for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     expect(document.activeElement?.textContent?.trim()).toBe('Cancel');
 
@@ -121,13 +121,13 @@ describe('gamepad modal navigation', () => {
     const pending = login({ appName: 'Pallasite', theme: 'dark', persist: false });
     await settleMicrotasks();
 
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('local-signet');
-
-    dispatchSyntheticCode('ArrowDown');
     expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('remote-signet');
 
-    dispatchSyntheticCode('ArrowUp');
+    dispatchSyntheticCode('ArrowDown');
     expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('local-signet');
+
+    dispatchSyntheticCode('ArrowUp');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('remote-signet');
 
     for (let i = 0; i < 3; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');
@@ -146,7 +146,7 @@ describe('gamepad modal navigation', () => {
     await settleMicrotasks();
 
     dispatchSyntheticKey('ArrowDown');
-    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('remote-signet');
+    expect((document.activeElement as HTMLElement | null)?.dataset.choice).toBe('local-signet');
 
     for (let i = 0; i < 2; i++) dispatchSyntheticKey('ArrowDown');
     dispatchSyntheticKey('Enter');

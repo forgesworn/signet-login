@@ -7,6 +7,7 @@
 import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
+import { isMobile } from './platform.js';
 import { loadOrCreatePersistentClientSkFromStorage } from './storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
@@ -260,17 +261,48 @@ async function startCameraQrScanner(input) {
     return { stop };
 }
 // ── Picker ────────────────────────────────────────────────────────────────────
+// Titles below are the desktop/unknown presentation. On a phone, the remote
+// option is reworded to "Use another device" (see resolveMethodMeta).
 const METHOD_META = {
     nip07: { icon: '🌐', title: 'Browser extension', hint: 'bark, Alby, nos2x' },
     amber: { icon: '🤖', title: 'Sign in with Amber', hint: 'Android signer (NIP-55)' },
-    'local-signet': { icon: '🪪', title: 'Local Signet', hint: 'Open Signet on this device' },
-    'remote-signet': { icon: '📱', title: 'Remote Signet', hint: 'Scan with Signet on another device' },
-    redirect: { icon: '🪪', title: 'Local Signet', hint: 'Open Signet on this device' },
-    qr: { icon: '📱', title: 'Remote Signet', hint: 'Scan with Signet on another device' },
+    'local-signet': { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },
+    'remote-signet': { icon: '📱', title: 'Use your phone', hint: 'Scan with Signet' },
+    redirect: { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },
+    qr: { icon: '📱', title: 'Use your phone', hint: 'Scan with Signet' },
     bunker: { icon: '🔑', title: 'Paste bunker URI', hint: 'For NIP-46 power users' },
     nostrconnect: { icon: '📡', title: 'Connect a Nostr signer', hint: 'Scan with nsec.app, Amber, Keychat...' },
     nsec: { icon: '⚠️', title: 'Paste private key', hint: 'In-memory only - risky, last resort' },
 };
+/**
+ * Resolve a method's display metadata for the current platform. On a phone the
+ * remote-Signet option points at "another device" rather than "your phone",
+ * since the phone is the device the user is already holding.
+ */
+function resolveMethodMeta(method, mobile) {
+    const base = METHOD_META[method];
+    if (mobile && pickerMethodKey(method) === 'remote-signet') {
+        return { ...base, title: 'Use another device' };
+    }
+    return base;
+}
+/**
+ * Lead the picker with the signer on the *other* device: phone → "this device"
+ * (local) first, desktop/unknown → "your phone" (remote) first. Swaps only the
+ * local/remote Signet pair, leaving every other method in place.
+ */
+function orderSignetPairForPlatform(methods, mobile) {
+    const localIdx = methods.findIndex(method => pickerMethodKey(method) === 'local-signet');
+    const remoteIdx = methods.findIndex(method => pickerMethodKey(method) === 'remote-signet');
+    if (localIdx === -1 || remoteIdx === -1)
+        return methods;
+    const alreadyOrdered = mobile ? localIdx < remoteIdx : remoteIdx < localIdx;
+    if (alreadyOrdered)
+        return methods;
+    const next = methods.slice();
+    [next[localIdx], next[remoteIdx]] = [next[remoteIdx], next[localIdx]];
+    return next;
+}
 function pickerMethodKey(method) {
     if (method === 'local-signet' || method === 'redirect')
         return 'local-signet';
@@ -292,13 +324,14 @@ function isMethodAvailable(method) {
         return isAndroid();
     return true;
 }
-function methodButtonHtml(method, dark, muted, primary) {
-    const meta = METHOD_META[method];
+function methodButtonHtml(method, dark, muted, primary, mobile) {
+    const meta = resolveMethodMeta(method, mobile);
     return `<button data-choice="${method}" style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${meta.icon}</span><span><strong>${meta.title}</strong><br><span style="font-size:0.8rem;color:${primary ? 'rgba(255,255,255,0.8)' : muted};">${meta.hint}</span></span></button>`;
 }
 function renderPicker(refs, opts) {
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
+    const mobile = opts.mobile;
     return new Promise(resolve => {
         let advancedOpen = false;
         const availableMethods = opts.methods.filter(isMethodAvailable);
@@ -319,9 +352,9 @@ function renderPicker(refs, opts) {
         };
         const paint = () => {
             const showAdvanced = advancedOpen || primaryMethods.length === 0;
-            const primaryHtml = primaryMethods.map((method, index) => methodButtonHtml(method, dark, muted, index === 0)).join('');
+            const primaryHtml = primaryMethods.map((method, index) => methodButtonHtml(method, dark, muted, index === 0, mobile)).join('');
             const advancedHtml = showAdvanced
-                ? advancedMethods.map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && index === 0)).join('')
+                ? advancedMethods.map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && index === 0, mobile)).join('')
                 : '';
             const advancedToggle = advancedMethods.length > 0 && !showAdvanced
                 ? `<button data-action="advanced" style="${buttonStyle(dark)}justify-content:center;text-align:center;">Advanced</button>`
@@ -914,8 +947,12 @@ function uniquePickerMethods(input, fallback) {
     }
     return input === undefined && out.length === 0 ? [...fallback] : out;
 }
-function resolveMethodConfig(opts) {
-    const methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
+function resolveMethodConfig(opts, mobile) {
+    let methods = uniquePickerMethods(opts.methods, DEFAULT_PICKER_METHODS);
+    // Only the default list adapts to the platform; an explicit `methods` order is
+    // the consumer's deliberate choice and is honoured as given.
+    if (opts.methods === undefined)
+        methods = orderSignetPairForPlatform(methods, mobile);
     const methodKeys = new Set(methods.map(pickerMethodKey));
     const advancedMethods = uniquePickerMethods(opts.advancedMethods, DEFAULT_ADVANCED_METHODS)
         .filter(method => methodKeys.has(pickerMethodKey(method)));
@@ -938,11 +975,13 @@ function resolveOptions(opts) {
     const timeout = Math.max(5000, Math.min(opts.timeout ?? DEFAULTS.timeout, 600000));
     const relayUrls = resolveRelayUrls(opts);
     const relayUrl = resolvePrimaryRelayUrl(opts, relayUrls);
-    const methodConfig = resolveMethodConfig(opts);
+    const mobile = isMobile();
+    const methodConfig = resolveMethodConfig(opts, mobile);
     const result = {
         appName: opts.appName,
         challenge: challenge.toLowerCase(),
         origin,
+        mobile,
         methods: methodConfig.methods,
         advancedMethods: methodConfig.advancedMethods,
         relayUrl,
