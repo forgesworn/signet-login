@@ -23,6 +23,7 @@ import {
 } from '../src/storage.js';
 import { STORAGE_KEYS, PENDING_REDIRECT_TTL_MS, type SignetStorage } from '../src/types.js';
 import { handleRedirectCallback } from '../src/signet-login.js';
+import { callbackSearchForAuthEvent, makeAuthEvent } from './helpers/auth-event.js';
 
 const ORIGIN = 'https://pallasite.example';
 const APP_NAME = 'Pallasite';
@@ -197,19 +198,22 @@ describe('consumeCallback', () => {
 
   it('builds a session when params are valid (with t)', () => {
     const t = Math.floor(Date.now() / 1000) - 5;
+    const authEvent = makeAuthEvent({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      createdAt: t,
+    });
     savePendingRedirect({
       challenge: CHALLENGE,
       origin: JSDOM_ORIGIN,
       appName: APP_NAME,
       createdAt: Date.now(),
     });
-    setLocation(
-      `?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}&t=${t}&display_name=Alice`,
-    );
+    setLocation(callbackSearchForAuthEvent(authEvent, { display_name: 'Alice' }));
     const result = consumeCallback();
     expect(result.kind).toBe('session');
     if (result.kind === 'session') {
-      expect(result.session.pubkey).toBe(PUBKEY);
+      expect(result.session.pubkey).toBe(authEvent.pubkey);
       expect(result.session.method).toBe('redirect');
       expect(result.session.signer.capabilities.canSignEvents).toBe(false);
       expect(result.session.authEvent.created_at).toBe(t);
@@ -226,7 +230,23 @@ describe('consumeCallback', () => {
     expect(loadPendingRedirect()).toBeNull();
   });
 
-  it('falls back to "now" when t is absent and warns', () => {
+  it('rejects forged params when t is present', () => {
+    const t = Math.floor(Date.now() / 1000) - 5;
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}&t=${t}`);
+    const result = consumeCallback();
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.reason).toBe('invalid-event-id');
+    }
+  });
+
+  it('keeps legacy missing-t callbacks by default and warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* swallow */ });
     savePendingRedirect({
       challenge: CHALLENGE,
@@ -245,6 +265,21 @@ describe('consumeCallback', () => {
     }
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('rejects missing-t callbacks when legacy compatibility is disabled', () => {
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
+    const result = consumeCallback({ allowLegacyMissingTimestamp: false });
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.reason).toBe('t-required');
+    }
   });
 
   it('is idempotent — second call after success returns no-callback', () => {
@@ -270,14 +305,19 @@ describe('handleRedirectCallback', () => {
   });
 
   it('persists the session via the standard storage layer on success', async () => {
+    const t = Math.floor(Date.now() / 1000);
+    const authEvent = makeAuthEvent({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      createdAt: t,
+    });
     savePendingRedirect({
       challenge: CHALLENGE,
       origin: JSDOM_ORIGIN,
       appName: APP_NAME,
       createdAt: Date.now(),
     });
-    const t = Math.floor(Date.now() / 1000);
-    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}&t=${t}`);
+    setLocation(callbackSearchForAuthEvent(authEvent));
 
     const result = await handleRedirectCallback();
     expect(result.kind).toBe('session');
@@ -285,7 +325,7 @@ describe('handleRedirectCallback', () => {
     // restoreSession should now find the persisted session
     const persisted = loadSession();
     expect(persisted).not.toBeNull();
-    expect(persisted?.pubkey).toBe(PUBKEY);
+    expect(persisted?.pubkey).toBe(authEvent.pubkey);
     expect(persisted?.method).toBe('redirect');
   });
 
@@ -305,15 +345,37 @@ describe('handleRedirectCallback', () => {
       createdAt: Date.now(),
     }, storage);
     const t = Math.floor(Date.now() / 1000);
-    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}&t=${t}`);
+    const authEvent = makeAuthEvent({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      createdAt: t,
+    });
+    setLocation(callbackSearchForAuthEvent(authEvent));
 
     const result = await handleRedirectCallback({ storage });
     expect(result.kind).toBe('session');
     expect(loadSession()).toBeNull();
 
     const persisted = await loadSessionFromStorage(storage);
-    expect(persisted?.pubkey).toBe(PUBKEY);
+    expect(persisted?.pubkey).toBe(authEvent.pubkey);
     expect(persisted?.method).toBe('redirect');
+  });
+
+  it('passes strict missing-t policy through handleRedirectCallback', async () => {
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
+
+    const result = await handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: false });
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.reason).toBe('t-required');
+    }
+    expect(loadSession()).toBeNull();
   });
 });
 

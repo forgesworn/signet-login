@@ -20,11 +20,22 @@ export interface CallbackResult {
   isPopup: boolean;
 }
 
+export interface HandleCallbackOptions {
+  /** Close the popup after posting to the opener. Default true. */
+  closeAfterPost?: boolean;
+  /**
+   * Target origin for the opener postMessage. Pass the opener app's origin
+   * (for example `https://app.example`) to avoid leaking auth params to an
+   * unexpected opener. Defaults to `*` for backwards compatibility.
+   */
+  targetOrigin?: string;
+}
+
 /**
  * Parse the current page's URL parameters and post them to the opener (if any).
  * Optionally close the popup.
  */
-export function handleCallback(options?: { closeAfterPost?: boolean }): CallbackResult {
+export function handleCallback(options?: HandleCallbackOptions): CallbackResult {
   const params: Record<string, string> = {};
   if (typeof window !== 'undefined') {
     const search = new URLSearchParams(window.location.search);
@@ -39,9 +50,7 @@ export function handleCallback(options?: { closeAfterPost?: boolean }): Callback
     try {
       window.opener.postMessage(
         { type: 'signet-login-callback', params },
-        // Restrict target origin to opener's origin if known; fall back to '*' so
-        // cross-origin popups still deliver. Consumers must validate origin.
-        '*',
+        options?.targetOrigin ?? '*',
       );
     } catch {
       // postMessage failed — ignore

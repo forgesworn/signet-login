@@ -49,6 +49,7 @@ import {
   clearSessionFromStorage,
   bytesToHexLocal,
   loadOrCreatePersistentClientSkFromStorage,
+  clearPersistentClientSkFromStorage,
 } from './storage.js';
 import {
   hasNip07,
@@ -73,7 +74,8 @@ import { consumeAmberCallbackFromStorage, type ConsumeAmberResult } from './ambe
 import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
 import type { ConsumeCallbackResult } from './redirect.js';
-export type { CallbackResult } from './callback.js';
+import { assertValidLoginAuthEvent } from './verify.js';
+export type { CallbackResult, HandleCallbackOptions } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
@@ -118,6 +120,12 @@ export interface HandleRedirectCallbackOptions {
    * Must match the backend passed to `login({ mode: 'redirect', storage })`.
    */
   storage?: SignetStorage;
+  /**
+   * Older signet-app redirect callbacks omitted the signed event timestamp,
+   * which prevents client-side signature verification. Default true preserves
+   * those existing integrations; set false to reject unverifiable callbacks.
+   */
+  allowLegacyRedirectWithoutTimestamp?: boolean;
 }
 
 export interface CreateLoginAuthEventOptions {
@@ -132,6 +140,11 @@ export interface CreateLoginAuthEventOptions {
 export interface LogoutOptions {
   /** Storage backend to clear. Defaults to localStorage. */
   storage?: SignetStorage;
+  /**
+   * Also clear the persistent NIP-46 client key used for bunker auto-approval.
+   * Default false preserves the existing "logout does not break pairing" behavior.
+   */
+  clearPersistentClientKey?: boolean;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -206,7 +219,12 @@ export async function createLoginAuthEvent(
     ],
   }) as SignetAuthEvent;
 
-  return authEvent;
+  return assertValidLoginAuthEvent(authEvent, {
+    expectedChallenge: challenge.toLowerCase(),
+    expectedOrigin: origin,
+    expectedAppName: appName,
+    expectedPubkey: signer.pubkey,
+  });
 }
 
 /**
@@ -403,7 +421,9 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
     return amberResult;
   }
 
-  const result = await consumeCallbackFromStorage(options.storage);
+  const result = await consumeCallbackFromStorage(options.storage, {
+    allowLegacyMissingTimestamp: options.allowLegacyRedirectWithoutTimestamp,
+  });
   if (result.kind !== 'session') return result;
 
   // Optional redirect-bunker upgrade. signet-app appends a `bunker://` URI
@@ -492,6 +512,9 @@ export async function logout(currentSession?: SignetSession, opts?: LogoutOption
     try { await currentSession.signer.close(); } catch { /* ignore */ }
   }
   await clearSessionFromStorage(opts?.storage);
+  if (opts?.clearPersistentClientKey) {
+    await clearPersistentClientSkFromStorage(opts.storage);
+  }
 }
 
 // ── Persistence helpers (internal) ────────────────────────────────────────────

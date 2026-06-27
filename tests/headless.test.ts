@@ -6,8 +6,8 @@ import {
   createSessionFromSigner,
   logout,
 } from '../src/signet-login.js';
-import { loadSessionFromStorage, saveSessionToStorage } from '../src/storage.js';
-import type { SignetStorage } from '../src/types.js';
+import { loadOrCreatePersistentClientSk, loadSessionFromStorage, saveSessionToStorage } from '../src/storage.js';
+import { STORAGE_KEYS, type EventTemplate, type NostrEvent, type SignetSigner, type SignetStorage } from '../src/types.js';
 
 function memoryStorage(): SignetStorage {
   const data = new Map<string, string>();
@@ -65,6 +65,33 @@ describe('headless helpers', () => {
     await expect(createLoginAuthEvent(signer, { appName: 'Headless App', challenge: 'nope' })).rejects.toThrow(/challenge-must-be-64-hex/);
   });
 
+  it('rejects malformed auth events returned by custom signers', async () => {
+    const signer = createLocalSignerFromNsec(privateKeyHex);
+    const badSigner: SignetSigner = {
+      pubkey: signer.pubkey,
+      method: signer.method,
+      capabilities: signer.capabilities,
+      async signEvent(_template: EventTemplate): Promise<NostrEvent> {
+        return {
+          id: 'b'.repeat(64),
+          pubkey: signer.pubkey,
+          kind: 21236,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [['challenge', challenge], ['origin', 'https://example.com'], ['app', 'Headless App']],
+          content: '',
+          sig: 'c'.repeat(128),
+        };
+      },
+      close: () => Promise.resolve(),
+    };
+
+    await expect(createLoginAuthEvent(badSigner, {
+      appName: 'Headless App',
+      challenge,
+      origin: 'https://example.com',
+    })).rejects.toThrow(/auth-event-invalid/);
+  });
+
   it('clears custom storage on logout', async () => {
     const storage = memoryStorage();
     const signer = createLocalSignerFromNsec(privateKeyHex);
@@ -82,5 +109,14 @@ describe('headless helpers', () => {
     expect(await loadSessionFromStorage(storage)).not.toBeNull();
     await logout(session, { storage });
     expect(await loadSessionFromStorage(storage)).toBeNull();
+  });
+
+  it('can clear the persistent bunker client key on logout when requested', async () => {
+    localStorage.clear();
+    loadOrCreatePersistentClientSk();
+    expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toMatch(/^[0-9a-f]{64}$/);
+
+    await logout(undefined, { clearPersistentClientKey: true });
+    expect(localStorage.getItem(STORAGE_KEYS.clientSk)).toBeNull();
   });
 });

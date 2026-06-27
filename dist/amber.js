@@ -1,6 +1,7 @@
 import { PENDING_REDIRECT_TTL_MS } from './types.js';
 import { clearPendingRedirect, clearPendingRedirectFromStorage, loadPendingRedirect, loadPendingRedirectFromStorage, savePendingRedirectToStorage, } from './storage.js';
 import { EphemeralSigner } from './signers.js';
+import { validateLoginAuthEvent } from './verify.js';
 /** True when running on a likely-Android browser. Lets the picker hide the
  *  Amber option on iOS/desktop where the `nostrsigner:` scheme is unhandled. */
 export function isAndroid() {
@@ -164,6 +165,14 @@ function consumeAmberCallbackWithPending(pending, finalize) {
         content: ev.content,
         sig: ev.sig.toLowerCase(),
     };
+    const verification = validateLoginAuthEvent(authEvent, {
+        expectedChallenge: pending.challenge,
+        expectedOrigin: pending.origin,
+        expectedAppName: pending.appName,
+    });
+    if (!verification.valid) {
+        return finalize({ kind: 'invalid', reason: verification.error });
+    }
     const ephemeral = new EphemeralSigner(authEvent.pubkey, authEvent);
     const session = {
         pubkey: authEvent.pubkey,

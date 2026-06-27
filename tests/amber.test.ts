@@ -14,6 +14,7 @@ import {
   isAndroid,
 } from '../src/amber.js';
 import { savePendingRedirect, clearPendingRedirect } from '../src/storage.js';
+import { makeAuthEvent } from './helpers/auth-event.js';
 
 describe('isAndroid', () => {
   beforeEach(() => {
@@ -119,6 +120,66 @@ describe('consumeAmberCallback', () => {
 
   it('returns invalid:challenge-mismatch when the signed event has a different challenge', () => {
     const pendingChallenge = 'a'.repeat(64);
+    const signedWrongChallenge = makeAuthEvent({
+      challenge: 'd'.repeat(64),
+      origin: window.location.origin,
+      appName: 'Test',
+    });
+    savePendingRedirect({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+      createdAt: Date.now(),
+    });
+    const eventB64 = btoa(JSON.stringify(signedWrongChallenge));
+    window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(eventB64));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') expect(result.reason).toBe('challenge-mismatch');
+  });
+
+  it('returns invalid:origin-mismatch when the signed event has a different origin', () => {
+    const pendingChallenge = 'a'.repeat(64);
+    const signedWrongOrigin = makeAuthEvent({
+      challenge: pendingChallenge,
+      origin: 'https://other.example',
+      appName: 'Test',
+    });
+    savePendingRedirect({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+      createdAt: Date.now(),
+    });
+    const eventB64 = btoa(JSON.stringify(signedWrongOrigin));
+    window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(eventB64));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') expect(result.reason).toBe('origin-mismatch');
+  });
+
+  it('returns invalid:app-mismatch when the signed event has a different app tag', () => {
+    const pendingChallenge = 'a'.repeat(64);
+    const signedWrongApp = makeAuthEvent({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Other App',
+    });
+    savePendingRedirect({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+      createdAt: Date.now(),
+    });
+    const eventB64 = btoa(JSON.stringify(signedWrongApp));
+    window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(eventB64));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') expect(result.reason).toBe('app-mismatch');
+  });
+
+  it('rejects a forged event even when shape and challenge match', () => {
+    const pendingChallenge = 'a'.repeat(64);
     savePendingRedirect({
       challenge: pendingChallenge,
       origin: window.location.origin,
@@ -130,7 +191,7 @@ describe('consumeAmberCallback', () => {
       pubkey: 'c'.repeat(64),
       kind: 21236,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [['challenge', 'd'.repeat(64)], ['origin', window.location.origin], ['app', 'Test']],
+      tags: [['challenge', pendingChallenge], ['origin', window.location.origin], ['app', 'Test']],
       content: '',
       sig: 'e'.repeat(128),
     };
@@ -138,33 +199,29 @@ describe('consumeAmberCallback', () => {
     window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(eventB64));
     const result = consumeAmberCallback();
     expect(result.kind).toBe('invalid');
-    if (result.kind === 'invalid') expect(result.reason).toBe('challenge-mismatch');
+    if (result.kind === 'invalid') expect(result.reason).toBe('invalid-event-id');
   });
 
-  it('builds a session for a well-formed callback', () => {
+  it('builds a session for a signed callback', () => {
     const pendingChallenge = 'a'.repeat(64);
+    const event = makeAuthEvent({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+    });
     savePendingRedirect({
       challenge: pendingChallenge,
       origin: window.location.origin,
       appName: 'Test',
       createdAt: Date.now(),
     });
-    const event = {
-      id: 'b'.repeat(64),
-      pubkey: 'c'.repeat(64),
-      kind: 21236,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [['challenge', pendingChallenge], ['origin', window.location.origin], ['app', 'Test']],
-      content: '',
-      sig: 'e'.repeat(128),
-    };
     const eventB64 = btoa(JSON.stringify(event));
     window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(eventB64));
     const result = consumeAmberCallback();
     expect(result.kind).toBe('session');
     if (result.kind === 'session') {
       expect(result.session.method).toBe('amber');
-      expect(result.session.pubkey).toBe('c'.repeat(64));
+      expect(result.session.pubkey).toBe(event.pubkey);
       expect(result.session.signer.capabilities.canSignEvents).toBe(false);
     }
   });

@@ -29,6 +29,7 @@
 import { DEFAULTS, PENDING_REDIRECT_TTL_MS } from './types.js';
 import { clearPendingRedirect, clearPendingRedirectFromStorage, loadPendingRedirect, loadPendingRedirectFromStorage, savePendingRedirectToStorage, } from './storage.js';
 import { EphemeralSigner } from './signers.js';
+import { validateLoginAuthEvent } from './verify.js';
 /** Hex regexes — kept local to avoid pulling in @noble for two patterns. */
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const HEX_128 = /^[0-9a-f]{128}$/i;
@@ -106,7 +107,7 @@ function cleanupCallbackUrl() {
         // history API blocked (file:// origin, sandboxed iframe, …) — leave URL alone
     }
 }
-function consumeCallbackWithPending(pending, finalize) {
+function consumeCallbackWithPending(pending, finalize, options = {}) {
     if (typeof window === 'undefined')
         return { kind: 'no-callback' };
     const params = new URLSearchParams(window.location.search);
@@ -149,6 +150,7 @@ function consumeCallbackWithPending(pending, finalize) {
     // reconstruction. Fall back to "now" with a warning when absent (older
     // signet-app deployments). See module-level note.
     let createdAt;
+    let legacyUnverifiedTimestamp = false;
     const tRaw = params.get('t');
     if (tRaw && /^\d+$/.test(tRaw)) {
         const t = Number(tRaw);
@@ -156,16 +158,23 @@ function consumeCallbackWithPending(pending, finalize) {
             return finalize({ kind: 'invalid', reason: 't-malformed' });
         createdAt = t;
     }
+    else if (options.allowLegacyMissingTimestamp === false) {
+        return finalize({ kind: 'invalid', reason: 't-required' });
+    }
     else {
         createdAt = Math.floor(Date.now() / 1000);
+        legacyUnverifiedTimestamp = true;
         // Surface this in dev tools so consumers can spot upstream signet-app
         // versions that don't emit `t`. Doesn't fail the flow because the
         // session is still usable client-side; only strict server-side
         // verification will reject it.
         if (typeof console !== 'undefined') {
             console.warn('signet-login: redirect callback missing `t` param — auth event ' +
-                'created_at approximated. Server-side verification may reject. ' +
-                'Upgrade signet-app to emit `t` in the redirect URL.');
+                'created_at approximated and the redirect signature cannot be ' +
+                'verified client-side. Server-side verification may reject. ' +
+                'Upgrade signet-app to emit `t` in the redirect URL, or call ' +
+                'handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: false }) ' +
+                'to reject legacy callbacks.');
         }
     }
     const lowerPubkey = pubkey.toLowerCase();
@@ -205,6 +214,15 @@ function consumeCallbackWithPending(pending, finalize) {
         content: '',
         sig: lowerSig,
     };
+    if (!legacyUnverifiedTimestamp) {
+        const verification = validateLoginAuthEvent(authEvent, {
+            expectedChallenge: pending.challenge,
+            expectedOrigin: pending.origin,
+        });
+        if (!verification.valid) {
+            return finalize({ kind: 'invalid', reason: verification.error });
+        }
+    }
     const displayName = params.get('display_name') || undefined;
     const ephemeral = new EphemeralSigner(lowerPubkey, authEvent);
     const session = {
@@ -229,7 +247,7 @@ function consumeCallbackWithPending(pending, finalize) {
     }
     return finalize(bunkerUri ? { kind: 'session', session, bunkerUri } : { kind: 'session', session });
 }
-export function consumeCallback() {
+export function consumeCallback(options = {}) {
     // From here on we're handling a callback — pending state must always be
     // cleared on exit so a stale record can't be reused.
     const finalize = (result) => {
@@ -237,15 +255,15 @@ export function consumeCallback() {
         cleanupCallbackUrl();
         return result;
     };
-    return consumeCallbackWithPending(loadPendingRedirect(), finalize);
+    return consumeCallbackWithPending(loadPendingRedirect(), finalize, options);
 }
-export async function consumeCallbackFromStorage(storage) {
+export async function consumeCallbackFromStorage(storage, options = {}) {
     const finalize = async (result) => {
         await clearPendingRedirectFromStorage(storage);
         cleanupCallbackUrl();
         return result;
     };
-    return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
+    return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize, options);
 }
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid
 // importing the full types module just for one constant.

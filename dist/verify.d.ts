@@ -12,6 +12,7 @@
  *     expectedAppName: 'Asteroid Sats',
  *   });
  */
+import type { SignetAuthEvent } from './types.js';
 export interface VerifyLoginOptions {
     /** The challenge the consumer issued. 64 hex. */
     expectedChallenge: string;
@@ -36,8 +37,23 @@ export type VerifyLoginResult = {
     error: VerifyLoginError;
 };
 export type VerifyLoginError = 'malformed-event' | 'wrong-kind' | 'invalid-event-id' | 'invalid-signature' | 'challenge-mismatch' | 'origin-mismatch' | 'app-mismatch' | 'too-old' | 'in-the-future';
+export type LoginAuthValidationError = VerifyLoginError | 'pubkey-mismatch';
+export interface ValidateLoginAuthEventOptions extends VerifyLoginOptions {
+    /** Optional signer/session pubkey the auth proof must belong to. */
+    expectedPubkey?: string;
+}
+export type LoginAuthValidationResult = {
+    valid: true;
+    pubkey: string;
+    createdAt: number;
+} | {
+    valid: false;
+    error: LoginAuthValidationError;
+};
 /**
  * Verify a Signet kind-21236 auth event against the expected challenge, origin,
  * and (optionally) app name.
  */
 export declare function verifyLogin(event: unknown, opts: VerifyLoginOptions): VerifyLoginResult;
+export declare function validateLoginAuthEvent(authEvent: unknown, opts: ValidateLoginAuthEventOptions): LoginAuthValidationResult;
+export declare function assertValidLoginAuthEvent(authEvent: SignetAuthEvent, opts: ValidateLoginAuthEventOptions): SignetAuthEvent;

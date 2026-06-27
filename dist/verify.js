@@ -115,3 +115,19 @@ export function verifyLogin(event, opts) {
         return { valid: false, error: 'in-the-future' };
     return { valid: true, pubkey: ev.pubkey.toLowerCase(), createdAt: ev.created_at };
 }
+export function validateLoginAuthEvent(authEvent, opts) {
+    const result = verifyLogin(authEvent, opts);
+    if (!result.valid)
+        return result;
+    if (opts.expectedPubkey !== undefined && result.pubkey !== opts.expectedPubkey.toLowerCase()) {
+        return { valid: false, error: 'pubkey-mismatch' };
+    }
+    return result;
+}
+export function assertValidLoginAuthEvent(authEvent, opts) {
+    const result = validateLoginAuthEvent(authEvent, opts);
+    if (!result.valid) {
+        throw new Error(`auth-event-invalid:${result.error}`);
+    }
+    return authEvent;
+}

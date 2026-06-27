@@ -37,6 +37,15 @@ export interface RedirectStartOptions {
     redirectCallback?: string;
     storage?: SignetStorage;
 }
+export interface ConsumeCallbackOptions {
+    /**
+     * Older signet-app deployments returned pubkey/signature/eventId without the
+     * signed event's `created_at` (`t`) value, which means the SDK cannot rebuild
+     * the exact event ID and verify the signature. Default true preserves that
+     * legacy behavior; set false to require cryptographic verification.
+     */
+    allowLegacyMissingTimestamp?: boolean;
+}
 /**
  * Build the signet-app auth URL for redirect mode. Deliberately omits `relay`
  * and `sessionPubkey` so signet-app's `isRelayMode` check (App.tsx) returns
@@ -75,6 +84,6 @@ export type ConsumeCallbackResult = {
     kind: 'invalid';
     reason: string;
 };
-export declare function consumeCallback(): ConsumeCallbackResult;
-export declare function consumeCallbackFromStorage(storage?: SignetStorage): Promise<ConsumeCallbackResult>;
+export declare function consumeCallback(options?: ConsumeCallbackOptions): ConsumeCallbackResult;
+export declare function consumeCallbackFromStorage(storage?: SignetStorage, options?: ConsumeCallbackOptions): Promise<ConsumeCallbackResult>;
 export { DEFAULTS };

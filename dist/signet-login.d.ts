@@ -20,7 +20,7 @@ import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFrom
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import type { ConsumeCallbackResult } from './redirect.js';
-export type { CallbackResult } from './callback.js';
+export type { CallbackResult, HandleCallbackOptions } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
@@ -39,6 +39,12 @@ export interface HandleRedirectCallbackOptions {
      * Must match the backend passed to `login({ mode: 'redirect', storage })`.
      */
     storage?: SignetStorage;
+    /**
+     * Older signet-app redirect callbacks omitted the signed event timestamp,
+     * which prevents client-side signature verification. Default true preserves
+     * those existing integrations; set false to reject unverifiable callbacks.
+     */
+    allowLegacyRedirectWithoutTimestamp?: boolean;
 }
 export interface CreateLoginAuthEventOptions {
     /** Required. Bound into the auth event's `app` tag. */
@@ -51,6 +57,11 @@ export interface CreateLoginAuthEventOptions {
 export interface LogoutOptions {
     /** Storage backend to clear. Defaults to localStorage. */
     storage?: SignetStorage;
+    /**
+     * Also clear the persistent NIP-46 client key used for bunker auto-approval.
+     * Default false preserves the existing "logout does not break pairing" behavior.
+     */
+    clearPersistentClientKey?: boolean;
 }
 /**
  * Show the login picker and resolve to a SignetSession on success, or null on

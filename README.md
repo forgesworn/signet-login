@@ -277,6 +277,15 @@ await Signet.logout(session, { storage: encryptedStorage });
 
 Use the same storage adapter for `login`, `restoreSession`, `handleRedirectCallback`, and `logout`.
 
+For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp; those callbacks remain accepted by default for compatibility but cannot be verified client-side. Security-sensitive apps can reject them:
+
+```js
+await Signet.handleRedirectCallback({
+  storage: encryptedStorage,
+  allowLegacyRedirectWithoutTimestamp: false,
+});
+```
+
 This adapter is deliberately not called "Stash". `@forgesworn/stash` is the separate encrypted cloud-save vault for app data; Signet Access storage is local session/reconnect state needed before a signer is available.
 
 ### `Signet.restoreSession(opts?)`
@@ -294,9 +303,23 @@ if (session?.signer.capabilities.canSignEvents) {
 
 Clear stored session and close the active signer.
 
+By default, logout keeps the persistent NIP-46 client key so a previously approved bunker can recognize this browser on the next login. Pass `clearPersistentClientKey: true` when the user explicitly wants to break that pairing:
+
+```js
+await Signet.logout(session, { clearPersistentClientKey: true });
+```
+
 ### `Signet.handleCallback(opts?)`
 
 Run on your callback page when using the same-device redirect flow. Parses URL params and posts them to `window.opener` (if popup-opened), then closes the popup.
+
+For popup callbacks, pass `targetOrigin` so callback params are posted only to the expected opener:
+
+```js
+Signet.handleCallback({
+  targetOrigin: 'https://my-game.example',
+});
+```
 
 ## Signers and capabilities
 
@@ -367,11 +390,12 @@ By default, session data is stored in localStorage under `signet:login.*`:
 | `signet:login.method` | `nip07` / `redirect` / `bunker` / `amber` |
 | `signet:login.authEvent` | Serialised kind-21236 auth event |
 | `signet:login.bunkerUri` | Bunker URI for reconnect (bunker only) |
-| `signet:login.bunkerClientSk` | Client secret key hex (bunker only) |
+| `signet:login.bunkerClientSk` | Session client secret key hex (bunker only) |
+| `signet:login.clientSk` | Persistent NIP-46 client secret key for bunker auto-approval |
 | `signet:login.expiresAt` | Optional expiry |
 | `signet:login.displayName` | Optional persona handle |
 
-Storage namespace is `signet:login.*` so it doesn't collide with `signet:verify.*`. `Signet.logout()` clears all login keys without touching other Signet SDKs.
+Storage namespace is `signet:login.*` so it doesn't collide with `signet:verify.*`. `Signet.logout()` clears session keys without touching other Signet SDKs; it clears `signet:login.clientSk` only when `clearPersistentClientKey: true` is set. Because bunker reconnect data can authorize future signing requests, apps should pair this SDK with a strict CSP and use a custom encrypted storage adapter when their threat model includes XSS on the app origin.
 
 ## Coexistence with signet-verify
 

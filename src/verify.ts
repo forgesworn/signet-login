@@ -50,6 +50,17 @@ export type VerifyLoginError =
   | 'too-old'
   | 'in-the-future';
 
+export type LoginAuthValidationError = VerifyLoginError | 'pubkey-mismatch';
+
+export interface ValidateLoginAuthEventOptions extends VerifyLoginOptions {
+  /** Optional signer/session pubkey the auth proof must belong to. */
+  expectedPubkey?: string;
+}
+
+export type LoginAuthValidationResult =
+  | { valid: true; pubkey: string; createdAt: number }
+  | { valid: false; error: LoginAuthValidationError };
+
 function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2);
   for (let i = 0; i < bytes.length; i++) {
@@ -155,4 +166,29 @@ export function verifyLogin(
   if (age < -60) return { valid: false, error: 'in-the-future' };
 
   return { valid: true, pubkey: ev.pubkey.toLowerCase(), createdAt: ev.created_at };
+}
+
+export function validateLoginAuthEvent(
+  authEvent: unknown,
+  opts: ValidateLoginAuthEventOptions,
+): LoginAuthValidationResult {
+  const result = verifyLogin(authEvent, opts);
+  if (!result.valid) return result;
+
+  if (opts.expectedPubkey !== undefined && result.pubkey !== opts.expectedPubkey.toLowerCase()) {
+    return { valid: false, error: 'pubkey-mismatch' };
+  }
+
+  return result;
+}
+
+export function assertValidLoginAuthEvent(
+  authEvent: SignetAuthEvent,
+  opts: ValidateLoginAuthEventOptions,
+): SignetAuthEvent {
+  const result = validateLoginAuthEvent(authEvent, opts);
+  if (!result.valid) {
+    throw new Error(`auth-event-invalid:${result.error}`);
+  }
+  return authEvent;
 }

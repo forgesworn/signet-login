@@ -9,6 +9,7 @@ import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFrom
 import { isAndroid, startAmberSignIn } from './amber.js';
 import { isMobile } from './platform.js';
 import { loadOrCreatePersistentClientSkFromStorage } from './storage.js';
+import { assertValidLoginAuthEvent } from './verify.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -448,7 +449,13 @@ async function runNip07Flow(refs, opts) {
             catch { /* ignore */ }
             return null;
         }
-        return { pubkey: signer.pubkey, authEvent };
+        assertValidLoginAuthEvent(authEvent, {
+            expectedChallenge: opts.challenge,
+            expectedOrigin: opts.origin,
+            expectedAppName: opts.appName,
+            expectedPubkey: signer.pubkey,
+        });
+        return { pubkey: signer.pubkey, signer, authEvent };
     }
     catch (err) {
         if (elapsedEl) {
@@ -1054,14 +1061,10 @@ async function runLoginModal(opts) {
                         return null;
                     continue; // back to picker
                 }
-                // Re-create the signer object — runNip07Flow created one internally
-                // but we need a usable handle to return. The extension is now warm
-                // so this call resolves immediately.
-                const signer = await createNip07Signer();
                 return {
                     pubkey: result.pubkey,
                     method: 'nip07',
-                    signer,
+                    signer: result.signer,
                     authEvent: result.authEvent,
                 };
             }
@@ -1130,7 +1133,7 @@ async function runLoginModal(opts) {
                     continue;
                 }
                 // Sign a kind-21236 auth event so we have a uniform proof shape
-                const authEvent = await signer.signEvent({
+                const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
                     kind: 21236,
                     content: '',
                     tags: [
@@ -1138,6 +1141,11 @@ async function runLoginModal(opts) {
                         ['origin', resolved.origin],
                         ['app', resolved.appName],
                     ],
+                }), {
+                    expectedChallenge: resolved.challenge,
+                    expectedOrigin: resolved.origin,
+                    expectedAppName: resolved.appName,
+                    expectedPubkey: signer.pubkey,
                 });
                 return {
                     pubkey: signer.pubkey,
@@ -1155,7 +1163,7 @@ async function runLoginModal(opts) {
                         return null;
                     continue;
                 }
-                const authEvent = await signer.signEvent({
+                const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
                     kind: 21236,
                     content: '',
                     tags: [
@@ -1163,6 +1171,11 @@ async function runLoginModal(opts) {
                         ['origin', resolved.origin],
                         ['app', resolved.appName],
                     ],
+                }), {
+                    expectedChallenge: resolved.challenge,
+                    expectedOrigin: resolved.origin,
+                    expectedAppName: resolved.appName,
+                    expectedPubkey: signer.pubkey,
                 });
                 // Surfaces as 'bunker' since the session shape is identical to a
                 // bunker URI session — same signer, same persistence path, same
@@ -1184,7 +1197,7 @@ async function runLoginModal(opts) {
                         return null;
                     continue;
                 }
-                const authEvent = await signer.signEvent({
+                const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
                     kind: 21236,
                     content: '',
                     tags: [
@@ -1192,6 +1205,11 @@ async function runLoginModal(opts) {
                         ['origin', resolved.origin],
                         ['app', resolved.appName],
                     ],
+                }), {
+                    expectedChallenge: resolved.challenge,
+                    expectedOrigin: resolved.origin,
+                    expectedAppName: resolved.appName,
+                    expectedPubkey: signer.pubkey,
                 });
                 return {
                     pubkey: signer.pubkey,

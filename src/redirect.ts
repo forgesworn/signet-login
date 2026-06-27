@@ -42,6 +42,7 @@ import {
   savePendingRedirectToStorage,
 } from './storage.js';
 import { EphemeralSigner } from './signers.js';
+import { validateLoginAuthEvent } from './verify.js';
 
 /** Subset of resolved options used by the redirect path. */
 export interface RedirectStartOptions {
@@ -51,6 +52,16 @@ export interface RedirectStartOptions {
   signetAppOrigin: string;
   redirectCallback?: string;
   storage?: SignetStorage;
+}
+
+export interface ConsumeCallbackOptions {
+  /**
+   * Older signet-app deployments returned pubkey/signature/eventId without the
+   * signed event's `created_at` (`t`) value, which means the SDK cannot rebuild
+   * the exact event ID and verify the signature. Default true preserves that
+   * legacy behavior; set false to require cryptographic verification.
+   */
+  allowLegacyMissingTimestamp?: boolean;
 }
 
 /** Hex regexes — kept local to avoid pulling in @noble for two patterns. */
@@ -173,6 +184,7 @@ type ConsumeCallbackFinalizer = <T extends ConsumeCallbackResult>(result: T) => 
 function consumeCallbackWithPending(
   pending: PendingRedirect | null,
   finalize: ConsumeCallbackFinalizer,
+  options: ConsumeCallbackOptions = {},
 ): ConsumeCallbackResult | Promise<ConsumeCallbackResult> {
   if (typeof window === 'undefined') return { kind: 'no-callback' };
 
@@ -223,13 +235,17 @@ function consumeCallbackWithPending(
   // reconstruction. Fall back to "now" with a warning when absent (older
   // signet-app deployments). See module-level note.
   let createdAt: number;
+  let legacyUnverifiedTimestamp = false;
   const tRaw = params.get('t');
   if (tRaw && /^\d+$/.test(tRaw)) {
     const t = Number(tRaw);
     if (!Number.isFinite(t)) return finalize({ kind: 'invalid', reason: 't-malformed' });
     createdAt = t;
+  } else if (options.allowLegacyMissingTimestamp === false) {
+    return finalize({ kind: 'invalid', reason: 't-required' });
   } else {
     createdAt = Math.floor(Date.now() / 1000);
+    legacyUnverifiedTimestamp = true;
     // Surface this in dev tools so consumers can spot upstream signet-app
     // versions that don't emit `t`. Doesn't fail the flow because the
     // session is still usable client-side; only strict server-side
@@ -237,8 +253,11 @@ function consumeCallbackWithPending(
     if (typeof console !== 'undefined') {
       console.warn(
         'signet-login: redirect callback missing `t` param — auth event ' +
-        'created_at approximated. Server-side verification may reject. ' +
-        'Upgrade signet-app to emit `t` in the redirect URL.',
+        'created_at approximated and the redirect signature cannot be ' +
+        'verified client-side. Server-side verification may reject. ' +
+        'Upgrade signet-app to emit `t` in the redirect URL, or call ' +
+        'handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: false }) ' +
+        'to reject legacy callbacks.',
       );
     }
   }
@@ -280,6 +299,16 @@ function consumeCallbackWithPending(
     sig: lowerSig,
   };
 
+  if (!legacyUnverifiedTimestamp) {
+    const verification = validateLoginAuthEvent(authEvent, {
+      expectedChallenge: pending.challenge,
+      expectedOrigin: pending.origin,
+    });
+    if (!verification.valid) {
+      return finalize({ kind: 'invalid', reason: verification.error });
+    }
+  }
+
   const displayName = params.get('display_name') || undefined;
   const ephemeral = new EphemeralSigner(lowerPubkey, authEvent);
   const session: SignetSession = {
@@ -306,7 +335,7 @@ function consumeCallbackWithPending(
   return finalize(bunkerUri ? { kind: 'session', session, bunkerUri } : { kind: 'session', session });
 }
 
-export function consumeCallback(): ConsumeCallbackResult {
+export function consumeCallback(options: ConsumeCallbackOptions = {}): ConsumeCallbackResult {
   // From here on we're handling a callback — pending state must always be
   // cleared on exit so a stale record can't be reused.
   const finalize = <T extends ConsumeCallbackResult>(result: T): T => {
@@ -314,16 +343,19 @@ export function consumeCallback(): ConsumeCallbackResult {
     cleanupCallbackUrl();
     return result;
   };
-  return consumeCallbackWithPending(loadPendingRedirect(), finalize) as ConsumeCallbackResult;
+  return consumeCallbackWithPending(loadPendingRedirect(), finalize, options) as ConsumeCallbackResult;
 }
 
-export async function consumeCallbackFromStorage(storage?: SignetStorage): Promise<ConsumeCallbackResult> {
+export async function consumeCallbackFromStorage(
+  storage?: SignetStorage,
+  options: ConsumeCallbackOptions = {},
+): Promise<ConsumeCallbackResult> {
   const finalize = async <T extends ConsumeCallbackResult>(result: T): Promise<T> => {
     await clearPendingRedirectFromStorage(storage);
     cleanupCallbackUrl();
     return result;
   };
-  return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
+  return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize, options);
 }
 
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid

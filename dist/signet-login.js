@@ -16,11 +16,12 @@
  */
 import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
-import { saveSessionToStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, } from './storage.js';
+import { saveSessionToStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
 import { consumeAmberCallbackFromStorage } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
+import { assertValidLoginAuthEvent } from './verify.js';
 export { isAndroid } from './amber.js';
 export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
 /**
@@ -102,7 +103,12 @@ export async function createLoginAuthEvent(signer, opts) {
             ['app', appName],
         ],
     });
-    return authEvent;
+    return assertValidLoginAuthEvent(authEvent, {
+        expectedChallenge: challenge.toLowerCase(),
+        expectedOrigin: origin,
+        expectedAppName: appName,
+        expectedPubkey: signer.pubkey,
+    });
 }
 /**
  * Headless helper for custom UIs. Builds the same SignetSession shape returned
@@ -291,7 +297,9 @@ export async function handleRedirectCallback(options = {}) {
     if (amberResult.kind !== 'no-callback') {
         return amberResult;
     }
-    const result = await consumeCallbackFromStorage(options.storage);
+    const result = await consumeCallbackFromStorage(options.storage, {
+        allowLegacyMissingTimestamp: options.allowLegacyRedirectWithoutTimestamp,
+    });
     if (result.kind !== 'session')
         return result;
     // Optional redirect-bunker upgrade. signet-app appends a `bunker://` URI
@@ -383,6 +391,9 @@ export async function logout(currentSession, opts) {
         catch { /* ignore */ }
     }
     await clearSessionFromStorage(opts?.storage);
+    if (opts?.clearPersistentClientKey) {
+        await clearPersistentClientSkFromStorage(opts.storage);
+    }
 }
 // ── Persistence helpers (internal) ────────────────────────────────────────────
 async function persistSession(session, storage) {

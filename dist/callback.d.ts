@@ -18,10 +18,18 @@ export interface CallbackResult {
     /** True if this page was opened as a popup (window.opener present). */
     isPopup: boolean;
 }
+export interface HandleCallbackOptions {
+    /** Close the popup after posting to the opener. Default true. */
+    closeAfterPost?: boolean;
+    /**
+     * Target origin for the opener postMessage. Pass the opener app's origin
+     * (for example `https://app.example`) to avoid leaking auth params to an
+     * unexpected opener. Defaults to `*` for backwards compatibility.
+     */
+    targetOrigin?: string;
+}
 /**
  * Parse the current page's URL parameters and post them to the opener (if any).
  * Optionally close the popup.
  */
-export declare function handleCallback(options?: {
-    closeAfterPost?: boolean;
-}): CallbackResult;
+export declare function handleCallback(options?: HandleCallbackOptions): CallbackResult;

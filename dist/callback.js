@@ -27,10 +27,7 @@ export function handleCallback(options) {
     const isPopup = typeof window !== 'undefined' && !!window.opener && window.opener !== window;
     if (isPopup) {
         try {
-            window.opener.postMessage({ type: 'signet-login-callback', params }, 
-            // Restrict target origin to opener's origin if known; fall back to '*' so
-            // cross-origin popups still deliver. Consumers must validate origin.
-            '*');
+            window.opener.postMessage({ type: 'signet-login-callback', params }, options?.targetOrigin ?? '*');
         }
         catch {
             // postMessage failed — ignore
