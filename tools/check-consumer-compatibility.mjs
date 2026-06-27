@@ -26,6 +26,12 @@ const consumers = [
     ref: 'main',
   },
   {
+    name: 'SignetLite',
+    repo: 'forgesworn/signet-lite',
+    workflow: 'signet-compatibility.yml',
+    ref: 'main',
+  },
+  {
     name: 'Pallasite',
     repo: 'TheCryptoDonkey/pallasite',
     workflow: 'signet-compatibility.yml',
