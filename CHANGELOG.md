@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.2 (2026-06-27)
+
+### Bug Fixes
+
+- harden login auth proof validation
+
+
+
 ## 0.13.1 (2026-06-21)
 
 ### Bug Fixes
