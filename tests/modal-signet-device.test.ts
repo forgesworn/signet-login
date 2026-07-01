@@ -25,6 +25,12 @@ async function settleMicrotasks(): Promise<void> {
   await Promise.resolve();
 }
 
+function dispatchPersistedPageShow(): void {
+  const event = new Event('pageshow') as PageTransitionEvent;
+  Object.defineProperty(event, 'persisted', { value: true });
+  window.dispatchEvent(event);
+}
+
 describe('same-device Signet modal flow', () => {
   beforeEach(() => {
     installDialogPolyfill();
@@ -120,5 +126,24 @@ describe('same-device Signet modal flow', () => {
 
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await expect(pending).resolves.toBeNull();
+  });
+
+  it('treats browser Back from the Signet handoff as cancellation', async () => {
+    const pending = login({
+      appName: 'Pallasite',
+      theme: 'dark',
+      preferredMethod: 'local-signet',
+      relayUrl: 'wss://relay.trotters.cc',
+      signetAppOrigin: 'https://mysignet.app',
+      persist: false,
+    });
+    await settleMicrotasks();
+
+    expect(document.getElementById('signet-login-dialog')).toBeInstanceOf(HTMLDialogElement);
+
+    dispatchPersistedPageShow();
+
+    await expect(pending).resolves.toBeNull();
+    expect(document.getElementById('signet-login-dialog')).toBeNull();
   });
 });

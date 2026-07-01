@@ -132,6 +132,10 @@ await Signet.login({
 });
 ```
 
+`signetAppOrigin` defaults to `https://mysignet.app`. If your integration should launch Signet Lite specifically, pass `signetAppOrigin: 'https://lite.mysignet.app'`.
+
+In `mode: 'redirect'`, the current tab navigates to Signet and the session is consumed later by `Signet.handleRedirectCallback()`. If the user taps Back before approving and the browser restores the original page, `login()` resolves `null` so your UI can leave its loading state.
+
 `redirect` and `qr` remain supported picker aliases for existing apps, but new integrations should use `local-signet` and `remote-signet`.
 
 When camera APIs are available, the bunker URI screen can scan `bunker://` QR codes directly. Paste remains the fallback.

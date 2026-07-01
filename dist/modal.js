@@ -154,6 +154,27 @@ function tearDown(refs) {
     refs.dialog.remove();
     refs.style.remove();
 }
+function createBackNavigationCancel() {
+    let settled = false;
+    let resolveCancel;
+    const promise = new Promise(resolve => { resolveCancel = resolve; });
+    const cleanup = () => {
+        window.removeEventListener('pageshow', onPageShow);
+    };
+    const cancel = () => {
+        if (settled)
+            return;
+        settled = true;
+        cleanup();
+        resolveCancel(null);
+    };
+    const onPageShow = (event) => {
+        if (event.persisted)
+            cancel();
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return { promise, cleanup };
+}
 function buttonStyle(dark, primary = false) {
     if (primary) {
         return 'background:#2c3e8f;color:white;border:0;padding:12px 16px;border-radius:8px;cursor:pointer;font-size:0.95rem;width:100%;margin-bottom:8px;text-align:left;display:flex;align-items:center;gap:12px;';
@@ -530,12 +551,15 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     }
     return new Promise(resolve => {
         let settled = false;
+        const backNavigation = createBackNavigationCancel();
         const settle = (v) => {
             if (settled)
                 return;
             settled = true;
+            backNavigation.cleanup();
             resolve(v);
         };
+        backNavigation.promise.then(() => settle(null));
         refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', () => {
             settle(null);
         });

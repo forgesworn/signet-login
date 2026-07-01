@@ -12,11 +12,13 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   buildRedirectAuthUrl,
   consumeCallback,
+  startRedirect,
 } from '../src/redirect.js';
 import {
   savePendingRedirect,
   savePendingRedirectToStorage,
   loadPendingRedirect,
+  loadPendingRedirectFromStorage,
   clearPendingRedirect,
   loadSession,
   loadSessionFromStorage,
@@ -45,6 +47,17 @@ const EVENT_ID = 'd'.repeat(64);
  * cleanup.
  */
 const JSDOM_ORIGIN = window.location.origin;
+
+async function settleMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function dispatchPersistedPageShow(): void {
+  const event = new Event('pageshow') as PageTransitionEvent;
+  Object.defineProperty(event, 'persisted', { value: true });
+  window.dispatchEvent(event);
+}
 
 function memoryStorage(): SignetStorage {
   const data = new Map<string, string>();
@@ -99,6 +112,32 @@ describe('buildRedirectAuthUrl', () => {
       }),
     );
     expect(url.searchParams.get('callback')).toBe(`${ORIGIN}/auth/return`);
+  });
+});
+
+describe('startRedirect', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setLocation('');
+  });
+
+  it('resolves null and clears pending state when browser Back restores the page', async () => {
+    const storage = memoryStorage();
+    const pending = startRedirect({
+      appName: APP_NAME,
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      signetAppOrigin: `${JSDOM_ORIGIN}/#`,
+      storage,
+    });
+
+    await settleMicrotasks();
+    expect(await loadPendingRedirectFromStorage(storage)).not.toBeNull();
+
+    dispatchPersistedPageShow();
+
+    await expect(pending).resolves.toBeNull();
+    expect(await loadPendingRedirectFromStorage(storage)).toBeNull();
   });
 });
 

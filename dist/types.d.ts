@@ -171,8 +171,9 @@ export interface LoginOptions {
      * Delivery mode for the Sign in with Signet method. See `SignetDeliveryMode`.
      * Default: 'relay'.
      *
-     * In 'redirect' mode `Signet.login()` navigates the current tab away and
-     * never resolves in this tab — the returned promise is abandoned. Wire up
+     * In 'redirect' mode `Signet.login()` navigates the current tab away. In the
+     * normal handoff the returned promise is abandoned; if the user backs out and
+     * the browser restores the original page, it resolves null. Wire up
      * `Signet.handleCallback()` on boot to receive the session on return.
      */
     mode?: SignetDeliveryMode;

@@ -193,6 +193,26 @@ function tearDown(refs: ModalRefs): void {
   refs.style.remove();
 }
 
+function createBackNavigationCancel(): { promise: Promise<null>; cleanup(): void } {
+  let settled = false;
+  let resolveCancel!: (value: null) => void;
+  const promise = new Promise<null>(resolve => { resolveCancel = resolve; });
+  const cleanup = (): void => {
+    window.removeEventListener('pageshow', onPageShow);
+  };
+  const cancel = (): void => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    resolveCancel(null);
+  };
+  const onPageShow = (event: PageTransitionEvent): void => {
+    if (event.persisted) cancel();
+  };
+  window.addEventListener('pageshow', onPageShow);
+  return { promise, cleanup };
+}
+
 function buttonStyle(dark: boolean, primary = false): string {
   if (primary) {
     return 'background:#2c3e8f;color:white;border:0;padding:12px 16px;border-radius:8px;cursor:pointer;font-size:0.95rem;width:100%;margin-bottom:8px;text-align:left;display:flex;align-items:center;gap:12px;';
@@ -634,11 +654,14 @@ async function runRedirectFlow(
 
   return new Promise<RedirectFlowResult | null>(resolve => {
     let settled = false;
+    const backNavigation = createBackNavigationCancel();
     const settle = (v: RedirectFlowResult | null): void => {
       if (settled) return;
       settled = true;
+      backNavigation.cleanup();
       resolve(v);
     };
+    backNavigation.promise.then(() => settle(null));
 
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
       settle(null);

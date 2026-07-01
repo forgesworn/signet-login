@@ -68,11 +68,13 @@ export interface LogoutOptions {
  * cancel / timeout.
  *
  * When `mode: 'redirect'` is set, the picker is skipped entirely — the current
- * tab navigates to signet-app and this promise NEVER resolves in this tab.
- * Callers should treat the returned promise as "fire and forget" in that case
- * and call `Signet.handleCallback()` on the next page load to receive the
- * session. The other login methods (NIP-07, bunker) don't use redirect at all
- * and are unaffected by this option.
+ * tab navigates to signet-app. Callers should treat the returned promise as
+ * "fire and forget" in the normal navigation case and call
+ * `Signet.handleCallback()` on the next page load to receive the session. If
+ * the user backs out and the browser restores the original page, the promise
+ * resolves null so the caller can leave its loading state. The other login
+ * methods (NIP-07, bunker) don't use redirect at all and are unaffected by this
+ * option.
  */
 export declare function login(opts: LoginOptions): Promise<SignetSession | null>;
 /**

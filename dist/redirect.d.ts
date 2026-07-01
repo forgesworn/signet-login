@@ -7,8 +7,10 @@
  *      Persists pending state to localStorage, builds the signet-app auth URL
  *      WITHOUT relay/sessionPubkey (so signet-app falls into its
  *      `window.location.href = callbackUrl` path), and navigates the current
- *      tab. The caller's promise never resolves in this tab — the page is
- *      gone.
+ *      tab. The caller's promise normally never resolves in this tab because
+ *      the page is gone; if a browser restores the page when the user presses
+ *      Back, the promise resolves null so the caller can leave its loading
+ *      state.
  *
  *   2. `consumeCallback()` — called from `Signet.handleCallback()` on boot.
  *      Detects auth params in `window.location.search`, validates them
@@ -53,15 +55,16 @@ export interface ConsumeCallbackOptions {
  */
 export declare function buildRedirectAuthUrl(opts: RedirectStartOptions): string;
 /**
- * Persist pending state and navigate. Resolves to a never-settling promise on
- * success (the page navigates before it can resolve) so callers using
- * `await Signet.login()` see consistent behaviour with the relay path.
+ * Persist pending state and navigate. Normally the page navigates before this
+ * promise can resolve. If the user backs out and the browser restores this page
+ * from the back/forward cache, resolve null and clear pending redirect state so
+ * the caller does not stay stuck awaiting a login that was abandoned.
  *
  * Throws synchronously if the environment lacks `window` — calling redirect
  * mode in non-browser code is a programming error, not something to silently
  * swallow.
  */
-export declare function startRedirect(opts: RedirectStartOptions): Promise<never>;
+export declare function startRedirect(opts: RedirectStartOptions): Promise<null>;
 /** Outcome of consuming a redirect callback. */
 export type ConsumeCallbackResult = {
     kind: 'session';
