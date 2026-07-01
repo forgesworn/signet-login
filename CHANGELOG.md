@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.3 (2026-07-01)
+
+### Bug Fixes
+
+- cancel abandoned Signet handoffs
+
+
+
 ## 0.13.2 (2026-06-27)
 
 ### Bug Fixes
