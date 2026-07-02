@@ -337,7 +337,7 @@ export async function handleRedirectCallback(options = {}) {
             const liveSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
             if (displayName)
                 liveSession.displayName = displayName;
-            void persistSession(liveSession, options.storage);
+            void persistSession(liveSession, options.storage).catch(() => { });
             return bunkerSigner;
         })
             .catch((err) => {

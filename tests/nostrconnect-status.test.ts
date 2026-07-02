@@ -199,6 +199,39 @@ describe('NostrConnect status events', () => {
     ]));
   });
 
+  it('closes the RobustBunkerClient if getPublicKey fails after pairing succeeds', async () => {
+    vi.useFakeTimers();
+    // 'hang' means no request published after pairing gets an automatic
+    // response — the get_public_key call below will time out internally.
+    h.mode = 'hang';
+    const key = clientSecretKey();
+    const uri = pairingUri(key);
+
+    const pending = createBunkerSignerFromNostrConnect({
+      uri,
+      clientSecretKey: key,
+      timeoutMs: 5_000,
+    });
+    // Attach the rejection expectation before advancing fake timers so the
+    // eventual rejection is never briefly unhandled.
+    const rejection = expect(pending).rejects.toThrow('nip46-get_public_key-timeout');
+
+    approvePairing(uri, key);
+    // Flush the microtask that carries pairing success into the
+    // RobustBunkerClient construction + getPublicKey() call.
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Past the 15s NIP-46 request timeout for get_public_key.
+    await vi.advanceTimersByTimeAsync(15_001);
+
+    await rejection;
+
+    // The RobustBunkerClient (its SimplePool + subscription) must be closed
+    // on this failure path, not leaked.
+    expect(h.closeReasons).toContain('closed by caller');
+    expect(h.destroys).toBeGreaterThanOrEqual(2); // pairing pool + bunker pool
+  });
+
   it('reports relay connection failures separately from pairing cancellation', async () => {
     h.connection = 'fail';
     const key = clientSecretKey();

@@ -13,6 +13,23 @@
  * postMessage and lets the consumer decide what to do.
  */
 /**
+ * Best-effort safe target origin when the caller didn't pass one explicitly:
+ * derive it from `document.referrer`, which the browser sets to the opener's
+ * URL for a same-tab `window.open()` popup (absent `noreferrer`/strict
+ * Referrer-Policy). Returns `null` when no origin can be derived, in which
+ * case the caller falls back to `'*'`.
+ */
+function deriveOpenerOrigin() {
+    if (typeof document === 'undefined' || !document.referrer)
+        return null;
+    try {
+        return new URL(document.referrer).origin;
+    }
+    catch {
+        return null;
+    }
+}
+/**
  * Parse the current page's URL parameters and post them to the opener (if any).
  * Optionally close the popup.
  */
@@ -27,7 +44,7 @@ export function handleCallback(options) {
     const isPopup = typeof window !== 'undefined' && !!window.opener && window.opener !== window;
     if (isPopup) {
         try {
-            window.opener.postMessage({ type: 'signet-login-callback', params }, options?.targetOrigin ?? '*');
+            window.opener.postMessage({ type: 'signet-login-callback', params }, options?.targetOrigin ?? deriveOpenerOrigin() ?? '*');
         }
         catch {
             // postMessage failed — ignore

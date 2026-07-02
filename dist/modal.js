@@ -566,6 +566,16 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', () => {
             settle(null);
         });
+        // KNOWN LIMITATION (blocked on signet-verify): `waitForAuthResponse`
+        // (signet-verify@0.5.0, latest published) takes no AbortSignal or cancel
+        // callback — its relay subscription keeps running until it resolves,
+        // rejects, or hits its own internal `timeout` even after the user clicks
+        // Back/Cancel here. That subscription leak can only be closed by adding
+        // a cancellation hook upstream in signet-verify. The `settled` guards
+        // below are the mitigation available on this side: they stop a late
+        // result from an abandoned attempt mutating UI that has since moved on
+        // (e.g. the picker, or a second attempt reusing this same dialog's
+        // `#signet-login-status` element).
         waitForAuthResponse({
             requestId: opts.challenge,
             relayUrl: opts.relayUrl,
@@ -573,6 +583,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             expectedOrigin: opts.origin,
             timeout: opts.timeout,
         }).then(rawResult => {
+            if (settled)
+                return;
             const result = rawResult;
             const authEvent = {
                 id: result.authEvent.id,
@@ -590,6 +602,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
                 out.bunkerUri = result.bunkerUri;
             settle(out);
         }).catch(err => {
+            if (settled)
+                return;
             const status = refs.dialog.querySelector('#signet-login-status');
             if (status) {
                 status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
