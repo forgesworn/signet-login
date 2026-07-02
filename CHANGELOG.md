@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1 (2026-07-02)
+
+### Bug Fixes
+
+- harden redirect auth and close signer resource leaks
+
+
+
 ## 0.14.0 (2026-07-02)
 
 ### ⚠ BREAKING CHANGES
