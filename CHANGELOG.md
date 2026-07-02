@@ -1,10 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-07-02)
 
 ### ⚠ BREAKING CHANGES
 
 - **redirect: reject timestamp-less redirect callbacks by default.** Previously, `handleRedirectCallback`/`consumeCallback` accepted signet-app redirect callbacks that omitted the signed event's `t` (created_at) param, silently skipping signature verification and treating the returned `pubkey` as authenticated. That default let an attacker who could reach the callback URL inject an arbitrary `pubkey` as an authenticated session. The secure behaviour is now the default: a callback missing `t` is rejected with `reason: 't-required'`. To restore the old (unverified) behaviour, pass `allowLegacyRedirectWithoutTimestamp: true` to `handleRedirectCallback` (or `allowLegacyMissingTimestamp: true` to `consumeCallback`) explicitly — only do this if you control the signet-app deployment and accept that the pubkey cannot be cryptographically verified.
+
+### Bug Fixes
+
+- **signers:** close the `RobustBunkerClient` (relay pool + subscription) when `getPublicKey()` fails after a NostrConnect pairing, instead of leaking it.
+- **modal:** ignore a late `waitForAuthResponse` result after the user cancels or retries, so it can't overwrite a fresh attempt's status. (The underlying relay-subscription leak needs an abort hook added upstream in `signet-verify`.)
+- **callback:** derive a safe `postMessage` target origin from the opener instead of defaulting to `'*'`.
+- **redirect:** add a missing `catch` on a background `persistSession` call.
 
 ## 0.13.3 (2026-07-01)
 
