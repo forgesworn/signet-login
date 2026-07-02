@@ -41,8 +41,11 @@ export interface HandleRedirectCallbackOptions {
     storage?: SignetStorage;
     /**
      * Older signet-app redirect callbacks omitted the signed event timestamp,
-     * which prevents client-side signature verification. Default true preserves
-     * those existing integrations; set false to reject unverifiable callbacks.
+     * which prevents client-side signature verification — the resulting
+     * session's `pubkey` is UNVERIFIED. Secure by default: `false`/unset
+     * rejects those callbacks (`reason: 't-required'`). Set `true` only if
+     * you control the signet-app deployment and knowingly accept sessions
+     * whose pubkey cannot be cryptographically checked.
      */
     allowLegacyRedirectWithoutTimestamp?: boolean;
 }

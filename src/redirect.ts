@@ -60,8 +60,13 @@ export interface ConsumeCallbackOptions {
   /**
    * Older signet-app deployments returned pubkey/signature/eventId without the
    * signed event's `created_at` (`t`) value, which means the SDK cannot rebuild
-   * the exact event ID and verify the signature. Default true preserves that
-   * legacy behavior; set false to require cryptographic verification.
+   * the exact event ID and CANNOT verify the signature — a missing `t` is
+   * cryptographically unverifiable, not just legacy. Secure by default: a
+   * callback missing `t` is rejected (`reason: 't-required'`) unless you set
+   * this to `true` explicitly. Only opt in if you control the signet-app
+   * deployment on the other end and accept that the resulting session's
+   * pubkey is UNVERIFIED — an attacker who can reach your callback URL can
+   * inject an arbitrary `pubkey` as an authenticated session when this is on.
    */
   allowLegacyMissingTimestamp?: boolean;
 }
@@ -254,23 +259,27 @@ function consumeCallbackWithPending(
     const t = Number(tRaw);
     if (!Number.isFinite(t)) return finalize({ kind: 'invalid', reason: 't-malformed' });
     createdAt = t;
-  } else if (options.allowLegacyMissingTimestamp === false) {
+  } else if (options.allowLegacyMissingTimestamp !== true) {
+    // Secure by default: without `t` the SDK cannot rebuild the signed event
+    // ID, so the signature can never be checked and `pubkey` is effectively
+    // attacker-controlled. Reject unless the consumer has explicitly opted
+    // into the unverified legacy path.
     return finalize({ kind: 'invalid', reason: 't-required' });
   } else {
     createdAt = Math.floor(Date.now() / 1000);
     legacyUnverifiedTimestamp = true;
     // Surface this in dev tools so consumers can spot upstream signet-app
     // versions that don't emit `t`. Doesn't fail the flow because the
-    // session is still usable client-side; only strict server-side
-    // verification will reject it.
+    // consumer has explicitly opted into the unverified session; only
+    // strict server-side verification will reject it.
     if (typeof console !== 'undefined') {
       console.warn(
         'signet-login: redirect callback missing `t` param — auth event ' +
-        'created_at approximated and the redirect signature cannot be ' +
-        'verified client-side. Server-side verification may reject. ' +
-        'Upgrade signet-app to emit `t` in the redirect URL, or call ' +
-        'handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: false }) ' +
-        'to reject legacy callbacks.',
+        'created_at approximated and the redirect signature CANNOT be ' +
+        'verified client-side, so `pubkey` is unverified. This path only ' +
+        'ran because allowLegacyRedirectWithoutTimestamp was explicitly ' +
+        'set to true. Upgrade signet-app to emit `t` in the redirect URL ' +
+        'and remove that option as soon as possible.',
       );
     }
   }

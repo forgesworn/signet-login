@@ -285,8 +285,7 @@ describe('consumeCallback', () => {
     }
   });
 
-  it('keeps legacy missing-t callbacks by default and warns', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* swallow */ });
+  it('rejects legacy missing-t callbacks by default (secure by default)', () => {
     savePendingRedirect({
       challenge: CHALLENGE,
       origin: JSDOM_ORIGIN,
@@ -294,19 +293,16 @@ describe('consumeCallback', () => {
       createdAt: Date.now(),
     });
     setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
-    const before = Math.floor(Date.now() / 1000);
     const result = consumeCallback();
-    const after = Math.floor(Date.now() / 1000);
-    expect(result.kind).toBe('session');
-    if (result.kind === 'session') {
-      expect(result.session.authEvent.created_at).toBeGreaterThanOrEqual(before);
-      expect(result.session.authEvent.created_at).toBeLessThanOrEqual(after);
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.reason).toBe('t-required');
     }
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    // Pending state must not survive a rejected callback either.
+    expect(loadPendingRedirect()).toBeNull();
   });
 
-  it('rejects missing-t callbacks when legacy compatibility is disabled', () => {
+  it('rejects missing-t callbacks when legacy compatibility is explicitly disabled', () => {
     savePendingRedirect({
       challenge: CHALLENGE,
       origin: JSDOM_ORIGIN,
@@ -321,6 +317,27 @@ describe('consumeCallback', () => {
     }
   });
 
+  it('allows legacy missing-t callbacks only when explicitly opted in, and warns', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* swallow */ });
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
+    const before = Math.floor(Date.now() / 1000);
+    const result = consumeCallback({ allowLegacyMissingTimestamp: true });
+    const after = Math.floor(Date.now() / 1000);
+    expect(result.kind).toBe('session');
+    if (result.kind === 'session') {
+      expect(result.session.authEvent.created_at).toBeGreaterThanOrEqual(before);
+      expect(result.session.authEvent.created_at).toBeLessThanOrEqual(after);
+    }
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('is idempotent — second call after success returns no-callback', () => {
     savePendingRedirect({
       challenge: CHALLENGE,
@@ -329,10 +346,12 @@ describe('consumeCallback', () => {
       createdAt: Date.now(),
     });
     setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
-    const r1 = consumeCallback();
+    // Exercises the legacy (unverified) opt-in path — the idempotency being
+    // tested here is URL-stripping, not timestamp verification.
+    const r1 = consumeCallback({ allowLegacyMissingTimestamp: true });
     expect(r1.kind).toBe('session');
     // URL has been stripped via history.replaceState — jsdom honours that
-    const r2 = consumeCallback();
+    const r2 = consumeCallback({ allowLegacyMissingTimestamp: true });
     expect(r2.kind).toBe('no-callback');
   });
 });
@@ -415,6 +434,39 @@ describe('handleRedirectCallback', () => {
       expect(result.reason).toBe('t-required');
     }
     expect(loadSession()).toBeNull();
+  });
+
+  it('rejects missing-t callbacks by default through handleRedirectCallback (secure by default)', async () => {
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
+
+    const result = await handleRedirectCallback();
+    expect(result.kind).toBe('invalid');
+    if (result.kind === 'invalid') {
+      expect(result.reason).toBe('t-required');
+    }
+    expect(loadSession()).toBeNull();
+  });
+
+  it('allows missing-t callbacks through handleRedirectCallback when explicitly opted in', async () => {
+    savePendingRedirect({
+      challenge: CHALLENGE,
+      origin: JSDOM_ORIGIN,
+      appName: APP_NAME,
+      createdAt: Date.now(),
+    });
+    setLocation(`?pubkey=${PUBKEY}&signature=${SIGNATURE}&eventId=${EVENT_ID}`);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* swallow */ });
+    const result = await handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: true });
+    warn.mockRestore();
+    expect(result.kind).toBe('session');
+    expect(loadSession()).not.toBeNull();
   });
 });
 

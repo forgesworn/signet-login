@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### ⚠ BREAKING CHANGES
+
+- **redirect: reject timestamp-less redirect callbacks by default.** Previously, `handleRedirectCallback`/`consumeCallback` accepted signet-app redirect callbacks that omitted the signed event's `t` (created_at) param, silently skipping signature verification and treating the returned `pubkey` as authenticated. That default let an attacker who could reach the callback URL inject an arbitrary `pubkey` as an authenticated session. The secure behaviour is now the default: a callback missing `t` is rejected with `reason: 't-required'`. To restore the old (unverified) behaviour, pass `allowLegacyRedirectWithoutTimestamp: true` to `handleRedirectCallback` (or `allowLegacyMissingTimestamp: true` to `consumeCallback`) explicitly — only do this if you control the signet-app deployment and accept that the pubkey cannot be cryptographically verified.
+
 ## 0.13.3 (2026-07-01)
 
 ### Bug Fixes

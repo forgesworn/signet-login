@@ -43,8 +43,13 @@ export interface ConsumeCallbackOptions {
     /**
      * Older signet-app deployments returned pubkey/signature/eventId without the
      * signed event's `created_at` (`t`) value, which means the SDK cannot rebuild
-     * the exact event ID and verify the signature. Default true preserves that
-     * legacy behavior; set false to require cryptographic verification.
+     * the exact event ID and CANNOT verify the signature — a missing `t` is
+     * cryptographically unverifiable, not just legacy. Secure by default: a
+     * callback missing `t` is rejected (`reason: 't-required'`) unless you set
+     * this to `true` explicitly. Only opt in if you control the signet-app
+     * deployment on the other end and accept that the resulting session's
+     * pubkey is UNVERIFIED — an attacker who can reach your callback URL can
+     * inject an arbitrary `pubkey` as an authenticated session when this is on.
      */
     allowLegacyMissingTimestamp?: boolean;
 }

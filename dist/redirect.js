@@ -173,7 +173,11 @@ function consumeCallbackWithPending(pending, finalize, options = {}) {
             return finalize({ kind: 'invalid', reason: 't-malformed' });
         createdAt = t;
     }
-    else if (options.allowLegacyMissingTimestamp === false) {
+    else if (options.allowLegacyMissingTimestamp !== true) {
+        // Secure by default: without `t` the SDK cannot rebuild the signed event
+        // ID, so the signature can never be checked and `pubkey` is effectively
+        // attacker-controlled. Reject unless the consumer has explicitly opted
+        // into the unverified legacy path.
         return finalize({ kind: 'invalid', reason: 't-required' });
     }
     else {
@@ -181,15 +185,15 @@ function consumeCallbackWithPending(pending, finalize, options = {}) {
         legacyUnverifiedTimestamp = true;
         // Surface this in dev tools so consumers can spot upstream signet-app
         // versions that don't emit `t`. Doesn't fail the flow because the
-        // session is still usable client-side; only strict server-side
-        // verification will reject it.
+        // consumer has explicitly opted into the unverified session; only
+        // strict server-side verification will reject it.
         if (typeof console !== 'undefined') {
             console.warn('signet-login: redirect callback missing `t` param — auth event ' +
-                'created_at approximated and the redirect signature cannot be ' +
-                'verified client-side. Server-side verification may reject. ' +
-                'Upgrade signet-app to emit `t` in the redirect URL, or call ' +
-                'handleRedirectCallback({ allowLegacyRedirectWithoutTimestamp: false }) ' +
-                'to reject legacy callbacks.');
+                'created_at approximated and the redirect signature CANNOT be ' +
+                'verified client-side, so `pubkey` is unverified. This path only ' +
+                'ran because allowLegacyRedirectWithoutTimestamp was explicitly ' +
+                'set to true. Upgrade signet-app to emit `t` in the redirect URL ' +
+                'and remove that option as soon as possible.');
         }
     }
     const lowerPubkey = pubkey.toLowerCase();

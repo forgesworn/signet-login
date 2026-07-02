@@ -146,4 +146,67 @@ describe('same-device Signet modal flow', () => {
     await expect(pending).resolves.toBeNull();
     expect(document.getElementById('signet-login-dialog')).toBeNull();
   });
+
+  describe('abandoned waitForAuthResponse after Back/Cancel', () => {
+    afterEach(() => {
+      // signet-verify's waitForAuthResponse has no cancellation hook (see
+      // src/modal.ts comment near runRedirectFlow) — restore the default
+      // "never resolves" implementation other tests in this file rely on.
+      vi.mocked(waitForAuthResponse).mockReset();
+      vi.mocked(waitForAuthResponse).mockImplementation(() => new Promise(() => { /* never resolves in UI tests */ }));
+    });
+
+    it('ignores a late rejection from an abandoned attempt instead of mutating a later attempt\'s UI', async () => {
+      let rejectFirst!: (err: unknown) => void;
+      const first = new Promise<never>((_resolve, reject) => { rejectFirst = reject; });
+      vi.mocked(waitForAuthResponse)
+        .mockImplementationOnce(() => first)
+        .mockImplementationOnce(() => new Promise(() => { /* second attempt: left pending */ }));
+
+      const pending = login({
+        appName: 'Pallasite',
+        theme: 'dark',
+        relayUrl: 'wss://relay.trotters.cc',
+        signetAppOrigin: 'https://mysignet.app',
+        persist: false,
+      });
+      await settleMicrotasks();
+
+      // First attempt: pick "remote-signet" (QR flow), which calls
+      // waitForAuthResponse for the first time.
+      document.querySelector<HTMLButtonElement>('[data-choice="remote-signet"]')?.click();
+      await settleMicrotasks();
+      expect(document.getElementById('signet-login-status')).not.toBeNull();
+
+      // Back out to the picker WITHOUT the first waitForAuthResponse ever
+      // settling — this is the abandoned call; its relay subscription has
+      // no cancellation hook and keeps running (see fix comment).
+      document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+      await settleMicrotasks();
+
+      // Second attempt: pick "remote-signet" again. The dialog is reused —
+      // a NEW #signet-login-status element replaces the first one.
+      document.querySelector<HTMLButtonElement>('[data-choice="remote-signet"]')?.click();
+      await settleMicrotasks();
+      const secondStatus = document.getElementById('signet-login-status');
+      expect(secondStatus).not.toBeNull();
+      expect(secondStatus?.textContent).toMatch(/Waiting/);
+
+      // The abandoned first call now rejects late. Without the settled
+      // guard this would overwrite the SECOND (current) attempt's status
+      // text with a stale error from a flow the user already left.
+      rejectFirst(new Error('stale-abandoned-error'));
+      await settleMicrotasks();
+
+      expect(document.getElementById('signet-login-status')?.textContent).toMatch(/Waiting/);
+      expect(document.getElementById('signet-login-status')?.textContent).not.toContain('stale-abandoned-error');
+
+      // Clean up: back out of the (still-pending) second attempt to the
+      // picker, then cancel the picker itself to resolve the overall login.
+      document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+      await settleMicrotasks();
+      document.querySelector<HTMLButtonElement>('[data-choice="cancel"]')?.click();
+      await expect(pending).resolves.toBeNull();
+    });
+  });
 });

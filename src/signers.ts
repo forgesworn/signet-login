@@ -677,8 +677,14 @@ export async function createBunkerSignerFromNostrConnect(input: {
     relays,
     secret,
   }, onStatus);
-  const pubkey = await bunker.getPublicKey();
-  await bestEffortSwitchRelays(bunker);
+  let pubkey: string;
+  try {
+    pubkey = await bunker.getPublicKey();
+    await bestEffortSwitchRelays(bunker);
+  } catch (err) {
+    await bunker.close().catch(() => {});
+    throw err;
+  }
   return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 

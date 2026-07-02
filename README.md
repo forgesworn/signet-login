@@ -281,14 +281,16 @@ await Signet.logout(session, { storage: encryptedStorage });
 
 Use the same storage adapter for `login`, `restoreSession`, `handleRedirectCallback`, and `logout`.
 
-For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp; those callbacks remain accepted by default for compatibility but cannot be verified client-side. Security-sensitive apps can reject them:
+For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp — without it the SDK cannot rebuild the signed event and **cannot verify the signature**, so the returned `pubkey` would be unverified. **`handleRedirectCallback` rejects those callbacks by default** (`reason: 't-required'`). Only opt into accepting them if you control the signet-app deployment and knowingly accept an unverified pubkey:
 
 ```js
 await Signet.handleRedirectCallback({
   storage: encryptedStorage,
-  allowLegacyRedirectWithoutTimestamp: false,
+  allowLegacyRedirectWithoutTimestamp: true, // ⚠️ disables signature verification — see warning above
 });
 ```
+
+> **Breaking change (v0.14.0):** prior versions accepted timestamp-less redirect callbacks by default. This is now secure-by-default — such callbacks are rejected unless you explicitly opt in as shown above.
 
 This adapter is deliberately not called "Stash". `@forgesworn/stash` is the separate encrypted cloud-save vault for app data; Signet Access storage is local session/reconnect state needed before a signer is available.
 
