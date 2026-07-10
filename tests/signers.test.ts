@@ -22,7 +22,7 @@ import {
   DeferredBunkerSigner,
   type BunkerSignerImpl,
 } from '../src/signers.js';
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
 
 describe('hasNip07', () => {
@@ -95,6 +95,77 @@ describe('createNip07Signer', () => {
     expect(await signer.nip04!.decrypt('peer', 'legacy(hello)')).toBe('hello');
 
     await signer.close(); // no-op, just shouldn't throw
+  });
+
+  it('fills NIP-07-required fields for strict extension providers', async () => {
+    const secretKey = generateSecretKey();
+    const pubkey = getPublicKey(secretKey);
+    const signEventMock = vi.fn(async (event: {
+      kind: number;
+      content: string;
+      created_at?: number;
+      tags?: string[][];
+    }) => {
+      if (typeof event.created_at !== 'number' || !Array.isArray(event.tags)) {
+        throw new Error('strict-provider: incomplete unsigned event');
+      }
+      return finalizeEvent({
+        kind: event.kind,
+        content: event.content,
+        created_at: event.created_at,
+        tags: event.tags,
+      }, secretKey);
+    });
+    const signer = new Nip07Signer(pubkey, {
+      getPublicKey: async () => pubkey,
+      signEvent: signEventMock,
+    });
+
+    const before = Math.floor(Date.now() / 1000);
+    const signed = await signer.signEvent({ kind: 21236, content: '' });
+    const after = Math.floor(Date.now() / 1000);
+
+    expect(signEventMock).toHaveBeenCalledWith({
+      kind: 21236,
+      content: '',
+      created_at: expect.any(Number),
+      tags: [],
+    });
+    expect(signed.created_at).toBeGreaterThanOrEqual(before);
+    expect(signed.created_at).toBeLessThanOrEqual(after);
+    expect(verifyEvent(signed)).toBe(true);
+  });
+
+  it('preserves caller-supplied NIP-07 timestamps and tags', async () => {
+    const fakePub = 'd'.repeat(64);
+    const suppliedTags = [['client', 'signet-login']];
+    const signed = {
+      kind: 1,
+      content: 'hi',
+      tags: suppliedTags,
+      created_at: 123,
+      id: '0',
+      sig: '0',
+      pubkey: fakePub,
+    };
+    const signEventMock = vi.fn().mockResolvedValue(signed);
+    const signer = new Nip07Signer(fakePub, {
+      getPublicKey: async () => fakePub,
+      signEvent: signEventMock,
+    });
+
+    await expect(signer.signEvent({
+      kind: 1,
+      content: 'hi',
+      created_at: 123,
+      tags: suppliedTags,
+    })).resolves.toBe(signed);
+    expect(signEventMock).toHaveBeenCalledWith({
+      kind: 1,
+      content: 'hi',
+      created_at: 123,
+      tags: suppliedTags,
+    });
   });
 
   it('omits nip44 when extension does not provide it', async () => {

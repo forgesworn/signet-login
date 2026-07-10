@@ -477,6 +477,32 @@ interface Nip07Result {
   authEvent: SignetAuthEvent;
 }
 
+type Nip07WaitPhase = 'get-public-key' | 'sign-event';
+
+async function waitForNip07Operation<T>(
+  operation: Promise<T>,
+  cancelled: Promise<null>,
+  timeoutMs: number,
+  phase: Nip07WaitPhase,
+): Promise<T | null> {
+  let timeoutId: number | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      const seconds = Math.round(timeoutMs / 1000);
+      const detail = phase === 'get-public-key'
+        ? 'browser extension did not return a public key'
+        : 'browser extension did not return a signed login event';
+      reject(new Error(`nip07-${phase}-timeout: ${detail} within ${seconds}s`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation, cancelled, timedOut]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
 /**
  * Render a "waiting for browser extension" UI with a working cancel button
  * and an elapsed-time ticker. NIP-07 calls (`getPublicKey`, `signEvent`) have
@@ -496,7 +522,7 @@ async function runNip07Flow(
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Waiting for your extension</h2>
-    <p style="margin:0 0 20px;color:${muted};font-size:0.85rem;">Approve the sign-in prompt in bark, Alby, nos2x, or whichever NIP-07 extension you use. Cold-start can take a few seconds.</p>
+    <p style="margin:0 0 20px;color:${muted};font-size:0.85rem;">Approve the sign-in prompt in bark, Alby, nos2x, Ditto, or whichever NIP-07 extension you use. Some extensions ask once to connect and again to sign the login proof.</p>
     <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin:0 0 24px;color:${fg};">
       <div style="width:28px;height:28px;border:3px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-top-color:#5b6dff;border-radius:50%;animation:signet-login-spin 0.9s linear infinite;"></div>
       <span id="signet-login-nip07-elapsed" style="font-variant-numeric:tabular-nums;font-size:0.95rem;">Connecting…</span>
@@ -510,9 +536,10 @@ async function runNip07Flow(
 
   const elapsedEl = refs.dialog.querySelector<HTMLElement>('#signet-login-nip07-elapsed');
   let elapsed = 0;
+  let waitStage = 'your extension';
   const ticker = window.setInterval(() => {
     elapsed += 1;
-    if (elapsedEl) elapsedEl.textContent = `Waiting for your signer (${elapsed}s)…`;
+    if (elapsedEl) elapsedEl.textContent = `Waiting for ${waitStage} (${elapsed}s)…`;
   }, 1000);
 
   // The cancel signal — resolves when the user clicks Cancel/Back. Used to
@@ -526,11 +553,22 @@ async function runNip07Flow(
   });
 
   try {
-    // Race: either the extension comes through, or the user cancels.
-    const signer = await Promise.race([createNip07Signer(), cancelled]);
+    // Race each NIP-07 phase against cancellation and the caller-configured
+    // timeout. NIP-07 has no abort signal, but this keeps a provider that
+    // never settles from trapping the modal forever.
+    const signer = await waitForNip07Operation(
+      createNip07Signer(),
+      cancelled,
+      opts.timeout,
+      'get-public-key',
+    );
     if (!signer) return null;
 
-    const authEvent = await Promise.race([
+    elapsed = 0;
+    waitStage = 'signature approval';
+    if (elapsedEl) elapsedEl.textContent = 'Waiting for signature approval…';
+
+    const authEvent = await waitForNip07Operation(
       signer.signEvent({
         kind: 21236,
         content: '',
@@ -541,7 +579,9 @@ async function runNip07Flow(
         ],
       }) as Promise<SignetAuthEvent>,
       cancelled,
-    ]);
+      opts.timeout,
+      'sign-event',
+    );
     if (!authEvent) {
       try { await signer.close(); } catch { /* ignore */ }
       return null;

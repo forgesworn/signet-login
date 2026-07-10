@@ -74,7 +74,17 @@ export class Nip07Signer implements SignetSigner {
   }
 
   async signEvent(template: EventTemplate): Promise<NostrEvent> {
-    return retryTransientNip07Sign(() => this.provider.signEvent(template));
+    // NIP-07 requires a complete unsigned event. SignetSigner intentionally
+    // accepts lightweight templates, so normalise at the provider boundary
+    // for strict extensions such as Ditto (and preserve caller-supplied
+    // values when they are present).
+    const filled: Required<EventTemplate> = {
+      kind: template.kind,
+      content: template.content,
+      created_at: template.created_at ?? Math.floor(Date.now() / 1000),
+      tags: template.tags ?? [],
+    };
+    return retryTransientNip07Sign(() => this.provider.signEvent(filled));
   }
 
   async close(): Promise<void> {
