@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.2 (2026-07-10)
+
+### Bug Fixes
+
+- support strict NIP-07 extension login
+
+
+
 ## 0.14.1 (2026-07-02)
 
 ### Bug Fixes
