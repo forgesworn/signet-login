@@ -163,11 +163,16 @@ export class BunkerSignerImpl implements SignetSigner {
   }
 
   async signEvent(template: EventTemplate): Promise<NostrEvent> {
-    // BunkerSigner.signEvent expects EventTemplate with required created_at + tags.
-    // Strip any pubkey field, fill in defaults if omitted.
+    // Build the event for the bunker to sign. SET pubkey to the signer's own key
+    // rather than stripping it: some signers (e.g. Signet mobile) sign the event
+    // as-given and don't fill pubkey themselves, returning `pubkey:""` — which
+    // then fails verifyEvent ("event returned from bunker is improperly signed").
+    // Providing the key-owner's own pubkey is correct NIP-01 construction and is
+    // harmless to bunkers that set it themselves (it's the same value).
     const { pubkey: _omit, ...rest } = template as EventTemplate & { pubkey?: string };
     void _omit;
     const filled = {
+      pubkey: this.pubkey,
       kind: rest.kind,
       content: rest.content,
       created_at: rest.created_at ?? Math.floor(Date.now() / 1000),
