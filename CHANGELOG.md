@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.3 (2026-07-23)
+
+### Bug Fixes
+
+- set pubkey on bunker sign_event instead of stripping it (signers)
+
+
+
 ## 0.14.2 (2026-07-10)
 
 ### Bug Fixes
