@@ -21,10 +21,23 @@
 
   <script src="../dist/signet-login.iife.js"></script>
   <script>
-    // handleCallback parses URL params and posts them to window.opener (if any),
-    // then closes the popup. If opened in the same window, the params are returned
-    // and the consumer can decide what to do with them.
-    const result = Signet.handleCallback({ closeAfterPost: true });
+    // handleCallback parses the URL params and posts them to window.opener,
+    // then closes the popup. Opened in the same window (no opener), it just
+    // returns the params and leaves the page alone.
+    //
+    // Always pass targetOrigin. These params identify the signed-in user and
+    // can carry a live `bunker://...?secret=...` NIP-46 credential, so they
+    // must go to your app's origin and nowhere else. Without it handleCallback
+    // falls back to document.referrer, and if that is unavailable it withholds
+    // the post entirely (`posted: false`) rather than broadcasting.
+    //
+    // This example's opener is the sibling basic.html page, so the app origin
+    // is simply this origin. A real deployment should hardcode its own, e.g.
+    // targetOrigin: 'https://my-game.example'.
+    const result = Signet.handleCallback({
+      closeAfterPost: true,
+      targetOrigin: window.location.origin,
+    });
     document.getElementById('result').textContent = JSON.stringify(result, null, 2);
   </script>
 </body>

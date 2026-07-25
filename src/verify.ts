@@ -20,7 +20,22 @@ import { bytesToHex } from '@noble/hashes/utils';
 import type { SignetAuthEvent } from './types.js';
 
 export interface VerifyLoginOptions {
-  /** The challenge the consumer issued. 64 hex. */
+  /**
+   * The challenge the consumer issued. 64 hex.
+   *
+   * This must be a nonce YOUR SERVER generated, stored, and has not accepted
+   * before — `verifyLogin` keeps no state, so it cannot tell a fresh proof
+   * from one replayed inside the `maxAgeSeconds` window. Issue it, record it
+   * against the pending login, and delete it the moment this call returns
+   * valid. A second proof bearing the same challenge must be rejected.
+   *
+   * In particular, do not verify against a challenge the browser chose.
+   * `login()` and `createLoginAuthEvent()` auto-generate one when you omit
+   * `challenge`, which is fine for a client-only app but proves nothing to a
+   * server: an attacker replaying a captured auth event supplies the matching
+   * challenge along with it. See the README's server-side verification
+   * section.
+   */
   expectedChallenge: string;
   /** The origin the auth event must be bound to (e.g. 'https://mygame.com'). */
   expectedOrigin: string;
