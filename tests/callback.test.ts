@@ -33,6 +33,7 @@ describe('handleCallback', () => {
 
     expect(result).toEqual({
       isPopup: true,
+      posted: true,
       params: { pubkey: 'abc', eventId: 'def' },
     });
     expect(postMessage).toHaveBeenCalledWith(
@@ -41,20 +42,39 @@ describe('handleCallback', () => {
     );
   });
 
-  it('keeps wildcard postMessage target by default when no referrer is available', () => {
+  it('withholds the post when no target origin can be determined', () => {
+    // These params identify the user and can carry a live bunker credential,
+    // so an undetermined opener must get nothing rather than a `*` broadcast.
     const postMessage = vi.fn();
     installOpener(postMessage);
     vi.spyOn(window, 'close').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     window.history.replaceState({}, '', '/?error=denied');
     setReferrer('');
 
-    handleCallback();
+    const result = handleCallback();
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(result.posted).toBe(false);
+    // The caller still gets the params — only the cross-origin hand-off is cut.
+    expect(result.params).toEqual({ error: 'denied' });
+    // Closing here would hide the reason the opener never heard back.
+    expect(window.close).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it('broadcasts to the wildcard only when the caller asks for it explicitly', () => {
+    const postMessage = vi.fn();
+    installOpener(postMessage);
+    window.history.replaceState({}, '', '/?error=denied');
+    setReferrer('');
+
+    handleCallback({ closeAfterPost: false, targetOrigin: '*' });
 
     expect(postMessage).toHaveBeenCalledWith(
       { type: 'signet-login-callback', params: { error: 'denied' } },
       '*',
     );
-    expect(window.close).toHaveBeenCalled();
   });
 
   it('prefers the opener origin derived from document.referrer over the wildcard when no explicit targetOrigin is given', () => {
@@ -86,17 +106,25 @@ describe('handleCallback', () => {
     );
   });
 
-  it('falls back to the wildcard when document.referrer is present but unparseable', () => {
+  it('withholds the post when document.referrer is present but unparseable', () => {
     const postMessage = vi.fn();
     installOpener(postMessage);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     window.history.replaceState({}, '', '/?error=denied');
     setReferrer('not-a-valid-url');
 
-    handleCallback({ closeAfterPost: false });
+    expect(handleCallback({ closeAfterPost: false }).posted).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
+  });
 
-    expect(postMessage).toHaveBeenCalledWith(
-      { type: 'signet-login-callback', params: { error: 'denied' } },
-      '*',
-    );
+  it('withholds the post when the referrer yields an opaque origin', () => {
+    const postMessage = vi.fn();
+    installOpener(postMessage);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    window.history.replaceState({}, '', '/?error=denied');
+    setReferrer('about:blank');
+
+    expect(handleCallback({ closeAfterPost: false }).posted).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });
