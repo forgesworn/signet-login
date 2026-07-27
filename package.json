@@ -47,7 +47,7 @@
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.0",
     "signet-protocol": "^1.6.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9",
