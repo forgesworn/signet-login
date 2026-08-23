@@ -319,13 +319,24 @@ await Signet.logout(session, { clearPersistentClientKey: true });
 
 Run on your callback page when using the same-device redirect flow. Parses URL params and posts them to `window.opener` (if popup-opened), then closes the popup.
 
-For popup callbacks, pass `targetOrigin` so callback params are posted only to the expected opener:
+**Pass `targetOrigin`.** These params identify the signed-in user, and on the redirect-bunker handoff they include a live `bunker://...?secret=...` NIP-46 credential — a working signer, not just an identity assertion. Post them to your app's origin and nowhere else:
 
 ```js
 Signet.handleCallback({
   targetOrigin: 'https://my-game.example',
 });
 ```
+
+If you omit it, `handleCallback` falls back to the origin of `document.referrer`, which the browser sets for a `window.open()` popup. That fallback is best-effort — referrer policy can strip it — and when no origin can be determined the params are **not** posted at all. The result's `posted` field tells you which happened, and `params` is returned either way:
+
+```js
+const { params, posted } = Signet.handleCallback({ targetOrigin: 'https://my-game.example' });
+if (!posted) {
+  // No opener, or no trustworthy target. Handle the params on this page instead.
+}
+```
+
+Passing `targetOrigin: '*'` deliberately restores broadcasting to any opener. Don't, unless you know the callback can never carry a bunker credential.
 
 ## Signers and capabilities
 
@@ -385,6 +396,30 @@ if (result.valid) {
 ```
 
 The verifier checks: schnorr signature, canonical event ID, kind=21236, challenge tag match, origin tag match, optional app tag match, freshness window (5-min default + 60s skew tolerance).
+
+### The challenge must be yours, and single-use
+
+`verifyLogin` is stateless. It confirms the proof carries *the* challenge you passed in, but it has no way to know whether it has seen that proof before — so within the freshness window, replaying a captured auth event verifies exactly like the original. Preventing that is the caller's job:
+
+1. **Generate the challenge on the server**, per login attempt, from a CSPRNG.
+2. **Store it** against the pending login (session, cache, DB — with a TTL matching `maxAgeSeconds`).
+3. **Delete it as soon as `verifyLogin` returns valid**, so a second proof bearing it is rejected.
+
+```ts
+// server
+const challenge = crypto.randomBytes(32).toString('hex');
+await pendingLogins.set(sessionId, challenge, { ttlSeconds: 300 });
+// → hand `challenge` to the browser, which passes it to Signet.login({ challenge })
+
+// later, when the browser posts back session.authEvent
+const expected = await pendingLogins.take(sessionId);   // atomic read-and-delete
+if (!expected) return reject('no-pending-login');
+const result = verifyLogin(authEvent, { expectedChallenge: expected, expectedOrigin });
+```
+
+**Do not verify against a challenge the browser chose.** `login()` and `createLoginAuthEvent()` auto-generate one when `challenge` is omitted. That is fine for an app with no backend — there is nothing to replay against — but a server that accepts a client-supplied challenge has no replay protection at all, because an attacker replaying a captured auth event simply supplies the matching challenge alongside it. If a server is going to see the proof, the server issues the challenge.
+
+Note also that the `origin` tag binds a proof to the site that requested it; it does not stop a hostile site from asking the user's signer to sign a kind-21236 event naming *your* origin. It is a binding, not a substitute for the user recognising what they approve.
 
 ## Storage
 

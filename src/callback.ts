@@ -18,6 +18,12 @@ export interface CallbackResult {
   params: Record<string, string>;
   /** True if this page was opened as a popup (window.opener present). */
   isPopup: boolean;
+  /**
+   * True when the params were delivered to the opener. False when there was
+   * no opener, or when no trustworthy target origin could be determined and
+   * the post was withheld — see `targetOrigin`.
+   */
+  posted: boolean;
 }
 
 export interface HandleCallbackOptions {
@@ -25,18 +31,21 @@ export interface HandleCallbackOptions {
   closeAfterPost?: boolean;
   /**
    * Target origin for the opener postMessage. Pass the opener app's origin
-   * (for example `https://app.example`) to avoid leaking auth params to an
-   * unexpected opener — strongly recommended, since this payload carries the
-   * signed-in user's auth params. If omitted, `handleCallback` falls back to
-   * `document.referrer`'s origin when the popup was opened with a referrer
-   * (the common case for `window.open`), and only broadcasts to `*` as a
-   * last resort when no origin can be derived at all. That fallback chain
-   * exists for backwards compatibility with existing integrations that never
-   * set `targetOrigin` and relied on the old always-`*` behaviour — it is
-   * NOT a substitute for passing `targetOrigin` explicitly, since
-   * `document.referrer` can be spoofed, stripped by referrer policy, or
-   * absent, and a malicious opener can still receive the broadcast in that
-   * last-resort case.
+   * (for example `https://app.example`) — strongly recommended, since this
+   * payload carries the signed-in user's auth params and, on the
+   * redirect-bunker handoff, a live `bunker://…?secret=…` NIP-46 credential.
+   *
+   * If omitted, `handleCallback` falls back to `document.referrer`'s origin
+   * when the popup was opened with a referrer (the common case for
+   * `window.open`). That fallback is best-effort — `document.referrer` can be
+   * stripped by referrer policy or absent — so it is NOT a substitute for
+   * passing `targetOrigin` explicitly.
+   *
+   * When neither is available the params are NOT posted: broadcasting them to
+   * `*` would hand a working signer credential to whatever opened the popup.
+   * `handleCallback` returns `posted: false` in that case and the caller still
+   * receives `params`, so a consumer that genuinely wants the old broadcast
+   * behaviour can opt in by passing `targetOrigin: '*'` deliberately.
    */
   targetOrigin?: string;
 }
@@ -46,12 +55,15 @@ export interface HandleCallbackOptions {
  * derive it from `document.referrer`, which the browser sets to the opener's
  * URL for a same-tab `window.open()` popup (absent `noreferrer`/strict
  * Referrer-Policy). Returns `null` when no origin can be derived, in which
- * case the caller falls back to `'*'`.
+ * case the caller withholds the post.
  */
 function deriveOpenerOrigin(): string | null {
   if (typeof document === 'undefined' || !document.referrer) return null;
   try {
-    return new URL(document.referrer).origin;
+    const { origin } = new URL(document.referrer);
+    // `new URL('about:blank').origin` and friends give 'null', which
+    // postMessage would treat as an opaque origin rather than a real target.
+    return origin && origin !== 'null' ? origin : null;
   } catch {
     return null;
   }
@@ -71,20 +83,37 @@ export function handleCallback(options?: HandleCallbackOptions): CallbackResult 
   }
 
   const isPopup = typeof window !== 'undefined' && !!window.opener && window.opener !== window;
+  let posted = false;
 
   if (isPopup) {
-    try {
-      window.opener.postMessage(
-        { type: 'signet-login-callback', params },
-        options?.targetOrigin ?? deriveOpenerOrigin() ?? '*',
+    // Fail closed. These params identify the signed-in user and can carry a
+    // `bunker://…?secret=…` NIP-46 credential; posting them to `*` hands that
+    // to whatever opened the popup. A caller who wants the broadcast can ask
+    // for it by passing `targetOrigin: '*'` explicitly.
+    const targetOrigin = options?.targetOrigin ?? deriveOpenerOrigin();
+    if (targetOrigin) {
+      try {
+        window.opener.postMessage({ type: 'signet-login-callback', params }, targetOrigin);
+        posted = true;
+      } catch {
+        // postMessage failed — ignore
+      }
+    } else if (typeof console !== 'undefined') {
+      console.warn(
+        'signet-login: handleCallback could not determine the opener origin ' +
+        '(no `targetOrigin` option and no usable document.referrer), so the ' +
+        'auth params were NOT posted — they can include a live bunker ' +
+        'credential. Pass `targetOrigin` with your app origin. The params are ' +
+        'still returned to this caller.',
       );
-    } catch {
-      // postMessage failed — ignore
     }
-    if (options?.closeAfterPost ?? true) {
+    // Only close once the params are actually delivered. Closing on a withheld
+    // post would leave the opener hanging with nothing on screen to explain
+    // why; keeping the popup up surfaces the console warning above.
+    if (posted && (options?.closeAfterPost ?? true)) {
       try { window.close(); } catch { /* ignore */ }
     }
   }
 
-  return { params, isPopup };
+  return { params, isPopup, posted };
 }

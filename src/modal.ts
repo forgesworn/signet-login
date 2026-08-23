@@ -738,6 +738,17 @@ async function runRedirectFlow(
         content: result.authEvent.content,
         sig: result.authEvent.sig,
       };
+      // Re-verify locally, as every other login path does. signet-verify
+      // already checks the response, but this is the one flow whose proof
+      // arrives from outside this package, and the session pubkey below is
+      // taken from `result.pubkey` rather than from the event itself —
+      // `expectedPubkey` is what ties the two together, so the identity the
+      // consumer sees cannot drift from the one a server will verify.
+      assertValidLoginAuthEvent(authEvent, {
+        expectedChallenge: opts.challenge,
+        expectedOrigin: opts.origin,
+        expectedPubkey: result.pubkey,
+      });
       const out: RedirectFlowResult = { pubkey: result.pubkey, authEvent };
       if (result.displayName) out.displayName = result.displayName;
       if (result.bunkerUri) out.bunkerUri = result.bunkerUri;
