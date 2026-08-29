@@ -2,6 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
+import { runNeverStarted } from './consumer-run-state.mjs';
+
 const dryRun = process.argv.includes('--dry-run');
 const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
 const requestId = process.env.SIGNET_COMPATIBILITY_REQUEST_ID || randomUUID();
@@ -135,6 +137,17 @@ async function listRuns(consumer, params = {}) {
   return await github(workflowUrl(consumer.repo, consumer.workflow, `/runs?${query.toString()}`));
 }
 
+async function listJobs(consumer, runId) {
+  try {
+    const body = await github(`/repos/${consumer.repo}/actions/runs/${runId}/jobs?per_page=100`);
+    return body?.jobs ?? null;
+  } catch (err) {
+    // Unreadable is not the same as empty. Returning null keeps the gate shut.
+    log(`${consumer.name}: could not read jobs for run ${runId}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 async function dispatchConsumer(consumer) {
   const before = await listRuns(consumer, { event: 'workflow_dispatch' });
   const beforeIds = new Set((before.workflow_runs || []).map(run => run.id));
@@ -184,6 +197,16 @@ async function waitForRun(consumer, run) {
         log(`${consumer.name} passed: ${current.html_url}`);
         return current;
       }
+      // A run GitHub declined to start - an exhausted Actions budget, most
+      // likely - also completes as "failure". It says nothing about whether
+      // this candidate is compatible, so it must not block the publish the
+      // way a real incompatibility does.
+      const jobs = await listJobs(consumer, current.id);
+      if (runNeverStarted(jobs)) {
+        log(`WARNING: ${consumer.name} never ran a single step, so it is no compatibility signal either way. Not blocking the release: ${current.html_url}`);
+        return current;
+      }
+
       throw new Error(`${consumer.name} failed with conclusion ${current.conclusion}: ${current.html_url}`);
     }
 
