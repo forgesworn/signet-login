@@ -17,24 +17,33 @@ export interface CallbackResult {
     params: Record<string, string>;
     /** True if this page was opened as a popup (window.opener present). */
     isPopup: boolean;
+    /**
+     * True when the params were delivered to the opener. False when there was
+     * no opener, or when no trustworthy target origin could be determined and
+     * the post was withheld — see `targetOrigin`.
+     */
+    posted: boolean;
 }
 export interface HandleCallbackOptions {
     /** Close the popup after posting to the opener. Default true. */
     closeAfterPost?: boolean;
     /**
      * Target origin for the opener postMessage. Pass the opener app's origin
-     * (for example `https://app.example`) to avoid leaking auth params to an
-     * unexpected opener — strongly recommended, since this payload carries the
-     * signed-in user's auth params. If omitted, `handleCallback` falls back to
-     * `document.referrer`'s origin when the popup was opened with a referrer
-     * (the common case for `window.open`), and only broadcasts to `*` as a
-     * last resort when no origin can be derived at all. That fallback chain
-     * exists for backwards compatibility with existing integrations that never
-     * set `targetOrigin` and relied on the old always-`*` behaviour — it is
-     * NOT a substitute for passing `targetOrigin` explicitly, since
-     * `document.referrer` can be spoofed, stripped by referrer policy, or
-     * absent, and a malicious opener can still receive the broadcast in that
-     * last-resort case.
+     * (for example `https://app.example`) — strongly recommended, since this
+     * payload carries the signed-in user's auth params and, on the
+     * redirect-bunker handoff, a live `bunker://…?secret=…` NIP-46 credential.
+     *
+     * If omitted, `handleCallback` falls back to `document.referrer`'s origin
+     * when the popup was opened with a referrer (the common case for
+     * `window.open`). That fallback is best-effort — `document.referrer` can be
+     * stripped by referrer policy or absent — so it is NOT a substitute for
+     * passing `targetOrigin` explicitly.
+     *
+     * When neither is available the params are NOT posted: broadcasting them to
+     * `*` would hand a working signer credential to whatever opened the popup.
+     * `handleCallback` returns `posted: false` in that case and the caller still
+     * receives `params`, so a consumer that genuinely wants the old broadcast
+     * behaviour can opt in by passing `targetOrigin: '*'` deliberately.
      */
     targetOrigin?: string;
 }
