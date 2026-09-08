@@ -75,6 +75,9 @@ export interface ConsumeCallbackOptions {
 const HEX_64 = /^[0-9a-f]{64}$/i;
 const HEX_128 = /^[0-9a-f]{128}$/i;
 
+/** Length cap for the unsigned `display_name` redirect param. */
+const MAX_DISPLAY_NAME_LENGTH = 128;
+
 /**
  * Build the signet-app auth URL for redirect mode. Deliberately omits `relay`
  * and `sessionPubkey` so signet-app's `isRelayMode` check (App.tsx) returns
@@ -331,7 +334,16 @@ function consumeCallbackWithPending(
     }
   }
 
-  const displayName = params.get('display_name') || undefined;
+  // `display_name` is outside the signature — signet-app appends it to the
+  // redirect URL but it is not one of the tags the event ID covers, so unlike
+  // `pubkey`/`sig`/`eventId` nothing here can attest to it. Cap it so a
+  // consumer that renders the session's display name is not handed unbounded
+  // attacker-shaped text from a URL parameter. Consumers must still treat it
+  // as untrusted and escape it.
+  const displayNameRaw = params.get('display_name');
+  const displayName = displayNameRaw && displayNameRaw.length <= MAX_DISPLAY_NAME_LENGTH
+    ? displayNameRaw
+    : undefined;
   const ephemeral = new EphemeralSigner(lowerPubkey, authEvent);
   const session: SignetSession = {
     pubkey: lowerPubkey,
