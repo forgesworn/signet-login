@@ -68,6 +68,8 @@ describe('same-device Signet modal flow', () => {
     expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
     expect(url.searchParams.get('sessionPubkey')).toMatch(/^[0-9a-f]{64}$/);
 
+    expect(vi.mocked(waitForAuthResponse).mock.invocationCallOrder.at(-1))
+      .toBeLessThan(vi.mocked(window.open).mock.invocationCallOrder.at(-1)!);
     expect(window.open).toHaveBeenCalledWith(
       expect.stringContaining('sessionPubkey='),
       '_blank',
