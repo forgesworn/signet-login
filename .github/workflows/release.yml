@@ -36,9 +36,41 @@ jobs:
       - name: Pack candidate package
         run: npm pack --pack-destination "$RUNNER_TEMP"
 
+      - name: Create ForgeSworn consumer token
+        id: forgesworn-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
+          owner: forgesworn
+          repositories: canary-kit,signet-app,signet-lite
+          permission-actions: write
+
+      - name: Create TheCryptoDonkey consumer token
+        id: thecryptodonkey-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
+          owner: TheCryptoDonkey
+          repositories: pallasite,forge-realms
+          permission-actions: write
+
+      - name: Create decented consumer token
+        id: decented-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        with:
+          client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
+          owner: decented
+          repositories: axenstax
+          permission-actions: write
+
       - name: Check downstream Signet compatibility
         env:
-          GH_TOKEN: ${{ secrets.FORGESWORN_RELEASE_PAT }}
+          SIGNET_GH_TOKEN_FORGESWORN: ${{ steps.forgesworn-token.outputs.token }}
+          SIGNET_GH_TOKEN_THECRYPTODONKEY: ${{ steps.thecryptodonkey-token.outputs.token }}
+          SIGNET_GH_TOKEN_DECENTED: ${{ steps.decented-token.outputs.token }}
           SIGNET_LOGIN_REF: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
           SIGNET_LOGIN_SHA: ${{ github.sha }}
           REQUIRE_PHYSICAL_MOBILE_SMOKE: ${{ vars.REQUIRE_PHYSICAL_MOBILE_SMOKE || 'false' }}
