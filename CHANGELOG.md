@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.4 (2026-09-08)
+
+### Bug Fixes
+
+- receive approval before the Android signer handoff (#40)
+
+
+
 ## 0.14.3 (2026-07-23)
 
 ### Bug Fixes
