@@ -684,14 +684,6 @@ async function runRedirectFlow(
     });
   }
 
-  if (sameDevice && typeof window !== 'undefined') {
-    try {
-      window.open(authUrl, '_blank', 'noopener,noreferrer');
-    } catch {
-      // Popup blocked or unavailable — the explicit link remains visible.
-    }
-  }
-
   return new Promise<RedirectFlowResult | null>(resolve => {
     let settled = false;
     const backNavigation = createBackNavigationCancel();
@@ -751,6 +743,15 @@ async function runRedirectFlow(
       }
       // Don't auto-settle on error — let the user choose to go back/cancel.
     });
+
+    // Start receiving before opening Android's signer can suspend this page.
+    if (sameDevice && typeof window !== 'undefined') {
+      try {
+        window.open(authUrl, '_blank', 'noopener,noreferrer');
+      } catch {
+        // Popup blocked or unavailable — the explicit link remains visible.
+      }
+    }
   });
 }
 
