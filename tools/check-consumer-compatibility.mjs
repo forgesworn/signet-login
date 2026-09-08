@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { runNeverStarted } from './consumer-run-state.mjs';
+import { createConsumerTokenResolver } from './consumer-github-auth.mjs';
 
 const dryRun = process.argv.includes('--dry-run');
-const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
+const tokenFor = createConsumerTokenResolver(process.env);
 const requestId = process.env.SIGNET_COMPATIBILITY_REQUEST_ID || randomUUID();
 const signetLoginRef = process.env.SIGNET_LOGIN_REF || process.env.GITHUB_REF_NAME || 'local';
 const signetLoginSha = process.env.SIGNET_LOGIN_SHA || process.env.GITHUB_SHA || '';
@@ -92,7 +93,7 @@ function workflowUrl(repo, workflow, suffix = '') {
 }
 
 async function github(path, options = {}) {
-  if (!token) fail('GH_TOKEN or GITHUB_TOKEN is required unless --dry-run is used.');
+  const token = tokenFor(path);
 
   const res = await fetch(path.startsWith('https://') ? path : `https://api.github.com${path}`, {
     ...options,
