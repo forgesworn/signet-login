@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.5 (2026-09-08)
+
+### Bug Fixes
+
+- verify relay auth events locally and stop broadcasting callback params (#24)
+
+
+
 ## 0.14.4 (2026-09-08)
 
 ### Bug Fixes
