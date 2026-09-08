@@ -37,3 +37,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify checked-in distribution
+        run: |
+          signet_dist_changes=$(git status --porcelain -- dist)
+          if [ -n "$signet_dist_changes" ]; then
+            echo "Rebuild and commit dist/ so source archives contain the tested SDK."
+            echo "$signet_dist_changes"
+            exit 1
+          fi

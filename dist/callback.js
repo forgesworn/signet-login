@@ -17,13 +17,16 @@
  * derive it from `document.referrer`, which the browser sets to the opener's
  * URL for a same-tab `window.open()` popup (absent `noreferrer`/strict
  * Referrer-Policy). Returns `null` when no origin can be derived, in which
- * case the caller falls back to `'*'`.
+ * case the caller withholds the post.
  */
 function deriveOpenerOrigin() {
     if (typeof document === 'undefined' || !document.referrer)
         return null;
     try {
-        return new URL(document.referrer).origin;
+        const { origin } = new URL(document.referrer);
+        // `new URL('about:blank').origin` and friends give 'null', which
+        // postMessage would treat as an opaque origin rather than a real target.
+        return origin && origin !== 'null' ? origin : null;
     }
     catch {
         return null;
@@ -42,19 +45,38 @@ export function handleCallback(options) {
         });
     }
     const isPopup = typeof window !== 'undefined' && !!window.opener && window.opener !== window;
+    let posted = false;
     if (isPopup) {
-        try {
-            window.opener.postMessage({ type: 'signet-login-callback', params }, options?.targetOrigin ?? deriveOpenerOrigin() ?? '*');
+        // Fail closed. These params identify the signed-in user and can carry a
+        // `bunker://…?secret=…` NIP-46 credential; posting them to `*` hands that
+        // to whatever opened the popup. A caller who wants the broadcast can ask
+        // for it by passing `targetOrigin: '*'` explicitly.
+        const targetOrigin = options?.targetOrigin ?? deriveOpenerOrigin();
+        if (targetOrigin) {
+            try {
+                window.opener.postMessage({ type: 'signet-login-callback', params }, targetOrigin);
+                posted = true;
+            }
+            catch {
+                // postMessage failed — ignore
+            }
         }
-        catch {
-            // postMessage failed — ignore
+        else if (typeof console !== 'undefined') {
+            console.warn('signet-login: handleCallback could not determine the opener origin ' +
+                '(no `targetOrigin` option and no usable document.referrer), so the ' +
+                'auth params were NOT posted — they can include a live bunker ' +
+                'credential. Pass `targetOrigin` with your app origin. The params are ' +
+                'still returned to this caller.');
         }
-        if (options?.closeAfterPost ?? true) {
+        // Only close once the params are actually delivered. Closing on a withheld
+        // post would leave the opener hanging with nothing on screen to explain
+        // why; keeping the popup up surfaces the console warning above.
+        if (posted && (options?.closeAfterPost ?? true)) {
             try {
                 window.close();
             }
             catch { /* ignore */ }
         }
     }
-    return { params, isPopup };
+    return { params, isPopup, posted };
 }
