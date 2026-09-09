@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.0 (2026-09-09)
+
+### Features
+
+- accept a NIP-49 ncryptsec on the paste-a-key route
+
+
+
 ## Unreleased
 
 ### Features
