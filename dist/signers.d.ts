@@ -160,12 +160,15 @@ export declare class LocalSigner implements SignetSigner {
     signEvent(template: EventTemplate): Promise<NostrEvent>;
     close(): Promise<void>;
 }
+/** True when the pasted text is a NIP-49 password-encrypted key (`ncryptsec1...`). */
+export declare function isEncryptedNsec(input: string): boolean;
 /**
- * Decode a bech32 nsec into a LocalSigner. Accepts either the `nsec1...`
- * prefix or a raw 64-char hex private key for power-user paste paths.
+ * Decode a bech32 nsec into a LocalSigner. Accepts the `nsec1...` prefix, a
+ * raw 64-char hex private key for power-user paste paths, or a NIP-49
+ * `ncryptsec1...` together with the password that encrypted it.
  * Throws on any malformed input — caller surfaces the error to the user.
  */
-export declare function createLocalSignerFromNsec(input: string): LocalSigner;
+export declare function createLocalSignerFromNsec(input: string, password?: string): LocalSigner;
 /**
  * Auth-only signer returned by the redirect/QR flow before Option B is built.
  * Holds the signed challenge but cannot sign further events.

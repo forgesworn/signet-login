@@ -13,6 +13,7 @@ import {
   Nip07Signer,
   EphemeralSigner,
   createLocalSignerFromNsec,
+  isEncryptedNsec,
   LocalSigner,
   buildNostrConnectUri,
   buildBunkerUriFromNostrConnectUri,
@@ -24,6 +25,7 @@ import {
 } from '../src/signers.js';
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
+import { encrypt as nip49Encrypt } from 'nostr-tools/nip49';
 
 describe('hasNip07', () => {
   beforeEach(() => {
@@ -382,6 +384,41 @@ describe('createLocalSignerFromNsec', () => {
 
   it('rejects garbage', () => {
     expect(() => createLocalSignerFromNsec('not-a-key')).toThrow(/invalid-nsec-format/);
+  });
+
+  describe('NIP-49 encrypted keys', () => {
+    // logn 4 keeps scrypt fast in tests; the format is identical to logn 16.
+    const sk = generateSecretKey();
+    const ncryptsec = nip49Encrypt(sk, 'correct horse', 4);
+
+    it('recognises an ncryptsec by prefix', () => {
+      expect(isEncryptedNsec(ncryptsec)).toBe(true);
+      expect(isEncryptedNsec('  ' + ncryptsec.toUpperCase())).toBe(true);
+      expect(isEncryptedNsec(nsecEncode(sk))).toBe(false);
+      expect(isEncryptedNsec('')).toBe(false);
+    });
+
+    it('decrypts an ncryptsec with its password', async () => {
+      const signer = createLocalSignerFromNsec(ncryptsec, 'correct horse');
+      expect(signer.pubkey).toBe(getPublicKey(sk));
+      const event = await signer.signEvent({ kind: 1, content: 'hi', tags: [], created_at: 1 });
+      expect(verifyEvent(event)).toBe(true);
+    });
+
+    it('requires a password for an ncryptsec', () => {
+      expect(() => createLocalSignerFromNsec(ncryptsec)).toThrow(/password-required/);
+      expect(() => createLocalSignerFromNsec(ncryptsec, '')).toThrow(/password-required/);
+    });
+
+    it('rejects the wrong password without revealing which part failed', () => {
+      expect(() => createLocalSignerFromNsec(ncryptsec, 'wrong')).toThrow(/wrong-password-or-invalid-ncryptsec/);
+      expect(() => createLocalSignerFromNsec('ncryptsec1notreallyakey', 'correct horse')).toThrow(/wrong-password-or-invalid-ncryptsec/);
+    });
+
+    it('ignores the password for a plain nsec', () => {
+      const signer = createLocalSignerFromNsec(nsecEncode(sk), 'unused');
+      expect(signer.pubkey).toBe(getPublicKey(sk));
+    });
   });
 
   it('zeros the privkey on close', async () => {

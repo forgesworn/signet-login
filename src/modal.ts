@@ -14,7 +14,7 @@ import type {
   SignetStorage,
 } from './types.js';
 import { DEFAULTS } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, type BunkerSignerImpl, type LocalSigner, type Nip07Signer } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, isEncryptedNsec, type BunkerSignerImpl, type LocalSigner, type Nip07Signer } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
 import { isMobile } from './platform.js';
 import { loadOrCreatePersistentClientSkFromStorage } from './storage.js';
@@ -354,7 +354,7 @@ const METHOD_META: Record<LoginPickerMethod, { icon: string; title: string; hint
   qr: { icon: '📱', title: 'Use your phone', hint: 'Scan with Signet' },
   bunker: { icon: '🔑', title: 'Paste bunker URI', hint: 'For NIP-46 power users' },
   nostrconnect: { icon: '📡', title: 'Connect a Nostr signer', hint: 'Scan with nsec.app, Amber, Keychat...' },
-  nsec: { icon: '⚠️', title: 'Paste private key', hint: 'In-memory only - risky, last resort' },
+  nsec: { icon: '⚠️', title: 'Paste private key', hint: 'nsec or password-protected ncryptsec. In-memory only - risky, last resort' },
 };
 
 /**
@@ -1098,13 +1098,18 @@ async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Loca
   const muted = dark ? '#888' : '#666';
   const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
   const inputFg = dark ? '#e0e0e0' : '#1a1a2e';
-  void opts;
+  const fieldStyle = `width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;margin-bottom:12px;`;
 
   refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Paste private key</h2>
     <p style="margin:0 0 12px;color:#d04848;font-size:0.85rem;font-weight:600;">⚠️ Last-resort method — only paste keys you can afford to lose.</p>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.8rem;line-height:1.4;">Held in memory for this session only. Cleared on page reload. Prefer a browser extension or bunker URI for any key with real value.</p>
-    <textarea id="signet-login-nsec-input" placeholder="nsec1..." rows="2" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;resize:vertical;margin-bottom:12px;-webkit-text-security:disc;text-security:disc;"></textarea>
+    <p style="margin:0 0 16px;color:${muted};font-size:0.8rem;line-height:1.4;">Held in memory for this session only. Cleared on page reload. Prefer a browser extension or bunker URI for any key with real value. A password-protected key (<code>ncryptsec1…</code>) is decrypted here in your browser and the password is not kept.</p>
+    <label for="signet-login-nsec-input" style="display:block;margin:0 0 6px;color:${muted};font-size:0.8rem;">nsec, ncryptsec or hex key</label>
+    <textarea id="signet-login-nsec-input" placeholder="nsec1… or ncryptsec1…" rows="2" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="${fieldStyle}resize:vertical;-webkit-text-security:disc;text-security:disc;"></textarea>
+    <div id="signet-login-nsec-password-row" hidden>
+      <label for="signet-login-nsec-password" style="display:block;margin:0 0 6px;color:${muted};font-size:0.8rem;">Password for this encrypted key</label>
+      <input id="signet-login-nsec-password" type="password" autocomplete="current-password" placeholder="Password" style="${fieldStyle}" />
+    </div>
     <p id="signet-login-nsec-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
       <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
@@ -1121,31 +1126,61 @@ async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Loca
     };
 
     const input = refs.dialog.querySelector<HTMLTextAreaElement>('#signet-login-nsec-input');
+    const passwordRow = refs.dialog.querySelector<HTMLElement>('#signet-login-nsec-password-row');
+    const password = refs.dialog.querySelector<HTMLInputElement>('#signet-login-nsec-password');
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nsec-status');
     const connectBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="connect"]');
 
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
+    const wipe = (): void => {
       if (input) input.value = '';
+      if (password) password.value = '';
+    };
+
+    // The password field only appears once the pasted key turns out to be
+    // an ncryptsec, so the plain-nsec path stays exactly as short as before.
+    const syncPasswordRow = (): void => {
+      const encrypted = isEncryptedNsec(input?.value ?? '');
+      if (passwordRow) passwordRow.hidden = !encrypted;
+      if (status) status.textContent = '';
+    };
+    input?.addEventListener('input', syncPasswordRow);
+
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
+      wipe();
       settle(null);
     });
 
-    connectBtn?.addEventListener('click', () => {
+    const submit = (): void => {
       const value = input?.value ?? '';
       if (!value.trim()) {
-        if (status) status.textContent = 'Please paste an nsec.';
+        if (status) status.textContent = 'Please paste an nsec or ncryptsec.';
+        return;
+      }
+      const encrypted = isEncryptedNsec(value);
+      if (encrypted && !password?.value) {
+        if (passwordRow) passwordRow.hidden = false;
+        if (status) status.textContent = 'This key is password-protected. Enter its password.';
+        password?.focus();
         return;
       }
       try {
-        const signer = createLocalSignerFromNsec(value);
-        // Wipe the textarea ASAP — the key is now in the signer.
-        if (input) input.value = '';
+        const signer = createLocalSignerFromNsec(value, encrypted ? password?.value : undefined);
+        // Wipe the fields ASAP — the key is now in the signer.
+        wipe();
         settle(signer);
       } catch (err) {
         if (status) {
-          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
+          const message = err instanceof Error ? err.message : String(err);
+          status.textContent = message === 'wrong-password-or-invalid-ncryptsec'
+            ? '✗ Wrong password, or this is not a valid ncryptsec.'
+            : `✗ ${message}`;
           status.style.color = '#d04848';
         }
       }
+    };
+    connectBtn?.addEventListener('click', submit);
+    password?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
     });
   });
 }

@@ -17,13 +17,13 @@
 import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
 import { saveSessionToStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
 import { consumeAmberCallbackFromStorage } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
 import { assertValidLoginAuthEvent } from './verify.js';
 export { isAndroid } from './amber.js';
-export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
+export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
 /**
  * Cap the redirect-bunker auto-pair handshake. The `bunker://` URI signet-app
  * appends is best-effort and may be unreachable on arrival — most notably when

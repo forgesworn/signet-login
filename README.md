@@ -12,7 +12,7 @@ Published as `signet-login`.
 - **Connect a Nostr signer** via app-initiated NIP-46 / NostrConnect
 - **Paste or scan bunker URI** for Heartwood, nsecBunker, Amber, or compatible signers
 - **Sign in with Amber** via Android NIP-55
-- **Paste private key** as an in-memory, advanced fallback only
+- **Paste private key** as an in-memory, advanced fallback only: an `nsec`, or a NIP-49 password-protected `ncryptsec` decrypted in the browser
 
 Returns a unified `SignetSigner` plus a signed kind-21236 auth proof your server can verify before granting privileges.
 
@@ -97,7 +97,7 @@ type LoginPickerMethod =
   | 'bunker'        // paste bunker://
   | 'nostrconnect'  // show nostrconnect:// QR
   | 'amber'         // Android NIP-55
-  | 'nsec';         // in-memory private key fallback
+  | 'nsec';         // in-memory private key fallback (nsec or ncryptsec + password)
 
 interface SignetSession {
   pubkey: string;                  // hex
@@ -357,7 +357,7 @@ interface SignetSigner {
 |---|---|---|
 | `Nip07Signer` | true | `window.nostr` (any NIP-07 extension) |
 | `BunkerSignerImpl` | true | `nostr-tools` BunkerSigner over NIP-46 relay |
-| `LocalSigner` | true | In-memory nsec fallback; never persisted |
+| `LocalSigner` | true | In-memory nsec fallback (accepts NIP-49 `ncryptsec` with a password); never persisted |
 | `EphemeralSigner` | **false** | Auth-only Signet redirect / QR / Amber callback |
 
 `EphemeralSigner` exists because some redirect-style flows return a signed challenge but no ongoing signing channel. Use `signer.capabilities.canSignEvents` to gate UI:

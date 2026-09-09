@@ -21,6 +21,7 @@ import { NostrConnect } from 'nostr-tools/kinds';
 import { SimplePool } from 'nostr-tools/pool';
 import type { SubCloser } from 'nostr-tools/abstract-pool';
 import { decode as nip19Decode } from 'nostr-tools/nip19';
+import { decrypt as nip49Decrypt } from 'nostr-tools/nip49';
 import { encrypt as nip44Encrypt, decrypt as nip44Decrypt, getConversationKey } from 'nostr-tools/nip44';
 import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
 
@@ -932,17 +933,32 @@ export class LocalSigner implements SignetSigner {
   }
 }
 
+/** True when the pasted text is a NIP-49 password-encrypted key (`ncryptsec1...`). */
+export function isEncryptedNsec(input: string): boolean {
+  return input.trim().toLowerCase().startsWith('ncryptsec1');
+}
+
 /**
- * Decode a bech32 nsec into a LocalSigner. Accepts either the `nsec1...`
- * prefix or a raw 64-char hex private key for power-user paste paths.
+ * Decode a bech32 nsec into a LocalSigner. Accepts the `nsec1...` prefix, a
+ * raw 64-char hex private key for power-user paste paths, or a NIP-49
+ * `ncryptsec1...` together with the password that encrypted it.
  * Throws on any malformed input — caller surfaces the error to the user.
  */
-export function createLocalSignerFromNsec(input: string): LocalSigner {
+export function createLocalSignerFromNsec(input: string, password?: string): LocalSigner {
   const trimmed = input.trim();
   if (!trimmed) throw new Error('empty-nsec');
 
   let sk: Uint8Array;
-  if (trimmed.startsWith('nsec1')) {
+  if (isEncryptedNsec(trimmed)) {
+    if (!password) throw new Error('password-required');
+    try {
+      sk = nip49Decrypt(trimmed, password);
+    } catch {
+      // nostr-tools reports a bad password as an AEAD failure; a malformed
+      // ncryptsec as a bech32 error. Neither detail helps the person pasting.
+      throw new Error('wrong-password-or-invalid-ncryptsec');
+    }
+  } else if (trimmed.startsWith('nsec1')) {
     const decoded = nip19Decode(trimmed);
     if (decoded.type !== 'nsec') throw new Error('not-an-nsec');
     sk = decoded.data as Uint8Array;

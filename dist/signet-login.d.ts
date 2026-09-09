@@ -16,7 +16,7 @@
  */
 export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
 import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
+import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import type { ConsumeCallbackResult } from './redirect.js';
@@ -24,7 +24,7 @@ export type { CallbackResult, HandleCallbackOptions } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
-export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
+export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
 export interface HandleRedirectCallbackOptions {
     /**
      * Await the returned `bunker://` handoff before resolving the callback.

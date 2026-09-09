@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- paste a NIP-49 password-protected `ncryptsec` on the private-key route; the password field appears only for an encrypted key, decryption happens in the browser, and neither key nor password is persisted. `createLocalSignerFromNsec(input, password?)` and `isEncryptedNsec()` are exported for headless use.
+
+
 ## 0.14.5 (2026-09-08)
 
 ### Bug Fixes
