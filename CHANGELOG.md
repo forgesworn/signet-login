@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.1 (2026-09-11)
+
+### Bug Fixes
+
+- default to the Signet app's relay, and name a relay refusal (#44) (auth)
+
+
+
 ## 0.16.0 (2026-09-11)
 
 ### Features
