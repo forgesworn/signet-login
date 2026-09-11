@@ -6,6 +6,8 @@
  * interface; the SDK picks the implementation based on user choice.
  */
 
+import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+
 /** A signed Nostr event. */
 export interface NostrEvent {
   id: string;
@@ -238,6 +240,40 @@ export interface PendingRedirect {
   createdAt: number;
 }
 
+/**
+ * A cross-device (relay) sign-in in flight, persisted so it survives the page
+ * being discarded while the user is in the signer app.
+ *
+ * The redirect flow has always persisted its anchor (`PendingRedirect`); the
+ * relay flow did not, so a discarded tab lost the ephemeral session key and the
+ * response — already published, addressed to that key — became unreachable.
+ */
+export interface PendingRelayAuth {
+  /** 64-hex challenge issued at login start — also the `requestId`. */
+  challenge: string;
+  /** Origin that initiated the login — must match on resume. */
+  origin: string;
+  /** App name, for the resumed UI. */
+  appName: string;
+  /** The `wss://` relay the request was published to. */
+  relayUrl: string;
+  /**
+   * The ephemeral session private key, hex.
+   *
+   * Deliberately persisted: resuming after page discard is impossible without
+   * it. It signs nothing and carries no identity — its only power is unwrapping
+   * one auth response addressed to it, and that power dies with the 300-second
+   * freshness window. Cleared on settle, on expiry and on logout.
+   */
+  sessionSkHex: string;
+  /**
+   * Unix **seconds** when the sign-in was issued — the anchor. Note this is
+   * seconds, matching `signet-verify`'s `issuedAt`, where
+   * `PendingRedirect.createdAt` is milliseconds.
+   */
+  issuedAt: number;
+}
+
 /** Options for Signet.restoreSession(). */
 export interface RestoreOptions {
   /** Reconnect a stored bunker session if present. Default: true. */
@@ -269,7 +305,7 @@ export const DEFAULTS = {
  * tab restored after a long pause). Mirrors signet-app's URL freshness
  * window (5 min) so callback consumers behave consistently with the issuer.
  */
-export const PENDING_REDIRECT_TTL_MS = 5 * 60 * 1000;
+export const PENDING_REDIRECT_TTL_MS = AUTH_FRESHNESS_WINDOW_SEC * 1000;
 
 /** Storage keys, namespaced under signet:login.* */
 export const STORAGE_KEYS = {
@@ -290,4 +326,6 @@ export const STORAGE_KEYS = {
   displayName: 'signet:login.displayName',
   /** Session-storage key for in-flight redirect state. */
   pendingRedirect: 'signet:login.pendingRedirect',
+  /** A cross-device sign-in in flight — see `PendingRelayAuth`. */
+  pendingRelayAuth: 'signet:login.pendingRelayAuth',
 };

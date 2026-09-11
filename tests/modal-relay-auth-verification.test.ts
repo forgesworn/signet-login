@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('signet-verify', () => ({
   waitForAuthResponse: vi.fn(() => new Promise(() => { /* overridden per test */ })),
+  AUTH_FRESHNESS_WINDOW_SEC: 300,
 }));
 
 import { waitForAuthResponse } from 'signet-verify';
