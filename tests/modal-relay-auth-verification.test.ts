@@ -13,9 +13,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('signet-verify', () => ({
+// Only the network wait is faked; every constant comes from the real package,
+// so a test of a signet-login default checks the value it actually ships with.
+vi.mock('signet-verify', async importOriginal => ({
+  ...(await importOriginal<typeof import('signet-verify')>()),
   waitForAuthResponse: vi.fn(() => new Promise(() => { /* overridden per test */ })),
-  AUTH_FRESHNESS_WINDOW_SEC: 300,
 }));
 
 import { bytesToHex } from '@noble/hashes/utils';

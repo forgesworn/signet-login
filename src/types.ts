@@ -6,7 +6,7 @@
  * interface; the SDK picks the implementation based on user choice.
  */
 
-import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+import { AUTH_FRESHNESS_WINDOW_SEC, DEFAULT_RELAY_URL } from 'signet-verify';
 
 /** A signed Nostr event. */
 export interface NostrEvent {
@@ -295,7 +295,7 @@ export const DEFAULTS = {
   // refusing kind-1059 (gift wrap) reads to unauthenticated clients, with its
   // AUTH misconfigured so that no client can fetch one — every cross-device
   // sign-in on the default then failed. It still serves NIP-46 (kind 24133).
-  relayUrl: 'wss://relay.trotters.cc',
+  relayUrl: DEFAULT_RELAY_URL,
   signetAppOrigin: 'https://mysignet.app',
   timeout: 120_000,
   theme: 'auto' as const,
