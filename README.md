@@ -456,6 +456,55 @@ Both SDKs attach to `window.Signet` additively — load order doesn't matter:
 
 Each SDK manages its own slice of `window.Signet` and `localStorage` namespaces.
 
+## Upgrading — cross-device sign-in deadline
+
+If cross-device sign-in has been failing for your users, this is the fix. Upgrade
+and you get it with no code change:
+
+- a **countdown** while the user approves on their phone, anchored to when the
+  request was issued, so it survives the page being backgrounded
+- a **resumable** sign-in — the in-flight request is persisted, so an OS that
+  discards your tab while the user is in the signer app no longer loses the
+  response
+- **"this sign-in expired"** instead of a generic failure when the user was too
+  late, with Start again offered
+
+### If you call `signet-verify` directly
+
+Pass `issuedAt` — unix **seconds**, stamped when you mint the challenge and open
+the auth URL — on **every** call for a given sign-in, retries and resumes
+included:
+
+```ts
+const issuedAt = Math.floor(Date.now() / 1000);
+// …open the auth URL / render the QR…
+await waitForAuthResponse({ /* … */, issuedAt });
+```
+
+Do not let a restarted wait re-anchor to `now`. That was the original bug: the
+fresh window began *after* the response was published, so it was never asked for
+again, and the sign-in failed 100% of the time on mobile.
+
+Build your countdown from the exported constant, not a local `300`:
+
+```ts
+import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+const expiresAt = issuedAt + AUTH_FRESHNESS_WINDOW_SEC;
+```
+
+`issuedAt` is **seconds**, not milliseconds — a millisecond value throws
+`invalid-issued-at` rather than silently waiting ten minutes for nothing. And
+don't pass your own `timeout` unless you mean to give up *earlier* than the
+sign-in expires; without one the wait lasts exactly as long as the sign-in is
+valid.
+
+Branch on the failure, because they are not the same thing — read it from
+`err.code`: `expired` means this sign-in is over, so offer a fresh one;
+`timeout` means you gave up early, so a retry against the same `issuedAt` may
+still work.
+
+Nothing changes in how you verify signatures or display identity.
+
 ## Bundle size
 
 The ESM entry is approx **5.9 KB gzipped** before bundling dependencies. The standalone IIFE is approx **114.7 KB gzipped** because it includes NIP-46, Signet QR/relay support, and camera QR decoding. A future split-bundle could lazy-load advanced signer paths for smaller first-load pages.
