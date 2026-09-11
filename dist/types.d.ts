@@ -134,7 +134,7 @@ export interface LoginOptions {
      * methods in the main picker. Default: bunker, nostrconnect, nsec.
      */
     advancedMethods?: LoginPickerMethod[];
-    /** Relay URL for cross-device communication. Default wss://relay.damus.io */
+    /** Relay URL for cross-device communication. Default wss://relay.trotters.cc — must serve kind-1059 gift wraps to an unauthenticated reader. */
     relayUrl?: string;
     /**
      * Relay URLs for NIP-46 / NostrConnect. Use `relayUrl` separately when the

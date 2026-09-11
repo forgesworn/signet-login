@@ -13,9 +13,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('signet-verify', () => ({
+// Only the network wait is faked; every constant comes from the real package,
+// so a test of a signet-login default checks the value it actually ships with.
+vi.mock('signet-verify', async importOriginal => ({
+  ...(await importOriginal<typeof import('signet-verify')>()),
   waitForAuthResponse: vi.fn(() => new Promise(() => { /* overridden per test */ })),
-  AUTH_FRESHNESS_WINDOW_SEC: 300,
 }));
 
 import { bytesToHex } from '@noble/hashes/utils';
@@ -28,6 +30,7 @@ import { makeAuthEvent, TEST_PRIVATE_KEY } from './helpers/auth-event.js';
 /** A request object shaped like what the modal passes to waitForAuthResponse. */
 interface CapturedWaitRequest {
   requestId: string;
+  relayUrl: string;
   sessionPrivKey: Uint8Array;
   issuedAt?: number;
   timeout?: number;
@@ -566,5 +569,59 @@ describe('rendering the countdown and named expiry state', () => {
 
     expect(clearIntervalSpy).toHaveBeenCalled();
     await cancelAndDrain(pending);
+  });
+});
+
+describe('the relay the cross-device sign-in uses', () => {
+  beforeEach(() => {
+    installDialogPolyfill();
+    localStorage.clear();
+    document.body.innerHTML = '';
+    vi.mocked(waitForAuthResponse).mockReset();
+    neverSettle();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+  });
+
+  it("defaults to the Signet app's own relay, which serves gift wraps", async () => {
+    // The default was relay.damus.io. It accepts the signer's gift wrap, then
+    // refuses kind-1059 reads to an unauthenticated client — and its AUTH is
+    // misconfigured, so no client can fetch one. Every cross-device sign-in on
+    // the default failed, silently. relay.trotters.cc is what signet-app uses.
+    const pending = login({
+      appName: 'Pallasite',
+      challenge: CHALLENGE,
+      theme: 'dark',
+      preferredMethod: 'remote-signet',
+      persist: false,
+    });
+    await settleMicrotasks();
+
+    try {
+      expect(lastWaitCall().relayUrl).toBe('wss://relay.trotters.cc');
+    } finally {
+      await cancelAndDrain(pending);
+    }
+  });
+
+  it('names a relay refusal and shows its reason instead of a raw code', async () => {
+    vi.mocked(waitForAuthResponse).mockRejectedValue(
+      Object.assign(codedError('relay-refused'), {
+        reason: 'auth-required: requested filter requires authentication',
+      }),
+    );
+
+    const pending = startRelayLogin();
+    await settleMicrotasks();
+
+    try {
+      expect(statusText()).toContain('relay refused');
+      expect(statusText()).toContain('auth-required');
+    } finally {
+      await cancelAndDrain(pending);
+    }
   });
 });

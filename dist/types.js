@@ -5,10 +5,14 @@
  * NIP-46, Android, and local fallback paths. Consumers code against the
  * interface; the SDK picks the implementation based on user choice.
  */
-import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+import { AUTH_FRESHNESS_WINDOW_SEC, DEFAULT_RELAY_URL } from 'signet-verify';
 /** Default values applied when the consumer omits an option. */
 export const DEFAULTS = {
-    relayUrl: 'wss://relay.damus.io',
+    // The Signet app's own relay. relay.damus.io was the default until it began
+    // refusing kind-1059 (gift wrap) reads to unauthenticated clients, with its
+    // AUTH misconfigured so that no client can fetch one — every cross-device
+    // sign-in on the default then failed. It still serves NIP-46 (kind 24133).
+    relayUrl: DEFAULT_RELAY_URL,
     signetAppOrigin: 'https://mysignet.app',
     timeout: 120000,
     theme: 'auto',

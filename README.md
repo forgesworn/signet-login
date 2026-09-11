@@ -69,7 +69,7 @@ interface LoginOptions {
   preferredMethod?: LoginPickerMethod;          // skip the picker
   methods?: LoginPickerMethod[];                // picker methods, in order
   advancedMethods?: LoginPickerMethod[];        // grouped behind Advanced; [] = flat list
-  relayUrl?: string;                            // default wss://relay.damus.io
+  relayUrl?: string;                            // default wss://relay.trotters.cc
   relayUrls?: string[];                         // repeated relay= params for NostrConnect
   nostrConnectPerms?: string[];                 // default sign_event + NIP-44
   onNostrConnectStatus?: NostrConnectStatusHandler;
