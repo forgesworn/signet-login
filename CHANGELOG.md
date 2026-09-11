@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.0 (2026-09-11)
+
+### Features
+
+- persist, resume and display the cross-device sign-in deadline (#43) (auth)
+
+
+
 ## 0.15.0 (2026-09-09)
 
 ### Features
