@@ -44,6 +44,12 @@ function neverSettle(): void {
   vi.mocked(waitForAuthResponse).mockImplementation(() => new Promise(() => { /* left pending */ }));
 }
 
+function codedError(code: string): Error & { code: string } {
+  const err = new Error(code) as Error & { code: string };
+  err.code = code;
+  return err;
+}
+
 function makePersistedRecord(overrides: Partial<PendingRelayAuth> = {}): PendingRelayAuth {
   return {
     challenge: 'd'.repeat(64),
@@ -371,12 +377,6 @@ describe('clearing the persisted record on terminal outcomes', () => {
     document.body.innerHTML = '';
   });
 
-  function codedError(code: string): Error & { code: string } {
-    const err = new Error(code) as Error & { code: string };
-    err.code = code;
-    return err;
-  }
-
   it('clears the record on a successful sign-in — the persisted key has no further use', async () => {
     const authEvent = makeAuthEvent({ challenge: CHALLENGE, origin: window.location.origin });
     vi.mocked(waitForAuthResponse).mockResolvedValue({
@@ -455,5 +455,96 @@ describe('aborting the relay wait on Back/Cancel', () => {
     await expect(pending).resolves.toBeNull();
 
     expect(abortSignal?.aborted).toBe(true);
+  });
+});
+
+describe('rendering the countdown and named expiry state', () => {
+  beforeEach(() => {
+    installDialogPolyfill();
+    localStorage.clear();
+    document.body.innerHTML = '';
+    vi.mocked(waitForAuthResponse).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+  });
+
+  it('renders the deadline anchored to issuedAt instead of an open-ended spinner', async () => {
+    neverSettle();
+    const pending = startRelayLogin();
+    await settleMicrotasks();
+
+    const countdown = document.getElementById('signet-login-countdown');
+    // issuedAt is stamped moments before this assertion runs, so the full 5:00
+    // window may have ticked to 4:59 by the time we read it.
+    expect(countdown?.textContent).toMatch(/^Approve on your phone · [45]:\d\d remaining$/);
+
+    await cancelAndDrain(pending);
+  });
+
+  it('ticks down anchored to issuedAt rather than resetting on each render', async () => {
+    // Full fake timers (Date included) — advancing the clock must actually
+    // move remainingSeconds, not just fire the interval callback on a frozen
+    // Date. `showLoginModal` serialises on a module-level queue, so a test
+    // that throws before settling `pending` would wedge every later test
+    // behind it — the try/finally guarantees cleanup either way.
+    vi.useFakeTimers();
+    let pending: Promise<unknown> | undefined;
+    try {
+      neverSettle();
+      pending = startRelayLogin();
+      await settleMicrotasks();
+
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      const countdown = document.getElementById('signet-login-countdown');
+      expect(countdown?.textContent).toMatch(/^Approve on your phone · 4:5[6-7] remaining$/);
+    } finally {
+      vi.useRealTimers();
+      if (pending) await cancelAndDrain(pending);
+    }
+  });
+
+  it('shows the named expiry state and relabels Back to Start again', async () => {
+    vi.mocked(waitForAuthResponse).mockRejectedValue(codedError('expired'));
+
+    const pending = startRelayLogin();
+    await settleMicrotasks();
+
+    try {
+      expect(statusText()).toContain('expired');
+      const back = document.querySelector<HTMLButtonElement>('[data-action="back"]');
+      expect(back?.textContent).toBe('Start again');
+    } finally {
+      await cancelAndDrain(pending);
+    }
+  });
+
+  it('stops the countdown ticker on settle instead of leaking it', async () => {
+    // A leaked interval keeps a dead dialog ticking — the thing Task 9 Step 3
+    // exists to prevent.
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+    neverSettle();
+    const pending = startRelayLogin();
+    await settleMicrotasks();
+
+    document.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+    await pending;
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it('stops the countdown ticker when the wait rejects, not just on settle', async () => {
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+    vi.mocked(waitForAuthResponse).mockRejectedValue(codedError('relay-error'));
+
+    const pending = startRelayLogin();
+    await settleMicrotasks();
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    await cancelAndDrain(pending);
   });
 });

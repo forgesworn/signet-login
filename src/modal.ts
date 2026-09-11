@@ -19,6 +19,7 @@ import { isAndroid, startAmberSignIn } from './amber.js';
 import { isMobile } from './platform.js';
 import { loadOrCreatePersistentClientSkFromStorage, savePendingRelayAuth, loadPendingRelayAuth, clearPendingRelayAuth } from './storage.js';
 import { assertValidLoginAuthEvent } from './verify.js';
+import { remainingSeconds, formatRemaining } from './countdown.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
@@ -720,11 +721,34 @@ async function runRedirectFlow(
     // every exit path uniformly, success included (a no-op there, since the
     // wait has already resolved).
     const waitAbort = new AbortController();
+
+    // The deadline the user is actually racing, stated plainly. Anchored to
+    // issuedAt, so it keeps correct time across a backgrounded page instead of
+    // restarting on focus — an unannounced deadline was the original defect.
+    const countdownEl = document.createElement('div');
+    countdownEl.id = 'signet-login-countdown';
+    countdownEl.style.cssText = 'margin-top:6px;font-variant-numeric:tabular-nums;opacity:0.75;font-size:13px;';
+    refs.dialog.querySelector<HTMLElement>('#signet-login-status')?.after(countdownEl);
+
+    const renderCountdown = (): void => {
+      if (settled) return;
+      const left = remainingSeconds(issuedAt);
+      if (left <= 0) {
+        countdownEl.textContent = 'This sign-in request has expired.';
+        clearInterval(countdownTimer);
+        return;
+      }
+      countdownEl.textContent = `Approve on your phone · ${formatRemaining(left)} remaining`;
+    };
+    const countdownTimer = setInterval(renderCountdown, 1000);
+    renderCountdown();
+
     const settle = (v: RedirectFlowResult | null): void => {
       if (settled) return;
       settled = true;
       backNavigation.cleanup();
       waitAbort.abort();
+      clearInterval(countdownTimer);
       resolve(v);
     };
     backNavigation.promise.then(() => settle(null));
@@ -777,6 +801,9 @@ async function runRedirectFlow(
       settle(out);
     }).catch((err: Error & { code?: string }) => {
       if (settled) return;
+      // The current wait is over either way — a leaked ticker would keep a
+      // dead dialog counting down (or re-announcing "expired" every second).
+      clearInterval(countdownTimer);
       const code = err.code ?? err.message;
       // `expired` and `denied` are terminal: the record can never be resumed.
       // `timeout` / `relay-error` are not — keep the anchor so a retry asks the
@@ -790,6 +817,11 @@ async function runRedirectFlow(
           ? '✗ This sign-in request expired. Start again to get a fresh one.'
           : `✗ ${err instanceof Error ? err.message : String(err)}`;
         status.style.color = '#d04848';
+      }
+      if (code === 'expired') {
+        // Named expiry gets a named recovery action, not a generic Back.
+        const back = refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]');
+        if (back) back.textContent = 'Start again';
       }
       // Don't auto-settle on error — let the user choose to go back/cancel.
     });
