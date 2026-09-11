@@ -5,7 +5,9 @@
  * with `signet:verify.*` or any future Signet SDK.
  */
 
-import type { LoginMethod, PendingRedirect, SignetAuthEvent, SignetStorage } from './types.js';
+import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+
+import type { LoginMethod, PendingRedirect, PendingRelayAuth, SignetAuthEvent, SignetStorage } from './types.js';
 import { STORAGE_KEYS } from './types.js';
 
 /** Raw shape of a persisted session — flat string fields, JSON for the auth event. */
@@ -197,6 +199,9 @@ export function clearSession(): void {
   safeRemove(STORAGE_KEYS.bunkerClientSk);
   safeRemove(STORAGE_KEYS.expiresAt);
   safeRemove(STORAGE_KEYS.displayName);
+  // A logged-out user should not leave a resumable sign-in (and its session
+  // private key) sitting in storage behind them.
+  safeRemove(STORAGE_KEYS.pendingRelayAuth);
 }
 
 /** Async-storage variant of `clearSession`. */
@@ -208,6 +213,9 @@ export async function clearSessionFromStorage(storage?: SignetStorage): Promise<
   await safeRemoveFrom(storage, STORAGE_KEYS.bunkerClientSk);
   await safeRemoveFrom(storage, STORAGE_KEYS.expiresAt);
   await safeRemoveFrom(storage, STORAGE_KEYS.displayName);
+  // See clearSession() above — a logout must not leave a resumable sign-in's
+  // session private key behind.
+  await safeRemoveFrom(storage, STORAGE_KEYS.pendingRelayAuth);
 }
 
 /**
@@ -317,6 +325,62 @@ export function clearPendingRedirect(): void {
 /** Async-storage variant of `clearPendingRedirect`. */
 export async function clearPendingRedirectFromStorage(storage?: SignetStorage): Promise<void> {
   await safeRemoveFrom(storage, STORAGE_KEYS.pendingRedirect);
+}
+
+// ── Pending relay (cross-device) sign-in persistence ──────────────────────────
+
+function isPendingRelayAuth(value: unknown): value is PendingRelayAuth {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.challenge === 'string' && /^[0-9a-f]{64}$/i.test(v.challenge) &&
+    typeof v.origin === 'string' && v.origin.length > 0 &&
+    typeof v.appName === 'string' &&
+    typeof v.relayUrl === 'string' && v.relayUrl.length > 0 &&
+    typeof v.sessionSkHex === 'string' && /^[0-9a-f]{64}$/i.test(v.sessionSkHex) &&
+    typeof v.issuedAt === 'number' && Number.isFinite(v.issuedAt)
+  );
+}
+
+/**
+ * Persist the in-flight cross-device (relay) sign-in. Called immediately after
+ * minting the session keypair so a page discarded while the user is in the
+ * signer app can resume rather than losing the response.
+ */
+export async function savePendingRelayAuth(
+  record: PendingRelayAuth,
+  storage?: SignetStorage,
+): Promise<void> {
+  await safeSetTo(storage, STORAGE_KEYS.pendingRelayAuth, JSON.stringify(record));
+}
+
+/**
+ * Returns the in-flight sign-in, or null if there isn't one, it's malformed, or
+ * its window has passed. An expired record is cleared on the way out — it can
+ * never be resumed and its session key should not linger in storage.
+ */
+export async function loadPendingRelayAuth(
+  storage?: SignetStorage,
+): Promise<PendingRelayAuth | null> {
+  const raw = await safeGetFrom(storage, STORAGE_KEYS.pendingRelayAuth);
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isPendingRelayAuth(parsed)) return null;
+  if (Math.floor(Date.now() / 1000) > parsed.issuedAt + AUTH_FRESHNESS_WINDOW_SEC) {
+    await clearPendingRelayAuth(storage);
+    return null;
+  }
+  return parsed;
+}
+
+/** Clear the pending relay-auth record. Safe to call when none exists. */
+export async function clearPendingRelayAuth(storage?: SignetStorage): Promise<void> {
+  await safeRemoveFrom(storage, STORAGE_KEYS.pendingRelayAuth);
 }
 
 // ── Hex helpers (avoid pulling in @noble for two functions) ───────────────────

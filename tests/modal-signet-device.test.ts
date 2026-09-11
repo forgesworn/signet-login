@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('signet-verify', () => ({
   waitForAuthResponse: vi.fn(() => new Promise(() => { /* never resolves in UI tests */ })),
+  AUTH_FRESHNESS_WINDOW_SEC: 300,
 }));
 
 import { waitForAuthResponse } from 'signet-verify';
@@ -20,9 +21,13 @@ function installDialogPolyfill(): void {
   }
 }
 
-async function settleMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+async function settleMicrotasks(rounds = 8): Promise<void> {
+  // runRedirectFlow now awaits loadPendingRelayAuth (and, on a fresh sign-in,
+  // savePendingRelayAuth) before it renders the dialog — a couple of extra
+  // microtask ticks versus the purely-synchronous-until-render flow this used
+  // to be. 8 rounds matches the margin modal-relay-auth-verification.test.ts
+  // already uses for the same reason.
+  for (let i = 0; i < rounds; i++) await Promise.resolve();
 }
 
 function dispatchPersistedPageShow(): void {

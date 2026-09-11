@@ -1,0 +1,27 @@
+/**
+ * Countdown arithmetic for a cross-device sign-in.
+ *
+ * Everything derives from `issuedAt` — when the sign-in was issued — so the
+ * countdown keeps correct time across the page being backgrounded instead of
+ * restarting on focus. Same discipline that fixes the relay query window.
+ */
+
+import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
+
+/** Unix seconds after which a response for this sign-in is no longer accepted. */
+export function expiresAtFor(issuedAt: number): number {
+  return issuedAt + AUTH_FRESHNESS_WINDOW_SEC;
+}
+
+/** Whole seconds left before expiry, clamped at 0. */
+export function remainingSeconds(issuedAt: number, now = Math.floor(Date.now() / 1000)): number {
+  return Math.max(0, expiresAtFor(issuedAt) - now);
+}
+
+/** `M:SS`, never negative. */
+export function formatRemaining(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}

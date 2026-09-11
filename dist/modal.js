@@ -8,11 +8,12 @@ import { DEFAULTS } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, EphemeralSigner, createLocalSignerFromNsec, isEncryptedNsec } from './signers.js';
 import { isAndroid, startAmberSignIn } from './amber.js';
 import { isMobile } from './platform.js';
-import { loadOrCreatePersistentClientSkFromStorage } from './storage.js';
+import { loadOrCreatePersistentClientSkFromStorage, savePendingRelayAuth, loadPendingRelayAuth, clearPendingRelayAuth } from './storage.js';
 import { assertValidLoginAuthEvent } from './verify.js';
+import { remainingSeconds, formatRemaining } from './countdown.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { schnorr } from '@noble/curves/secp256k1';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8000;
@@ -519,16 +520,40 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     const sameDevice = flowOpts.sameDevice === true;
-    // Generate session keypair for cross-device gift-wrap
-    const sessionPrivKey = schnorr.utils.randomPrivateKey();
+    // Resume an in-flight sign-in rather than starting a second one: the response
+    // may already be on the relay, addressed to the key that sign-in minted.
+    // A consumer-supplied challenge must match — their server is bound to it. An
+    // SDK-generated one is fresh on every login() call, so any live record for
+    // this origin is ours to pick up, adopting its challenge.
+    const resumed = await loadPendingRelayAuth(opts.storage);
+    const reusable = resumed && resumed.origin === opts.origin &&
+        (!opts.challengeFromConsumer || resumed.challenge === opts.challenge)
+        ? resumed
+        : null;
+    const challenge = reusable ? reusable.challenge : opts.challenge;
+    const sessionPrivKey = reusable ? hexToBytes(reusable.sessionSkHex) : schnorr.utils.randomPrivateKey();
     const sessionPubkey = bytesToHex(schnorr.getPublicKey(sessionPrivKey));
+    // THE anchor. It is also the `t=` the signer enforces its five-minute window
+    // against, so the consumer's wait and the signer's check measure one clock —
+    // and on resume the link and QR rebuild the identical request.
+    const issuedAt = reusable ? reusable.issuedAt : Math.floor(Date.now() / 1000);
+    if (!reusable) {
+        await savePendingRelayAuth({
+            challenge,
+            origin: opts.origin,
+            appName: opts.appName,
+            relayUrl: opts.relayUrl,
+            sessionSkHex: bytesToHex(sessionPrivKey),
+            issuedAt,
+        }, opts.storage);
+    }
     const params = new URLSearchParams({
         auth: '1',
-        challenge: opts.challenge,
+        challenge,
         origin: opts.origin,
         name: opts.appName,
         callback: opts.redirectCallback ?? `${opts.origin}/`,
-        t: String(Math.floor(Date.now() / 1000)),
+        t: String(issuedAt),
         relay: opts.relayUrl,
         sessionPubkey,
     });
@@ -567,11 +592,47 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     return new Promise(resolve => {
         let settled = false;
         const backNavigation = createBackNavigationCancel();
+        // Cancellation is wired now that signet-verify accepts an AbortSignal
+        // (0.6.0) — clicking Back/Cancel (or the browser/OS Back handled by
+        // backNavigation) closes the relay subscription instead of leaving it
+        // open until the internal timeout. Aborting from inside `settle` covers
+        // every exit path uniformly, success included (a no-op there, since the
+        // wait has already resolved).
+        const waitAbort = new AbortController();
+        // The deadline the user is actually racing, stated plainly. Anchored to
+        // issuedAt, so it keeps correct time across a backgrounded page instead of
+        // restarting on focus — an unannounced deadline was the original defect.
+        const countdownEl = document.createElement('div');
+        countdownEl.id = 'signet-login-countdown';
+        countdownEl.style.cssText = 'margin-top:6px;font-variant-numeric:tabular-nums;opacity:0.75;font-size:13px;';
+        refs.dialog.querySelector('#signet-login-status')?.after(countdownEl);
+        const renderCountdown = () => {
+            if (settled)
+                return;
+            const left = remainingSeconds(issuedAt);
+            if (left <= 0) {
+                countdownEl.textContent = 'This sign-in request has expired.';
+                clearInterval(countdownTimer);
+                return;
+            }
+            countdownEl.textContent = `Approve on your phone · ${formatRemaining(left)} remaining`;
+        };
+        const countdownTimer = setInterval(renderCountdown, 1000);
+        renderCountdown();
         const settle = (v) => {
             if (settled)
                 return;
             settled = true;
             backNavigation.cleanup();
+            waitAbort.abort();
+            clearInterval(countdownTimer);
+            // Resume exists to survive the OS discarding the page, never to override
+            // the user. Every null settle is a deliberate exit (Back, Cancel, the
+            // browser Back gesture — errors do not auto-settle), so the request goes
+            // with it. Clearing here, not in the rejection handler: `settled` is
+            // already true by the time the abort's rejection lands, so it never sees it.
+            if (v === null)
+                void clearPendingRelayAuth(opts.storage);
             resolve(v);
         };
         backNavigation.promise.then(() => settle(null));
@@ -581,22 +642,16 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', () => {
             settle(null);
         });
-        // KNOWN LIMITATION (blocked on signet-verify): `waitForAuthResponse`
-        // (signet-verify@0.5.0, latest published) takes no AbortSignal or cancel
-        // callback — its relay subscription keeps running until it resolves,
-        // rejects, or hits its own internal `timeout` even after the user clicks
-        // Back/Cancel here. That subscription leak can only be closed by adding
-        // a cancellation hook upstream in signet-verify. The `settled` guards
-        // below are the mitigation available on this side: they stop a late
-        // result from an abandoned attempt mutating UI that has since moved on
-        // (e.g. the picker, or a second attempt reusing this same dialog's
-        // `#signet-login-status` element).
         waitForAuthResponse({
-            requestId: opts.challenge,
+            requestId: challenge, // the effective challenge — a resumed one on resume
             relayUrl: opts.relayUrl,
             sessionPrivKey,
             expectedOrigin: opts.origin,
-            timeout: opts.timeout,
+            // NOT opts.timeout — that is always defaulted to 120s. See resolveOptions's
+            // explicitTimeout, which is only set when the consumer actually passed one.
+            timeout: opts.explicitTimeout,
+            issuedAt,
+            abortSignal: waitAbort.signal,
         }).then(rawResult => {
             if (settled)
                 return;
@@ -617,7 +672,7 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             // `expectedPubkey` is what ties the two together, so the identity the
             // consumer sees cannot drift from the one a server will verify.
             assertValidLoginAuthEvent(authEvent, {
-                expectedChallenge: opts.challenge,
+                expectedChallenge: challenge,
                 expectedOrigin: opts.origin,
                 expectedPubkey: result.pubkey,
             });
@@ -626,14 +681,34 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
                 out.displayName = result.displayName;
             if (result.bunkerUri)
                 out.bunkerUri = result.bunkerUri;
+            // Settled — the persisted key has no further use.
+            void clearPendingRelayAuth(opts.storage);
             settle(out);
-        }).catch(err => {
+        }).catch((err) => {
             if (settled)
                 return;
+            // The current wait is over either way — a leaked ticker would keep a
+            // dead dialog counting down (or re-announcing "expired" every second).
+            clearInterval(countdownTimer);
+            const code = err.code ?? err.message;
+            // `expired` and `denied` are terminal: the record can never be resumed.
+            // `timeout` / `relay-error` are not — keep the anchor so a retry asks the
+            // relay from the right point instead of re-anchoring past the response.
+            if (code === 'expired' || code === 'denied' || code === 'aborted') {
+                void clearPendingRelayAuth(opts.storage);
+            }
             const status = refs.dialog.querySelector('#signet-login-status');
             if (status) {
-                status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
+                status.textContent = code === 'expired'
+                    ? '✗ This sign-in request expired. Start again to get a fresh one.'
+                    : `✗ ${err instanceof Error ? err.message : String(err)}`;
                 status.style.color = '#d04848';
+            }
+            if (code === 'expired') {
+                // Named expiry gets a named recovery action, not a generic Back.
+                const back = refs.dialog.querySelector('[data-action="back"]');
+                if (back)
+                    back.textContent = 'Start again';
             }
             // Don't auto-settle on error — let the user choose to go back/cancel.
         });
@@ -1093,6 +1168,11 @@ function resolveOptions(opts) {
         throw new Error('challenge-must-be-64-hex');
     const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
     const timeout = Math.max(5000, Math.min(opts.timeout ?? DEFAULTS.timeout, 600000));
+    // Distinct from `timeout` above: that is always defaulted, so it cannot tell
+    // a consumer's deliberate timeout from our own 120s fallback. The relay wait
+    // needs the undefaulted value — see the comment at its call site.
+    const explicitTimeout = opts.timeout === undefined ? undefined : timeout;
+    const challengeFromConsumer = opts.challenge !== undefined;
     const relayUrls = resolveRelayUrls(opts);
     const relayUrl = resolvePrimaryRelayUrl(opts, relayUrls);
     const mobile = isMobile();
@@ -1102,6 +1182,7 @@ function resolveOptions(opts) {
         challenge: challenge.toLowerCase(),
         origin,
         mobile,
+        challengeFromConsumer,
         methods: methodConfig.methods,
         advancedMethods: methodConfig.advancedMethods,
         relayUrl,
@@ -1119,6 +1200,8 @@ function resolveOptions(opts) {
         result.storage = opts.storage;
     if (opts.onNostrConnectStatus !== undefined)
         result.onNostrConnectStatus = opts.onNostrConnectStatus;
+    if (explicitTimeout !== undefined)
+        result.explicitTimeout = explicitTimeout;
     return result;
 }
 let modalQueue = Promise.resolve();
