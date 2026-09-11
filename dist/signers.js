@@ -219,6 +219,11 @@ async function waitForNostrConnectApproval(input) {
     const clientPubkey = getPublicKey(input.clientSecretKey);
     const { relays, secret } = parseNostrConnectUriForClient(input.uri, clientPubkey);
     const timeoutMs = input.timeoutMs && input.timeoutMs > 0 ? input.timeoutMs : NIP46_PAIRING_WAIT_MS;
+    // Anchored once for the whole flow. Computing this inside subscribe() means a
+    // reconnect asks only for events newer than the reconnect — skipping the
+    // response already sitting on the relay. Same defect that broke cross-device
+    // sign-in before signet-verify 0.5.2.
+    const since = Math.floor(Date.now() / 1000) - 60;
     emitNostrConnectStatus(input.onStatus, relays, {
         type: 'uri-created',
         uri: input.uri,
@@ -283,7 +288,7 @@ async function waitForNostrConnectApproval(input) {
         sub = pool.subscribe(relays, {
             kinds: [NostrConnect],
             '#p': [clientPubkey],
-            since: Math.floor(Date.now() / 1000) - 60,
+            since,
         }, {
             maxWait: NIP46_REQUEST_TIMEOUT_MS,
             abort: input.abortSignal,
@@ -334,6 +339,12 @@ class RobustBunkerClient {
         this.serial = 0;
         this.closed = false;
         this.idPrefix = Math.random().toString(36).slice(2);
+        /**
+         * Relay query anchor for this client's whole life, set once at construction.
+         * setupSubscription() re-runs on reconnect; a window computed there would skip
+         * past a response published while the socket was down.
+         */
+        this.since = Math.floor(Date.now() / 1000) - 60;
         this.listeners = new Map();
         this.clientPubkey = getPublicKey(clientSecretKey);
         this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
@@ -360,7 +371,7 @@ class RobustBunkerClient {
             kinds: [NostrConnect],
             authors: [this.pointer.pubkey],
             '#p': [this.clientPubkey],
-            since: Math.floor(Date.now() / 1000) - 60,
+            since: this.since,
         }, {
             maxWait: NIP46_REQUEST_TIMEOUT_MS,
             onevent: event => this.handleResponseEvent(event),

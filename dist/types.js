@@ -5,6 +5,7 @@
  * NIP-46, Android, and local fallback paths. Consumers code against the
  * interface; the SDK picks the implementation based on user choice.
  */
+import { AUTH_FRESHNESS_WINDOW_SEC } from 'signet-verify';
 /** Default values applied when the consumer omits an option. */
 export const DEFAULTS = {
     relayUrl: 'wss://relay.damus.io',
@@ -20,7 +21,7 @@ export const DEFAULTS = {
  * tab restored after a long pause). Mirrors signet-app's URL freshness
  * window (5 min) so callback consumers behave consistently with the issuer.
  */
-export const PENDING_REDIRECT_TTL_MS = 5 * 60 * 1000;
+export const PENDING_REDIRECT_TTL_MS = AUTH_FRESHNESS_WINDOW_SEC * 1000;
 /** Storage keys, namespaced under signet:login.* */
 export const STORAGE_KEYS = {
     pubkey: 'signet:login.pubkey',
@@ -40,4 +41,6 @@ export const STORAGE_KEYS = {
     displayName: 'signet:login.displayName',
     /** Session-storage key for in-flight redirect state. */
     pendingRedirect: 'signet:login.pendingRedirect',
+    /** A cross-device sign-in in flight — see `PendingRelayAuth`. */
+    pendingRelayAuth: 'signet:login.pendingRelayAuth',
 };

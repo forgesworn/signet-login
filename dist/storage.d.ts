@@ -4,7 +4,7 @@
  * Storage keys are namespaced under `signet:login.*` so they don't collide
  * with `signet:verify.*` or any future Signet SDK.
  */
-import type { LoginMethod, PendingRedirect, SignetStorage } from './types.js';
+import type { LoginMethod, PendingRedirect, PendingRelayAuth, SignetStorage } from './types.js';
 /** Raw shape of a persisted session — flat string fields, JSON for the auth event. */
 export interface PersistedSession {
     pubkey: string;
@@ -70,5 +70,19 @@ export declare function loadPendingRedirectFromStorage(storage?: SignetStorage):
 export declare function clearPendingRedirect(): void;
 /** Async-storage variant of `clearPendingRedirect`. */
 export declare function clearPendingRedirectFromStorage(storage?: SignetStorage): Promise<void>;
+/**
+ * Persist the in-flight cross-device (relay) sign-in. Called immediately after
+ * minting the session keypair so a page discarded while the user is in the
+ * signer app can resume rather than losing the response.
+ */
+export declare function savePendingRelayAuth(record: PendingRelayAuth, storage?: SignetStorage): Promise<void>;
+/**
+ * Returns the in-flight sign-in, or null if there isn't one, it's malformed, or
+ * its window has passed. An expired record is cleared on the way out — it can
+ * never be resumed and its session key should not linger in storage.
+ */
+export declare function loadPendingRelayAuth(storage?: SignetStorage): Promise<PendingRelayAuth | null>;
+/** Clear the pending relay-auth record. Safe to call when none exists. */
+export declare function clearPendingRelayAuth(storage?: SignetStorage): Promise<void>;
 export declare function bytesToHexLocal(bytes: Uint8Array): string;
 export declare function hexToBytesLocal(hex: string): Uint8Array;
