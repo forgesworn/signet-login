@@ -626,6 +626,13 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             backNavigation.cleanup();
             waitAbort.abort();
             clearInterval(countdownTimer);
+            // Resume exists to survive the OS discarding the page, never to override
+            // the user. Every null settle is a deliberate exit (Back, Cancel, the
+            // browser Back gesture — errors do not auto-settle), so the request goes
+            // with it. Clearing here, not in the rejection handler: `settled` is
+            // already true by the time the abort's rejection lands, so it never sees it.
+            if (v === null)
+                void clearPendingRelayAuth(opts.storage);
             resolve(v);
         };
         backNavigation.promise.then(() => settle(null));

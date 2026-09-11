@@ -456,6 +456,26 @@ describe('aborting the relay wait on Back/Cancel', () => {
 
     expect(abortSignal?.aborted).toBe(true);
   });
+
+  it.each(['cancel', 'back'])(
+    'clears the persisted record on %s — resume survives the OS, never the user',
+    async action => {
+      // A deliberate exit must not leave the request behind: the next phone
+      // sign-in would silently resume it, trapping someone who cancelled to get
+      // a fresh QR inside a request with seconds left. Settle marks the flow
+      // settled before the abort's rejection arrives, so the rejection handler
+      // never sees it — clearing has to happen on the exit itself.
+      const pending = startRelayLogin();
+      await settleMicrotasks();
+      expect(await loadPendingRelayAuth()).not.toBeNull();
+
+      document.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.click();
+      await expect(pending).resolves.toBeNull();
+      await settleMicrotasks();
+
+      expect(await loadPendingRelayAuth()).toBeNull();
+    },
+  );
 });
 
 describe('rendering the countdown and named expiry state', () => {
