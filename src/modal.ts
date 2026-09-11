@@ -819,9 +819,14 @@ async function runRedirectFlow(
       }
       const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
       if (status) {
+        // `reason` is the relay's own text, already sanitised by signet-verify;
+        // textContent keeps it inert either way.
+        const reason = (err as { reason?: unknown }).reason;
         status.textContent = code === 'expired'
           ? '✗ This sign-in request expired. Start again to get a fresh one.'
-          : `✗ ${err instanceof Error ? err.message : String(err)}`;
+          : code === 'relay-refused'
+            ? `✗ The relay refused to deliver your approval${typeof reason === 'string' ? ` (${reason})` : ''}.`
+            : `✗ ${err instanceof Error ? err.message : String(err)}`;
         status.style.color = '#d04848';
       }
       if (code === 'expired') {

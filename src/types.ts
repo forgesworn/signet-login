@@ -171,7 +171,7 @@ export interface LoginOptions {
    * methods in the main picker. Default: bunker, nostrconnect, nsec.
    */
   advancedMethods?: LoginPickerMethod[];
-  /** Relay URL for cross-device communication. Default wss://relay.damus.io */
+  /** Relay URL for cross-device communication. Default wss://relay.trotters.cc — must serve kind-1059 gift wraps to an unauthenticated reader. */
   relayUrl?: string;
   /**
    * Relay URLs for NIP-46 / NostrConnect. Use `relayUrl` separately when the
@@ -291,7 +291,11 @@ export interface RestoreOptions {
 
 /** Default values applied when the consumer omits an option. */
 export const DEFAULTS = {
-  relayUrl: 'wss://relay.damus.io',
+  // The Signet app's own relay. relay.damus.io was the default until it began
+  // refusing kind-1059 (gift wrap) reads to unauthenticated clients, with its
+  // AUTH misconfigured so that no client can fetch one — every cross-device
+  // sign-in on the default then failed. It still serves NIP-46 (kind 24133).
+  relayUrl: 'wss://relay.trotters.cc',
   signetAppOrigin: 'https://mysignet.app',
   timeout: 120_000,
   theme: 'auto' as const,
