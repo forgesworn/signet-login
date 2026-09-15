@@ -64,6 +64,14 @@ export interface SignetSigner {
     ping(): Promise<void>;
     switchRelays(): Promise<boolean>;
     logout(): Promise<void>;
+    /**
+     * Ask a supporting bunker to provision its literal Vennel `rendezvous`
+     * child to this NIP-46 client's public key. The returned value is an
+     * opaque, signer-encrypted response; it never contains a raw child key.
+     * Unsupported signers reject the request rather than falling back to a
+     * generic derivation or an identity-key crypto operation.
+     */
+    provisionRendezvous(index: number, nonce: Uint8Array, expiresAt: number): Promise<string>;
   };
   close(): Promise<void>;
 }

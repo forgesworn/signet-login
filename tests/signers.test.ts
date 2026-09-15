@@ -20,8 +20,8 @@ import {
   isBunkerUri,
   isNostrConnectUri,
   isSupportedPairingUri,
+  BunkerSignerImpl,
   DeferredBunkerSigner,
-  type BunkerSignerImpl,
 } from '../src/signers.js';
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { nsecEncode } from 'nostr-tools/nip19';
@@ -318,6 +318,18 @@ describe('DeferredBunkerSigner', () => {
     await expect(s.nip46!.logout()).resolves.toBeUndefined();
   });
 
+  it('delegates the narrowly-scoped rendezvous provision operation without a generic key API', async () => {
+    const provision = vi.fn(async () => '{"opaque":"response"}');
+    const withProvision = {
+      ...fakeBunker,
+      nip46: { ...fakeBunker.nip46, provisionRendezvous: provision },
+    } as unknown as BunkerSignerImpl;
+    const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(withProvision));
+    const nonce = new Uint8Array(16).map((_, index) => index);
+    await expect(s.nip46!.provisionRendezvous(7, nonce, 1_700_000_000)).resolves.toBe('{"opaque":"response"}');
+    expect(provision).toHaveBeenCalledWith(7, nonce, 1_700_000_000);
+  });
+
   it('rejects signEvent with the auth-only error when the bunker never connected', async () => {
     const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(null));
     await expect(s.signEvent({ kind: 1, content: '', tags: [], created_at: 1 })).rejects.toThrow(/signer-auth-only/);
@@ -326,6 +338,32 @@ describe('DeferredBunkerSigner', () => {
   it('close() is safe before and after the upgrade resolves', async () => {
     const s = new DeferredBunkerSigner(pubkey, authEvent, Promise.resolve(fakeBunker));
     await expect(s.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('BunkerSigner rendezvous provision operation', () => {
+  const pubkey = 'c'.repeat(64);
+
+  it('binds only this NIP-46 client public key and validates bounded inputs before sending', async () => {
+    const request = vi.fn(async () => '{"opaque":"response"}');
+    const bunker = {
+      getPublicKey: async () => pubkey,
+      signEvent: async () => ({ id: 'a'.repeat(64), pubkey, kind: 1, created_at: 1, tags: [], content: '', sig: 'b'.repeat(128) }),
+      nip04Encrypt: async () => 'nip04', nip04Decrypt: async () => 'nip04',
+      nip44Encrypt: async () => 'nip44', nip44Decrypt: async () => 'nip44',
+      provisionRendezvous: request,
+      ping: async () => {}, switchRelays: async () => false, logout: async () => {}, close: async () => {},
+    };
+    const clientSecretKey = generateSecretKey();
+    const signer = new BunkerSignerImpl(pubkey, bunker, `bunker://${pubkey}?relay=wss://relay.example`, clientSecretKey);
+    const nonce = new Uint8Array(16).map((_, index) => index);
+
+    await expect(signer.nip46!.provisionRendezvous(7, nonce, 1_700_000_000)).resolves.toBe('{"opaque":"response"}');
+    expect(request).toHaveBeenCalledWith(getPublicKey(clientSecretKey), 7, 'AAECAwQFBgcICQoLDA0ODw', 1_700_000_000);
+    expect(() => signer.nip46!.provisionRendezvous(-1, nonce, 1)).toThrow('invalid-rendezvous-index');
+    expect(() => signer.nip46!.provisionRendezvous(1, new Uint8Array(15), 1)).toThrow('invalid-rendezvous-nonce');
+    expect(() => signer.nip46!.provisionRendezvous(1, nonce, -1)).toThrow('invalid-rendezvous-expiry');
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 

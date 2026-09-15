@@ -103,6 +103,15 @@ export class BunkerSignerImpl {
             ping: () => bunker.ping(),
             switchRelays: () => bunker.switchRelays(),
             logout: () => bunker.logout(),
+            provisionRendezvous: (index, nonce, expiresAt) => {
+                if (!Number.isSafeInteger(index) || index < 0 || index > 0xffffffff)
+                    throw new Error('invalid-rendezvous-index');
+                if (!(nonce instanceof Uint8Array) || nonce.length !== 16)
+                    throw new Error('invalid-rendezvous-nonce');
+                if (!Number.isSafeInteger(expiresAt) || expiresAt < 0)
+                    throw new Error('invalid-rendezvous-expiry');
+                return bunker.provisionRendezvous(getPublicKey(this.clientSecretKey), index, base64UrlNoPad(nonce), expiresAt);
+            },
         };
     }
     async signEvent(template) {
@@ -127,6 +136,25 @@ export class BunkerSignerImpl {
     async close() {
         await this.bunker.close();
     }
+}
+/** Browser and Node compatible, unpadded RFC 4648 URL base64 for the
+ * fixed-size public replay nonce. Keeping it here avoids exposing either the
+ * NIP-46 client secret or a generic device-key cryptography method. */
+function base64UrlNoPad(bytes) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let output = '';
+    for (let offset = 0; offset < bytes.length; offset += 3) {
+        const first = bytes[offset];
+        const second = bytes[offset + 1];
+        const third = bytes[offset + 2];
+        output += alphabet[first >>> 2];
+        output += alphabet[((first & 3) << 4) | ((second ?? 0) >>> 4)];
+        if (second !== undefined)
+            output += alphabet[((second & 15) << 2) | ((third ?? 0) >>> 6)];
+        if (third !== undefined)
+            output += alphabet[third & 63];
+    }
+    return output;
 }
 const NIP46_PAIRING_WAIT_MS = 5 * 60000;
 const NIP46_REQUEST_TIMEOUT_MS = 15000;
@@ -502,6 +530,9 @@ class RobustBunkerClient {
     }
     async nip44Decrypt(peerPubkey, ciphertext) {
         return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext]);
+    }
+    async provisionRendezvous(targetDevicePubkey, index, nonce, expiresAt) {
+        return this.sendRequest('heartwood_provision_rendezvous', [targetDevicePubkey, index, nonce, expiresAt]);
     }
     async ping() {
         const response = await this.sendRequest('ping', []);
@@ -909,6 +940,7 @@ export class DeferredBunkerSigner {
             ping: async () => (await this.live()).nip46.ping(),
             switchRelays: async () => (await this.live()).nip46.switchRelays(),
             logout: async () => (await this.live()).nip46.logout(),
+            provisionRendezvous: async (index, nonce, expiresAt) => (await this.live()).nip46.provisionRendezvous(index, nonce, expiresAt),
         };
     }
     async live() {
