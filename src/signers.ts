@@ -126,6 +126,12 @@ interface Nip46SignerClient {
   nip04Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
   nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
   nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+  /**
+   * Purpose-specific extension for Heartwood's Vennel rendezvous provision
+   * operation. Keeping it here rather than exposing sendRequest prevents a
+   * caller from using the bunker transport as a generic signing oracle.
+   */
+  provisionRendezvous(targetDevicePubkey: string, index: number, nonce: string, expiresAt: number): Promise<string>;
   ping(): Promise<void>;
   switchRelays(): Promise<boolean>;
   logout(): Promise<void>;
@@ -160,6 +166,12 @@ export class BunkerSignerImpl implements SignetSigner {
       ping: () => bunker.ping(),
       switchRelays: () => bunker.switchRelays(),
       logout: () => bunker.logout(),
+      provisionRendezvous: (index, nonce, expiresAt) => {
+        if (!Number.isSafeInteger(index) || index < 0 || index > 0xffffffff) throw new Error('invalid-rendezvous-index');
+        if (!(nonce instanceof Uint8Array) || nonce.length !== 16) throw new Error('invalid-rendezvous-nonce');
+        if (!Number.isSafeInteger(expiresAt) || expiresAt < 0) throw new Error('invalid-rendezvous-expiry');
+        return bunker.provisionRendezvous(getPublicKey(this.clientSecretKey), index, base64UrlNoPad(nonce), expiresAt);
+      },
     };
   }
 
@@ -186,6 +198,24 @@ export class BunkerSignerImpl implements SignetSigner {
   async close(): Promise<void> {
     await this.bunker.close();
   }
+}
+
+/** Browser and Node compatible, unpadded RFC 4648 URL base64 for the
+ * fixed-size public replay nonce. Keeping it here avoids exposing either the
+ * NIP-46 client secret or a generic device-key cryptography method. */
+function base64UrlNoPad(bytes: Uint8Array): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let output = '';
+  for (let offset = 0; offset < bytes.length; offset += 3) {
+    const first = bytes[offset]!;
+    const second = bytes[offset + 1];
+    const third = bytes[offset + 2];
+    output += alphabet[first >>> 2]!;
+    output += alphabet[((first & 3) << 4) | ((second ?? 0) >>> 4)]!;
+    if (second !== undefined) output += alphabet[((second & 15) << 2) | ((third ?? 0) >>> 6)]!;
+    if (third !== undefined) output += alphabet[third & 63]!;
+  }
+  return output;
 }
 
 const NIP46_PAIRING_WAIT_MS = 5 * 60_000;
@@ -525,7 +555,7 @@ class RobustBunkerClient implements Nip46SignerClient {
     }
   }
 
-  private async sendRequest(method: string, params: string[]): Promise<string> {
+  private async sendRequest(method: string, params: unknown[]): Promise<string> {
     if (this.closed) throw new Error('this signer is not open anymore, create a new one');
     this.setupSubscription();
     const id = `${this.idPrefix}-${++this.serial}`;
@@ -618,6 +648,10 @@ class RobustBunkerClient implements Nip46SignerClient {
 
   async nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string> {
     return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext]);
+  }
+
+  async provisionRendezvous(targetDevicePubkey: string, index: number, nonce: string, expiresAt: number): Promise<string> {
+    return this.sendRequest('heartwood_provision_rendezvous', [targetDevicePubkey, index, nonce, expiresAt]);
   }
 
   async ping(): Promise<void> {
@@ -1060,6 +1094,7 @@ export class DeferredBunkerSigner implements SignetSigner {
       ping: async () => (await this.live()).nip46!.ping(),
       switchRelays: async () => (await this.live()).nip46!.switchRelays(),
       logout: async () => (await this.live()).nip46!.logout(),
+      provisionRendezvous: async (index, nonce, expiresAt) => (await this.live()).nip46!.provisionRendezvous(index, nonce, expiresAt),
     };
   }
 
