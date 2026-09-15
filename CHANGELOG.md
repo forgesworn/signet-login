@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0 (2026-09-15)
+
+### Features
+
+- add scoped rendezvous provision operation
+
+
+
 ## 0.16.1 (2026-09-11)
 
 ### Bug Fixes
