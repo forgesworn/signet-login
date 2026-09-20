@@ -295,11 +295,21 @@ function firstFulfilled<T>(promises: Promise<T>[]): Promise<T> {
         rejected += 1;
         lastError = err;
         if (rejected === promises.length) {
-          reject(lastError instanceof Error ? lastError : new Error(String(lastError)));
+          reject(lastError);
         }
       });
     }
   });
+}
+
+const NIP46_PUBLISH_RETRY_BUDGET_MS = 20_000;
+
+function retryableNip46PublishFailure(error: unknown): boolean {
+  // nostr-tools uses raw strings for connection establishment failures and
+  // Error instances for an explicit relay OK false. Preserve that boundary:
+  // transport recovery must never turn a real relay refusal into a retry loop.
+  return error === 'connection failure: connection timed out'
+    || error === 'connection failure: connection failed';
 }
 
 function parseNostrConnectUriForClient(uri: string, clientPubkey: string): {
@@ -522,6 +532,26 @@ class RobustBunkerClient implements Nip46SignerClient {
     this.sub = sub;
   }
 
+  private async publishRequest(event: NostrEvent): Promise<void> {
+    const started = Date.now();
+    let delayMs = 250;
+    for (;;) {
+      try {
+        await firstFulfilled(this.pool.publish(this.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }));
+        return;
+      } catch (error) {
+        if (!retryableNip46PublishFailure(error) || Date.now() - started + delayMs > NIP46_PUBLISH_RETRY_BUDGET_MS) throw error;
+        this.sub?.close('reconnect after failed publish');
+        this.sub = undefined;
+        this.pool.close(this.relays);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        if (this.closed) throw new Error('bunker-closed');
+        this.setupSubscription();
+        delayMs = Math.min(delayMs * 2, 2_000);
+      }
+    }
+  }
+
   private handleResponseEvent(event: NostrEvent): void {
     try {
       const response = JSON.parse(nip44Decrypt(event.content, this.conversationKey)) as Nip46Response;
@@ -594,7 +624,7 @@ class RobustBunkerClient implements Nip46SignerClient {
       requestId: id,
     });
 
-    void firstFulfilled(this.pool.publish(this.relays, event, { maxWait: NIP46_REQUEST_TIMEOUT_MS }))
+    void this.publishRequest(event)
       .catch(() => {
         const listener = this.listeners.get(id);
         if (!listener) return;

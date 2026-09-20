@@ -8,7 +8,7 @@ const h = vi.hoisted(() => {
     signerSecretKey,
     signerPubkey: '',
     connection: 'success' as 'success' | 'fail',
-    mode: 'respond' as 'respond' | 'hang',
+    mode: 'respond' as 'respond' | 'hang' | 'fail-once' | 'refuse',
     subscriptions: [] as Array<{
       relays: string[];
       handlers: {
@@ -19,6 +19,8 @@ const h = vi.hoisted(() => {
     closeReasons: [] as string[],
     destroys: 0,
     publishedMethods: [] as string[],
+    publishAttempts: 0,
+    poolCloses: 0,
   };
 });
 
@@ -44,6 +46,12 @@ vi.mock('nostr-tools/pool', async () => {
         };
       },
       publish: (_relays: string[], event: { pubkey: string; content: string }) => {
+        h.publishAttempts += 1;
+        if (h.mode === 'fail-once') {
+          h.mode = 'respond';
+          return [Promise.reject('connection failure: connection failed')];
+        }
+        if (h.mode === 'refuse') return [Promise.reject(new Error('connection failure: connection failed'))];
         if (h.mode === 'respond') {
           queueMicrotask(() => {
             const conversationKey = getConversationKey(h.signerSecretKey, event.pubkey);
@@ -69,6 +77,9 @@ vi.mock('nostr-tools/pool', async () => {
           });
         }
         return [Promise.resolve('ok')];
+      },
+      close: () => {
+        h.poolCloses += 1;
       },
       destroy: () => {
         h.destroys += 1;
@@ -127,6 +138,8 @@ describe('NostrConnect status events', () => {
     h.closeReasons = [];
     h.destroys = 0;
     h.publishedMethods = [];
+    h.publishAttempts = 0;
+    h.poolCloses = 0;
   });
 
   afterEach(() => {
@@ -197,6 +210,41 @@ describe('NostrConnect status events', () => {
         message: 'nostrconnect-timeout',
       }),
     ]));
+  });
+
+  it('rebuilds stale relay sockets and republishes the same NIP-46 request', async () => {
+    vi.useFakeTimers();
+    const key = clientSecretKey();
+    const uri = pairingUri(key);
+    const pending = createBunkerSignerFromNostrConnect({ uri, clientSecretKey: key, timeoutMs: 5_000 });
+    approvePairing(uri, key);
+    const signer = await pending;
+    const before = h.publishAttempts;
+    h.mode = 'fail-once';
+
+    const signing = signer.signEvent({ kind: 1, content: 'retry once', tags: [], created_at: 1_700_000_000 });
+    await vi.advanceTimersByTimeAsync(251);
+
+    await expect(signing).resolves.toMatchObject({ pubkey: h.signerPubkey, content: 'retry once' });
+    expect(h.publishAttempts - before).toBe(2);
+    expect(h.poolCloses).toBe(1);
+    await signer.close();
+  });
+
+  it('does not retry an explicit relay refusal with connection-failure wording', async () => {
+    const key = clientSecretKey();
+    const uri = pairingUri(key);
+    const pending = createBunkerSignerFromNostrConnect({ uri, clientSecretKey: key, timeoutMs: 5_000 });
+    approvePairing(uri, key);
+    const signer = await pending;
+    const before = h.publishAttempts;
+    h.mode = 'refuse';
+
+    await expect(signer.signEvent({ kind: 1, content: 'refused', tags: [], created_at: 1_700_000_000 }))
+      .rejects.toThrow('nip46-sign_event-publish-failed');
+    expect(h.publishAttempts - before).toBe(1);
+    expect(h.poolCloses).toBe(0);
+    await signer.close();
   });
 
   it('closes the RobustBunkerClient if getPublicKey fails after pairing succeeds', async () => {
