@@ -21,6 +21,7 @@ import {
   loadOrCreatePersistentClientSkFromStorage,
   saveSessionToStorage,
 } from '../src/storage.js';
+import { STORAGE_KEYS } from '../src/types.js';
 import type { NostrConnectStatus, SignetStorage } from '../src/types.js';
 
 type RelayRequest = ['REQ', string, ...Filter[]];
@@ -351,7 +352,11 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     relay = undefined;
   });
 
-  it('pairs with nostrconnect:// once, persists bunker://, and restores signing plus NIP-44 without limit-zero live delivery', async () => {
+  it.each([
+    { label: 'global key absent', mutateGlobal: 'remove' as const },
+    { label: 'global key same as session', mutateGlobal: 'same' as const },
+    { label: 'global key different from session', mutateGlobal: 'different' as const },
+  ])('pairs with nostrconnect:// once, persists bunker://, and restores signing plus NIP-44 without limit-zero live delivery ($label)', async ({ mutateGlobal }) => {
     relay = await LocalNostrRelay.start({ dropLimitZeroLiveEvents: true });
     testSigner = new TestNip46Signer(relay.url, generateSecretKey());
     await testSigner.start();
@@ -398,6 +403,20 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     }, storage);
     await pairedSigner.close();
 
+    const sessionKeyHex = bytesToHexLocal(pairedSigner.clientSecretKey);
+    let expectedGlobalKey: string | null = await storage.getItem(STORAGE_KEYS.clientSk);
+    if (mutateGlobal === 'remove') {
+      await storage.removeItem(STORAGE_KEYS.clientSk);
+      expectedGlobalKey = null;
+    } else if (mutateGlobal === 'different') {
+      const otherKey = bytesToHexLocal(generateSecretKey());
+      await storage.setItem(STORAGE_KEYS.clientSk, otherKey);
+      expectedGlobalKey = otherKey;
+    } else if (mutateGlobal === 'same') {
+      await storage.setItem(STORAGE_KEYS.clientSk, sessionKeyHex);
+      expectedGlobalKey = sessionKeyHex;
+    }
+
     const restoreStatuses: NostrConnectStatus[] = [];
     const restored = await restoreSession({
       storage,
@@ -406,6 +425,9 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     expect(restored?.pubkey).toBe(testSigner.pubkey);
     expect(restored?.method).toBe('bunker');
     expect(restored?.signer.capabilities).toEqual({ canSignEvents: true, hasNip44: true });
+    const restoredClientSkHex = bytesToHexLocal((restored!.signer as { clientSecretKey: Uint8Array }).clientSecretKey);
+    expect(restoredClientSkHex).toBe(sessionKeyHex);
+    expect(await storage.getItem(STORAGE_KEYS.clientSk)).toBe(expectedGlobalKey);
     expect(testSigner.connectRequests).toBe(1);
     expect(restoreStatuses).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'request-sent', method: 'connect' }),

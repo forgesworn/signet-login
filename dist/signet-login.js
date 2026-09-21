@@ -16,7 +16,7 @@
  */
 import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
-import { saveSessionToStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
+import { saveSessionToStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, decodeClientSecretKey, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
 import { consumeAmberCallbackFromStorage } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
@@ -199,14 +199,20 @@ export async function restoreSession(opts) {
             await clearSessionFromStorage(opts?.storage);
             return null;
         }
+        const clientSecretKey = decodeClientSecretKey(stored.bunkerClientSkHex);
+        if (!clientSecretKey) {
+            console.warn('[signet-login] restore: stored bunker clientSk is corrupt — clearing.');
+            await clearSessionFromStorage(opts?.storage);
+            return null;
+        }
         try {
-            // Reconnect with the browser's persistent client key (not the
-            // session-stored one) so the client pubkey stays stable across logins
-            // and remains bound/auto-approved by the signer. For sessions created
-            // by this version the two are identical; legacy sessions converge here.
+            // Reconnect with the SESSION'S stored client key. The global
+            // `STORAGE_KEYS.clientSk` is only for new logins/pairings — restore must
+            // never read or write it, so an explicit `clearPersistentClientSk()`
+            // stays effective and a legacy session key is never lost to migration.
             const signer = await createBunkerSigner({
                 uri: stored.bunkerUri,
-                clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts?.storage),
+                clientSecretKey,
                 onStatus: opts?.onNostrConnectStatus,
             });
             if (signer.pubkey !== stored.pubkey) {
