@@ -187,9 +187,11 @@ export async function loadSessionFromStorage(storage) {
  *
  * Note: `clientSk` (the persistent NIP-46 client identity, see
  * `loadOrCreatePersistentClientSk`) is deliberately NOT cleared. It is the
- * browser's stable transport identity to bunkers, not session state — keeping
- * it means a re-login presents the same client pubkey and stays auto-approved
- * by the signer. Use `clearPersistentClientSk` for an explicit reset. */
+ * browser's stable transport identity used for NEW logins/pairings, not
+ * session state — keeping it means a fresh login presents the same client
+ * pubkey and stays auto-approved by the signer. Restoring an existing session
+ * uses the session's own `bunkerClientSk` and never touches `clientSk`.
+ * Use `clearPersistentClientSk` for an explicit reset. */
 export function clearSession() {
     safeRemove(STORAGE_KEYS.pubkey);
     safeRemove(STORAGE_KEYS.method);
@@ -217,10 +219,12 @@ export async function clearSessionFromStorage(storage) {
 }
 /**
  * Load the persistent NIP-46 client secret key for this browser/origin,
- * generating and storing one on first use. Reused across every bunker connect
- * (paste, redirect upgrade, QR upgrade, nostrconnect, restore) so the client
- * pubkey is stable. A bunker that auto-approves a bound client pubkey per slot
- * (e.g. Heartwood) then keeps auto-approving instead of prompting per request.
+ * generating and storing one on first use. Used for NEW logins/pairings
+ * (paste, redirect upgrade, QR upgrade, nostrconnect) so the client pubkey
+ * is stable across fresh connections. A bunker that auto-approves a bound
+ * client pubkey per slot (e.g. Heartwood) then keeps auto-approving instead
+ * of prompting per request. NOT used by session restore — a stored session
+ * reconnects with its own persisted `bunkerClientSk`.
  *
  * Survives logout. If localStorage is unavailable (private mode, quota) a fresh
  * ephemeral key is returned each call — degrades to the old behaviour rather
@@ -264,6 +268,20 @@ export function clearPersistentClientSk() {
 /** Async-storage variant of `clearPersistentClientSk`. */
 export async function clearPersistentClientSkFromStorage(storage) {
     await safeRemoveFrom(storage, STORAGE_KEYS.clientSk);
+}
+/**
+ * Strictly decode a 64-hex client secret key. Returns null for missing,
+ * malformed hex values. Never falls back to a different key.
+ */
+export function decodeClientSecretKey(hex) {
+    if (!hex || !/^[0-9a-f]{64}$/i.test(hex))
+        return null;
+    try {
+        return hexToBytesLocal(hex);
+    }
+    catch {
+        return null;
+    }
 }
 // ── Pending-redirect persistence ──────────────────────────────────────────────
 /**

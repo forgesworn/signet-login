@@ -27,18 +27,22 @@ export declare function loadSessionFromStorage(storage?: SignetStorage): Promise
  *
  * Note: `clientSk` (the persistent NIP-46 client identity, see
  * `loadOrCreatePersistentClientSk`) is deliberately NOT cleared. It is the
- * browser's stable transport identity to bunkers, not session state — keeping
- * it means a re-login presents the same client pubkey and stays auto-approved
- * by the signer. Use `clearPersistentClientSk` for an explicit reset. */
+ * browser's stable transport identity used for NEW logins/pairings, not
+ * session state — keeping it means a fresh login presents the same client
+ * pubkey and stays auto-approved by the signer. Restoring an existing session
+ * uses the session's own `bunkerClientSk` and never touches `clientSk`.
+ * Use `clearPersistentClientSk` for an explicit reset. */
 export declare function clearSession(): void;
 /** Async-storage variant of `clearSession`. */
 export declare function clearSessionFromStorage(storage?: SignetStorage): Promise<void>;
 /**
  * Load the persistent NIP-46 client secret key for this browser/origin,
- * generating and storing one on first use. Reused across every bunker connect
- * (paste, redirect upgrade, QR upgrade, nostrconnect, restore) so the client
- * pubkey is stable. A bunker that auto-approves a bound client pubkey per slot
- * (e.g. Heartwood) then keeps auto-approving instead of prompting per request.
+ * generating and storing one on first use. Used for NEW logins/pairings
+ * (paste, redirect upgrade, QR upgrade, nostrconnect) so the client pubkey
+ * is stable across fresh connections. A bunker that auto-approves a bound
+ * client pubkey per slot (e.g. Heartwood) then keeps auto-approving instead
+ * of prompting per request. NOT used by session restore — a stored session
+ * reconnects with its own persisted `bunkerClientSk`.
  *
  * Survives logout. If localStorage is unavailable (private mode, quota) a fresh
  * ephemeral key is returned each call — degrades to the old behaviour rather
@@ -51,6 +55,11 @@ export declare function loadOrCreatePersistentClientSkFromStorage(storage?: Sign
 export declare function clearPersistentClientSk(): void;
 /** Async-storage variant of `clearPersistentClientSk`. */
 export declare function clearPersistentClientSkFromStorage(storage?: SignetStorage): Promise<void>;
+/**
+ * Strictly decode a 64-hex client secret key. Returns null for missing,
+ * malformed hex values. Never falls back to a different key.
+ */
+export declare function decodeClientSecretKey(hex: string | null | undefined): Uint8Array | null;
 /**
  * Persist the in-flight redirect state. Called immediately before navigating
  * to signet-app so the callback consumer can validate the round-trip.
