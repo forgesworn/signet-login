@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.1 (2026-09-21)
+
+### Bug Fixes
+
+- restore bunker sessions with their paired client key (#47)
+
+
+
 ## 0.17.0 (2026-09-15)
 
 ### Features
