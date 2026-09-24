@@ -1,0 +1,60 @@
+# Signet Access
+
+> Nostr-aware websites need a login flow that works across a browser
+> extension, a phone, or a bare nsec, but each signer type has its own
+> pairing dance and failure modes. Signet Access (`signet-login`) is a
+> drop-in auth and signer-access SDK that puts all of them behind one
+> picker and one session shape.
+
+Signet Access is for web apps that want a user to prove and keep a Nostr
+identity: games, tools, or anything that signs events or pays sats on the
+user's behalf. It shows one login picker for NIP-07 extensions, local or
+remote Signet (QR/redirect), app-initiated NIP-46/NostrConnect, pasted
+bunker URIs, Android Amber (NIP-55), and an in-memory nsec/ncryptsec
+fallback, then returns a unified `SignetSigner` plus a signed kind-21236
+auth proof the server can verify.
+
+## Getting Started
+
+```bash
+npm install signet-login
+```
+
+```js
+import { login } from 'signet-login';
+
+const session = await login({ appName: 'My Game' });
+if (!session) return; // user cancelled
+
+const signed = await session.signer.signEvent({
+  kind: 30762,
+  content: '',
+  tags: [['p', session.pubkey]],
+});
+```
+
+A CDN IIFE build is also available; see the README's Install section.
+
+## Key Concepts
+
+- **`SignetSession`**: the result of a successful login: `pubkey`, `method`, a `signer`, and a signed `authEvent`.
+- **`SignetSigner`**: the common interface every signer type implements (`signEvent`, optional `nip44`, `capabilities.canSignEvents`).
+- **`nostrconnect://` vs `bunker://`**: two NIP-46 URI directions, the app-initiated pairing URI and the signer-initiated reconnect URI.
+- **Server-side verification**: `signet-login/verify`'s `verifyLogin` checks the schnorr signature, event ID, challenge, and origin before a server trusts a login.
+- **Ephemeral vs live signers**: some flows (redirect/QR/Amber) only prove identity (`canSignEvents: false`); others keep a live signer for ongoing signing.
+
+## API Surface
+
+- `login(options)`, `restoreSession(opts?)`, `logout(session?, opts?)`, `handleCallback(opts?)`, `handleRedirectCallback(options?)`
+- `createLoginAuthEvent(...)`, `createSessionFromSigner(signer, options)`
+- Headless signer constructors: `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `createLocalSignerFromNsec`
+- URI helpers: `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`
+- `signet-login/verify`: `verifyLogin(authEvent, options)` for server-side verification
+- IIFE builds attach the same exports to `window.Signet`
+
+## Optional
+
+- Full API and options reference: README.md
+- Amber/NIP-55 policy: docs/amber-policy.md
+- Release process: docs/release-app.md
+- Changelog: CHANGELOG.md

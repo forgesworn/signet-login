@@ -20,7 +20,8 @@
   },
   "files": [
     "dist",
-    "examples"
+    "examples",
+    "llms.txt"
   ],
   "publishConfig": {
     "provenance": true
