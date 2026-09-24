@@ -70,6 +70,7 @@
     "sign-in-with-signet"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/forgesworn/signet-login#readme",
   "repository": {
     "type": "git",
     "url": "https://github.com/forgesworn/signet-login.git"
