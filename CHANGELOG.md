@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.2 (2026-09-24)
+
+### Documentation
+
+- ship `llms.txt` in the package, an API summary for coding agents
+- import `randomBytes` and `verifyLogin` in the README server example
+
+
 ## 0.17.1 (2026-09-21)
 
 ### Bug Fixes
