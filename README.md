@@ -406,8 +406,11 @@ The verifier checks: schnorr signature, canonical event ID, kind=21236, challeng
 3. **Delete it as soon as `verifyLogin` returns valid**, so a second proof bearing it is rejected.
 
 ```ts
-// server
-const challenge = crypto.randomBytes(32).toString('hex');
+// server (Node)
+import { randomBytes } from 'node:crypto';
+import { verifyLogin } from 'signet-login/verify';
+
+const challenge = randomBytes(32).toString('hex');
 await pendingLogins.set(sessionId, challenge, { ttlSeconds: 300 });
 // → hand `challenge` to the browser, which passes it to Signet.login({ challenge })
 
