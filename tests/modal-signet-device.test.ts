@@ -57,7 +57,7 @@ describe('same-device Signet modal flow', () => {
       appName: 'Pallasite',
       theme: 'dark',
       preferredMethod: 'local-signet',
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       signetAppOrigin: 'https://mysignet.app',
       persist: false,
     });
@@ -72,7 +72,7 @@ describe('same-device Signet modal flow', () => {
     const url = new URL(link!.href);
     expect(url.origin).toBe('https://mysignet.app');
     expect(url.searchParams.get('auth')).toBe('1');
-    expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
+    expect(url.searchParams.get('relay')).toBe('wss://relay.example.com');
     expect(url.searchParams.get('sessionPubkey')).toMatch(/^[0-9a-f]{64}$/);
 
     expect(vi.mocked(waitForAuthResponse).mock.invocationCallOrder.at(-1))
@@ -83,7 +83,7 @@ describe('same-device Signet modal flow', () => {
       'noopener,noreferrer',
     );
     expect(waitForAuthResponse).toHaveBeenCalledWith(expect.objectContaining({
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       expectedOrigin: window.location.origin,
     }));
 
@@ -96,7 +96,7 @@ describe('same-device Signet modal flow', () => {
       appName: 'Pallasite',
       theme: 'dark',
       preferredMethod: 'local-signet',
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       relayUrls: ['wss://relay.primal.net', 'wss://nos.lol'],
       signetAppOrigin: 'https://mysignet.app',
       persist: false,
@@ -107,9 +107,9 @@ describe('same-device Signet modal flow', () => {
     expect(link).toBeInstanceOf(HTMLAnchorElement);
 
     const url = new URL(link!.href);
-    expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
+    expect(url.searchParams.get('relay')).toBe('wss://relay.example.com');
     expect(waitForAuthResponse).toHaveBeenCalledWith(expect.objectContaining({
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
     }));
 
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
@@ -121,7 +121,7 @@ describe('same-device Signet modal flow', () => {
       appName: 'Pallasite',
       theme: 'dark',
       preferredMethod: 'redirect',
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       signetAppOrigin: 'https://mysignet.app',
       persist: false,
     });
@@ -130,7 +130,7 @@ describe('same-device Signet modal flow', () => {
     const link = document.getElementById('signet-login-open-signet') as HTMLAnchorElement | null;
     expect(link).toBeInstanceOf(HTMLAnchorElement);
     const url = new URL(link!.href);
-    expect(url.searchParams.get('relay')).toBe('wss://relay.trotters.cc');
+    expect(url.searchParams.get('relay')).toBe('wss://relay.example.com');
     expect(url.searchParams.get('sessionPubkey')).toMatch(/^[0-9a-f]{64}$/);
 
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
@@ -142,7 +142,7 @@ describe('same-device Signet modal flow', () => {
       appName: 'Pallasite',
       theme: 'dark',
       preferredMethod: 'local-signet',
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       signetAppOrigin: 'https://mysignet.app',
       persist: false,
     });
@@ -175,7 +175,7 @@ describe('same-device Signet modal flow', () => {
       const pending = login({
         appName: 'Pallasite',
         theme: 'dark',
-        relayUrl: 'wss://relay.trotters.cc',
+        relayUrl: 'wss://relay.example.com',
         signetAppOrigin: 'https://mysignet.app',
         persist: false,
       });
