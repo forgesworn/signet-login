@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.3 (2026-09-25)
+
+### Bug Fixes
+
+- default cross-device relay to nos.lol via signet-verify 0.7.1 (#49)
+
+
+
 ## 0.17.2 (2026-09-24)
 
 ### Documentation
