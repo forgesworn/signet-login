@@ -586,11 +586,12 @@ describe('the relay the cross-device sign-in uses', () => {
     document.body.innerHTML = '';
   });
 
-  it("defaults to the Signet app's own relay, which serves gift wraps", async () => {
+  it('defaults to a public relay that serves gift wraps', async () => {
     // The default was relay.damus.io. It accepts the signer's gift wrap, then
     // refuses kind-1059 reads to an unauthenticated client — and its AUTH is
     // misconfigured, so no client can fetch one. Every cross-device sign-in on
-    // the default failed, silently. relay.trotters.cc is what signet-app uses.
+    // the default failed, silently. nos.lol serves them without AUTH, and the
+    // Signet app replies on whichever relay the request names.
     const pending = login({
       appName: 'Pallasite',
       challenge: CHALLENGE,
@@ -601,7 +602,7 @@ describe('the relay the cross-device sign-in uses', () => {
     await settleMicrotasks();
 
     try {
-      expect(lastWaitCall().relayUrl).toBe('wss://relay.trotters.cc');
+      expect(lastWaitCall().relayUrl).toBe('wss://nos.lol');
     } finally {
       await cancelAndDrain(pending);
     }

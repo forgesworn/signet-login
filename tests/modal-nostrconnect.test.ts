@@ -74,8 +74,8 @@ describe('NostrConnect modal flow', () => {
       theme: 'dark',
       persist: false,
       preferredMethod: 'nostrconnect',
-      relayUrl: 'wss://relay.trotters.cc',
-      relayUrls: ['wss://relay.primal.net', 'wss://relay.trotters.cc'],
+      relayUrl: 'wss://relay.example.com',
+      relayUrls: ['wss://relay.primal.net', 'wss://relay.example.com'],
     });
 
     const qr = await waitForElement<HTMLCanvasElement>('#signet-login-nc-qr');
@@ -92,7 +92,7 @@ describe('NostrConnect modal flow', () => {
     const parsed = new URL(uriText.value);
     expect(parsed.searchParams.getAll('relay')).toEqual([
       'wss://relay.primal.net',
-      'wss://relay.trotters.cc',
+      'wss://relay.example.com',
     ]);
     expect(uriText.value).toContain('name=Canary');
 
@@ -122,7 +122,7 @@ describe('NostrConnect modal flow', () => {
       theme: 'dark',
       persist: false,
       preferredMethod: 'nostrconnect',
-      relayUrl: 'wss://relay.trotters.cc',
+      relayUrl: 'wss://relay.example.com',
       timeout: 7_000,
       onNostrConnectStatus: event => events.push(event),
     });
@@ -137,16 +137,16 @@ describe('NostrConnect modal flow', () => {
     call!.onStatus?.({
       type: 'relay-connected',
       timestamp: 1,
-      relays: ['wss://relay.trotters.cc'],
-      relay: 'wss://relay.trotters.cc',
+      relays: ['wss://relay.example.com'],
+      relay: 'wss://relay.example.com',
     });
 
     const status = await waitForElement<HTMLElement>('#signet-login-nc-status');
-    expect(status.textContent).toContain('Connected to relay wss://relay.trotters.cc');
+    expect(status.textContent).toContain('Connected to relay wss://relay.example.com');
     expect(events).toEqual([
       expect.objectContaining({
         type: 'relay-connected',
-        relay: 'wss://relay.trotters.cc',
+        relay: 'wss://relay.example.com',
       }),
     ]);
 
