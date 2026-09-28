@@ -105,11 +105,16 @@ export class BunkerSignerImpl {
         };
     }
     async signEvent(template) {
-        // BunkerSigner.signEvent expects EventTemplate with required created_at + tags.
-        // Strip any pubkey field, fill in defaults if omitted.
+        // Build the event for the bunker to sign. SET pubkey to the signer's own key
+        // rather than stripping it: some signers (e.g. Signet mobile) sign the event
+        // as-given and don't fill pubkey themselves, returning `pubkey:""` — which
+        // then fails verifyEvent ("event returned from bunker is improperly signed").
+        // Providing the key-owner's own pubkey is correct NIP-01 construction and is
+        // harmless to bunkers that set it themselves (it's the same value).
         const { pubkey: _omit, ...rest } = template;
         void _omit;
         const filled = {
+            pubkey: this.pubkey,
             kind: rest.kind,
             content: rest.content,
             created_at: rest.created_at ?? Math.floor(Date.now() / 1000),
@@ -413,6 +418,9 @@ class RobustBunkerClient {
             content,
             created_at: Math.floor(Date.now() / 1000),
         }, this.clientSecretKey);
+        // Signing may require switching apps, unlocking and reviewing consent.
+        // Relay publication and machine-only operations retain their short deadline.
+        const responseTimeoutMs = method === 'sign_event' ? 180000 : NIP46_REQUEST_TIMEOUT_MS;
         const response = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.listeners.delete(id);
@@ -422,12 +430,12 @@ class RobustBunkerClient {
                     phase: 'request',
                     method,
                     requestId: id,
-                    timeoutMs: NIP46_REQUEST_TIMEOUT_MS,
+                    timeoutMs: responseTimeoutMs,
                     message: err.message,
                     error: err,
                 });
                 reject(err);
-            }, NIP46_REQUEST_TIMEOUT_MS);
+            }, responseTimeoutMs);
             this.listeners.set(id, { resolve, reject, timer, method });
         });
         this.emit({

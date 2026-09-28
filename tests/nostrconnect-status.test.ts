@@ -9,6 +9,8 @@ const h = vi.hoisted(() => {
     signerPubkey: '',
     connection: 'success' as 'success' | 'fail',
     mode: 'respond' as 'respond' | 'hang',
+    signDelayMs: 0,
+    confirmAuthority: false,
     subscriptions: [] as Array<{
       relays: string[];
       handlers: {
@@ -57,7 +59,9 @@ vi.mock('nostr-tools/pool', async () => {
             if (request.method === 'get_public_key') {
               result = h.signerPubkey;
             } else if (request.method === 'sign_event') {
-              result = JSON.stringify(finalizeEvent(JSON.parse(request.params[0]), h.signerSecretKey));
+              const template = JSON.parse(request.params[0]);
+              if (h.confirmAuthority) template.tags = template.tags.map((t: string[]) => t[0] === 'approval' ? ['approval', 'confirmed'] : t);
+              result = JSON.stringify(finalizeEvent(template, h.signerSecretKey));
             }
             const response = finalizeEvent({
               kind: NostrConnect,
@@ -65,7 +69,9 @@ vi.mock('nostr-tools/pool', async () => {
               content: encrypt(JSON.stringify({ id: request.id, result }), conversationKey),
               created_at: Math.floor(Date.now() / 1000),
             }, h.signerSecretKey);
-            h.subscriptions.at(-1)?.handlers.onevent?.(response);
+            const deliver = () => h.subscriptions.at(-1)?.handlers.onevent?.(response);
+            if (request.method === 'sign_event' && h.signDelayMs) setTimeout(deliver, h.signDelayMs);
+            else deliver();
           });
         }
         return [Promise.resolve('ok')];
@@ -123,6 +129,8 @@ describe('NostrConnect status events', () => {
     h.signerPubkey = getPublicKey(h.signerSecretKey);
     h.connection = 'success';
     h.mode = 'respond';
+    h.signDelayMs = 0;
+    h.confirmAuthority = false;
     h.subscriptions = [];
     h.closeReasons = [];
     h.destroys = 0;
@@ -261,4 +269,38 @@ describe('NostrConnect status events', () => {
       }),
     ]));
   });
+  it.each(['family-authorisation', 'child-selection', 'parent-presence'])('accepts a %s consent reviewed beyond the network deadline', async purpose => {
+    vi.useFakeTimers();
+    const key = clientSecretKey(), uri = pairingUri(key);
+    const pending = createBunkerSignerFromNostrConnect({ uri, clientSecretKey: key });
+    approvePairing(uri, key);
+    const signer = await pending;
+    h.signDelayMs = 20_000;
+    h.confirmAuthority = true;
+    const signing = signer.signEvent({ kind: 30078, created_at: 1700000000,
+      tags: [['d', `kin-jar/${purpose}/v2/${'a'.repeat(64)}`], ['approval', 'request']], content: 'Explicit consent', });
+    await vi.advanceTimersByTimeAsync(20_000);
+    const signed = await signing;
+    expect(signed.tags).toContainEqual(['approval', 'confirmed']);
+    expect(signed.pubkey).toBe(h.signerPubkey);
+    await signer.close();
+  });
+
+  it('bounds an unanswered human signing request at three minutes', async () => {
+    vi.useFakeTimers();
+    const key = clientSecretKey(), uri = pairingUri(key), events: NostrConnectStatus[] = [];
+    const pending = createBunkerSignerFromNostrConnect({ uri, clientSecretKey: key, onStatus: e => events.push(e) });
+    approvePairing(uri, key);
+    const signer = await pending;
+    h.mode = 'hang';
+    const signing = signer.signEvent({ kind: 30078, created_at: 1700000000, tags: [], content: 'Explicit consent' });
+    const rejected = expect(signing).rejects.toThrow('nip46-sign_event-timeout');
+    await vi.advanceTimersByTimeAsync(179_999);
+    expect(events.some(e => e.type === 'timeout' && e.method === 'sign_event')).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(events).toContainEqual(expect.objectContaining({ type: 'timeout', method: 'sign_event', timeoutMs: 180_000 }));
+    await signer.close();
+  });
+
 });

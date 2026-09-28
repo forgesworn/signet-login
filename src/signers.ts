@@ -528,6 +528,9 @@ class RobustBunkerClient implements Nip46SignerClient {
       created_at: Math.floor(Date.now() / 1000),
     }, this.clientSecretKey) as NostrEvent;
 
+    // Signing may require switching apps, unlocking and reviewing consent.
+    // Relay publication and machine-only operations retain their short deadline.
+    const responseTimeoutMs = method === 'sign_event' ? 180_000 : NIP46_REQUEST_TIMEOUT_MS;
     const response = new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.listeners.delete(id);
@@ -537,12 +540,12 @@ class RobustBunkerClient implements Nip46SignerClient {
           phase: 'request',
           method,
           requestId: id,
-          timeoutMs: NIP46_REQUEST_TIMEOUT_MS,
+          timeoutMs: responseTimeoutMs,
           message: err.message,
           error: err,
         });
         reject(err);
-      }, NIP46_REQUEST_TIMEOUT_MS);
+      }, responseTimeoutMs);
       this.listeners.set(id, { resolve, reject, timer, method });
     });
     this.emit({
