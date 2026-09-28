@@ -97,6 +97,8 @@ export declare function createBunkerSignerFromNostrConnect(input: {
     abortSignal?: AbortSignal;
     timeoutMs?: number;
     onStatus?: NostrConnectStatusHandler;
+    /** Per-request response deadline; defaults to 15 seconds. */
+    requestTimeoutMs?: number;
 }): Promise<BunkerSignerImpl>;
 /**
  * Build a NIP-46 `nostrconnect://` URI for the app-initiated flow. The
@@ -136,6 +138,11 @@ export declare function createBunkerSigner(input: {
     clientSecretKey?: Uint8Array;
     onauth?: (url: string) => void;
     onStatus?: NostrConnectStatusHandler;
+    /** Optional display metadata sent as the third NIP-46 connect parameter. */
+    appName?: string;
+    appUrl?: string;
+    /** Per-request response deadline; defaults to 15 seconds, independent of timeoutMs. */
+    requestTimeoutMs?: number;
     /**
      * Bound the NIP-46 `connect` + `get_public_key` handshake, in milliseconds.
      * Omit for the interactive paste flow, where a cold remote signer may

@@ -368,10 +368,12 @@ async function waitForNostrConnectApproval(input) {
     });
 }
 class RobustBunkerClient {
-    constructor(clientSecretKey, pointer, onStatus) {
+    constructor(clientSecretKey, pointer, onStatus, requestTimeoutMs = NIP46_REQUEST_TIMEOUT_MS, appMetadata) {
         this.clientSecretKey = clientSecretKey;
         this.pointer = pointer;
         this.onStatus = onStatus;
+        this.requestTimeoutMs = requestTimeoutMs;
+        this.appMetadata = appMetadata;
         this.serial = 0;
         this.closed = false;
         this.idPrefix = Math.random().toString(36).slice(2);
@@ -382,6 +384,8 @@ class RobustBunkerClient {
          */
         this.since = Math.floor(Date.now() / 1000) - 60;
         this.listeners = new Map();
+        if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0)
+            throw new Error('invalid-request-timeout');
         this.clientPubkey = getPublicKey(clientSecretKey);
         this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
         this.relays = [...pointer.relays];
@@ -497,12 +501,12 @@ class RobustBunkerClient {
                     phase: 'request',
                     method,
                     requestId: id,
-                    timeoutMs: NIP46_REQUEST_TIMEOUT_MS,
+                    timeoutMs: this.requestTimeoutMs,
                     message: err.message,
                     error: err,
                 });
                 reject(err);
-            }, NIP46_REQUEST_TIMEOUT_MS);
+            }, this.requestTimeoutMs);
             this.listeners.set(id, { resolve, reject, timer, method });
         });
         this.emit({
@@ -532,7 +536,10 @@ class RobustBunkerClient {
         return response;
     }
     async connect() {
-        await this.sendRequest('connect', [this.pointer.pubkey, this.pointer.secret ?? '']);
+        const params = [this.pointer.pubkey, this.pointer.secret ?? ''];
+        if (this.appMetadata?.name || this.appMetadata?.url)
+            params.push(JSON.stringify(this.appMetadata));
+        await this.sendRequest('connect', params);
     }
     async getPublicKey() {
         if (!this.cachedPubkey) {
@@ -644,7 +651,7 @@ export async function createBunkerSignerFromNostrConnect(input) {
         pubkey: signerPubkey,
         relays,
         secret,
-    }, onStatus);
+    }, onStatus, input.requestTimeoutMs);
     let pubkey;
     try {
         pubkey = await bunker.getPublicKey();
@@ -791,7 +798,7 @@ export async function createBunkerSigner(input) {
     const sk = input.clientSecretKey ?? generateSecretKey();
     if (sk.length !== 32)
         throw new Error('invalid-client-secret-key');
-    const bunker = new RobustBunkerClient(sk, pointer, input.onStatus);
+    const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl });
     const handshake = (async () => {
         await bunker.connect();
         return bunker.getPublicKey();

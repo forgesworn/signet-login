@@ -554,3 +554,5 @@ MIT
 - [signet-verify](https://github.com/forgesworn/signet-verify) — age verification + cross-device auth primitives
 - [bark](https://github.com/forgesworn/bark) — NIP-07 browser extension that signs via NIP-46 to Heartwood
 - [Heartwood](https://github.com/forgesworn/heartwood) — self-hosted signing appliance
+
+For guardian approvals that need longer than the default 15-second NIP-46 response deadline, pass `requestTimeoutMs` to `createBunkerSigner` or `createBunkerSignerFromNostrConnect`. This changes the connected signer's request deadlines; `timeoutMs` still controls the separate pairing/handshake wait. Omitted request deadlines retain the existing 15-second behaviour. `createBunkerSigner` also accepts optional `appName` and `appUrl`, sent as JSON in the third `connect` parameter; omitting both preserves the two-parameter handshake. Display metadata does not confer signing permission.

@@ -490,7 +490,10 @@ class RobustBunkerClient implements Nip46SignerClient {
     private readonly clientSecretKey: Uint8Array,
     private readonly pointer: BunkerPointer,
     private readonly onStatus?: NostrConnectStatusHandler,
+    private readonly requestTimeoutMs = NIP46_REQUEST_TIMEOUT_MS,
+    private readonly appMetadata?: { name?: string; url?: string },
   ) {
+    if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) throw new Error('invalid-request-timeout');
     this.clientPubkey = getPublicKey(clientSecretKey);
     this.conversationKey = getConversationKey(clientSecretKey, pointer.pubkey);
     this.relays = [...pointer.relays];
@@ -609,12 +612,12 @@ class RobustBunkerClient implements Nip46SignerClient {
           phase: 'request',
           method,
           requestId: id,
-          timeoutMs: NIP46_REQUEST_TIMEOUT_MS,
+          timeoutMs: this.requestTimeoutMs,
           message: err.message,
           error: err,
         });
         reject(err);
-      }, NIP46_REQUEST_TIMEOUT_MS);
+      }, this.requestTimeoutMs);
       this.listeners.set(id, { resolve, reject, timer, method });
     });
     this.emit({
@@ -646,7 +649,9 @@ class RobustBunkerClient implements Nip46SignerClient {
   }
 
   async connect(): Promise<void> {
-    await this.sendRequest('connect', [this.pointer.pubkey, this.pointer.secret ?? '']);
+    const params = [this.pointer.pubkey, this.pointer.secret ?? ''];
+    if (this.appMetadata?.name || this.appMetadata?.url) params.push(JSON.stringify(this.appMetadata));
+    await this.sendRequest('connect', params);
   }
 
   async getPublicKey(): Promise<string> {
@@ -749,6 +754,8 @@ export async function createBunkerSignerFromNostrConnect(input: {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   onStatus?: NostrConnectStatusHandler;
+  /** Per-request response deadline; defaults to 15 seconds. */
+  requestTimeoutMs?: number;
 }): Promise<BunkerSignerImpl> {
   const { uri, clientSecretKey, abortSignal, timeoutMs, onStatus } = input;
   if (clientSecretKey.length !== 32) throw new Error('invalid-client-secret-key');
@@ -767,7 +774,7 @@ export async function createBunkerSignerFromNostrConnect(input: {
     pubkey: signerPubkey,
     relays,
     secret,
-  }, onStatus);
+  }, onStatus, input.requestTimeoutMs);
   let pubkey: string;
   try {
     pubkey = await bunker.getPublicKey();
@@ -916,6 +923,11 @@ export async function createBunkerSigner(input: {
   clientSecretKey?: Uint8Array;
   onauth?: (url: string) => void;
   onStatus?: NostrConnectStatusHandler;
+  /** Optional display metadata sent as the third NIP-46 connect parameter. */
+  appName?: string;
+  appUrl?: string;
+  /** Per-request response deadline; defaults to 15 seconds, independent of timeoutMs. */
+  requestTimeoutMs?: number;
   /**
    * Bound the NIP-46 `connect` + `get_public_key` handshake, in milliseconds.
    * Omit for the interactive paste flow, where a cold remote signer may
@@ -936,7 +948,7 @@ export async function createBunkerSigner(input: {
   const sk = input.clientSecretKey ?? generateSecretKey();
   if (sk.length !== 32) throw new Error('invalid-client-secret-key');
 
-  const bunker = new RobustBunkerClient(sk, pointer, input.onStatus);
+  const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl });
   const handshake = (async (): Promise<string> => {
     await bunker.connect();
     return bunker.getPublicKey();

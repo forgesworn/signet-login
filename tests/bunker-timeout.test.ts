@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
   subClose: vi.fn(),
   handlers: undefined as undefined | { onevent?: (event: unknown) => void },
   publishedMethods: [] as string[],
+  publishedParams: [] as unknown[][],
+  signingDelayMs: 0,
 }));
 
 vi.mock('nostr-tools/nip46', () => ({
@@ -42,16 +44,20 @@ vi.mock('nostr-tools/pool', async () => {
           if (h.mode === 'respond') {
             queueMicrotask(() => {
               const conversationKey = getConversationKey(signerSecretKey, event.pubkey);
-              const request = JSON.parse(decrypt(event.content, conversationKey)) as { id: string; method: string };
+              const request = JSON.parse(decrypt(event.content, conversationKey)) as { id: string; method: string; params: unknown[] };
               h.publishedMethods.push(request.method);
-              const result = request.method === 'get_public_key' ? h.signerPubkey : 'ack';
+              h.publishedParams.push(request.params);
+              const result = request.method === 'get_public_key' ? h.signerPubkey
+                : request.method === 'switch_relays' ? 'null'
+                : request.method === 'sign_event' ? JSON.stringify(finalizeEvent(JSON.parse(request.params[0] as string), signerSecretKey)) : 'ack';
               const response = finalizeEvent({
                 kind: NostrConnect,
                 tags: [['p', event.pubkey]],
                 content: encrypt(JSON.stringify({ id: request.id, result }), conversationKey),
                 created_at: Math.floor(Date.now() / 1000),
               }, signerSecretKey);
-              h.handlers?.onevent?.(response);
+              if (request.method === 'sign_event' && h.signingDelayMs) setTimeout(() => h.handlers?.onevent?.(response), h.signingDelayMs);
+              else h.handlers?.onevent?.(response);
             });
           }
           return [Promise.resolve('ok')];
@@ -73,6 +79,7 @@ describe('createBunkerSigner timeout guard', () => {
     h.subClose.mockClear();
     h.handlers = undefined;
     h.publishedMethods = [];
+    h.publishedParams = [];
   });
 
   afterEach(() => {
@@ -112,5 +119,60 @@ describe('createBunkerSigner timeout guard', () => {
     await rejection;
     expect(h.subClose).toHaveBeenCalled();
     expect(h.destroy).toHaveBeenCalled();
+  });
+});
+
+
+describe('bunker request deadlines and metadata', () => {
+  beforeEach(() => { h.mode = 'respond'; h.publishedMethods = []; h.publishedParams = []; h.signingDelayMs = 0; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('keeps the legacy connect wire shape when metadata is omitted', async () => {
+    const signer = await createBunkerSigner({ uri: URI });
+    expect(h.publishedParams[h.publishedMethods.indexOf('connect')]).toEqual([h.signerPubkey, 'sekret']);
+    await signer.close();
+  });
+
+  it('sends optional name and URL in the connect metadata', async () => {
+    const signer = await createBunkerSigner({ uri: URI, appName: 'Kindependence', appUrl: 'https://kindependence.example' });
+    const params = h.publishedParams[h.publishedMethods.indexOf('connect')];
+    expect(JSON.parse(params[2] as string)).toEqual({ name: 'Kindependence', url: 'https://kindependence.example' });
+    await signer.close();
+  });
+
+  it('allows guardian signing beyond 15 seconds with an explicit request deadline', async () => {
+    const signer = await createBunkerSigner({ uri: URI, requestTimeoutMs: 300_000 });
+    vi.useFakeTimers();
+    h.mode = 'hang';
+    const pending = signer.signEvent({ kind: 30078, tags: [], content: '', created_at: Math.floor(Date.now() / 1000) });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    const rejection = expect(pending).rejects.toThrow('nip46-sign_event-timeout');
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(285_000);
+    await rejection;
+    await signer.close();
+  });
+
+  it('accepts a valid signature approved after the old 15-second deadline', async () => {
+    const signer = await createBunkerSigner({ uri: URI, requestTimeoutMs: 300_000 });
+    vi.useFakeTimers(); h.signingDelayMs = 20_000;
+    const pending = signer.signEvent({ kind: 30078, tags: [], content: 'delayed approval' });
+    await vi.advanceTimersByTimeAsync(20_001);
+    expect(await pending).toMatchObject({ pubkey: h.signerPubkey, kind: 30078, content: 'delayed approval' });
+    await signer.close();
+  });
+
+  it('still times out signing after 15 seconds for existing consumers', async () => {
+    const signer = await createBunkerSigner({ uri: URI });
+    vi.useFakeTimers(); h.mode = 'hang';
+    const rejection = expect(signer.signEvent({ kind: 1, tags: [], content: '' })).rejects.toThrow('nip46-sign_event-timeout');
+    await vi.advanceTimersByTimeAsync(15_001);
+    await rejection; await signer.close();
+  });
+
+  it.each([0, -1, NaN, Infinity])('rejects an invalid request deadline %s', async value => {
+    await expect(createBunkerSigner({ uri: URI, requestTimeoutMs: value })).rejects.toThrow('invalid-request-timeout');
   });
 });
