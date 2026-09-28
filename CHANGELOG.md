@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.4 (2026-09-28)
+
+### Bug Fixes
+
+- allow bunker metadata and configurable request deadlines
+
+
+
 ## 0.17.3 (2026-09-25)
 
 ### Bug Fixes
