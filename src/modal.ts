@@ -540,6 +540,7 @@ async function waitForNip07Operation<T>(
 async function runNip07Flow(
   refs: ModalRefs,
   opts: ResolvedOptions,
+  aborted: Promise<null>,
 ): Promise<Nip07Result | null> {
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
@@ -572,22 +573,33 @@ async function runNip07Flow(
   // hanging on the unresolvable extension promise. (We can't truly abort
   // the NIP-07 promise since it has no abort signal, but we stop waiting
   // for it and let it resolve into the void.)
-  const cancelled = new Promise<null>(resolve => {
+  const buttonCancelled = new Promise<null>(resolve => {
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => resolve(null));
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', () => resolve(null));
   });
+
+  const cancelled = Promise.race([buttonCancelled, aborted]);
+  let revoked = false, ended = false, handedOff = false;
+  let acquired: Nip07Signer | undefined;
+  let closing: Promise<void> | undefined;
+  const close = (signer: Nip07Signer): Promise<void> => closing ??= signer.close().catch(() => {});
+  void cancelled.then(() => { revoked = true; });
 
   try {
     // Race each NIP-07 phase against cancellation and the caller-configured
     // timeout. NIP-07 has no abort signal, but this keeps a provider that
     // never settles from trapping the modal forever.
+    const acquisition = createNip07Signer();
+    void acquisition.then(signer => { if (revoked || ended) return close(signer); }).catch(() => {});
     const signer = await waitForNip07Operation(
-      createNip07Signer(),
+      acquisition,
       cancelled,
       opts.timeout,
       'get-public-key',
     );
     if (!signer) return null;
+    acquired = signer;
+    if (revoked) return null;
 
     elapsed = 0;
     waitStage = 'signature approval';
@@ -607,16 +619,14 @@ async function runNip07Flow(
       opts.timeout,
       'sign-event',
     );
-    if (!authEvent) {
-      try { await signer.close(); } catch { /* ignore */ }
-      return null;
-    }
+    if (!authEvent || revoked) return null;
     assertValidLoginAuthEvent(authEvent, {
       expectedChallenge: opts.challenge,
       expectedOrigin: opts.origin,
       expectedAppName: opts.appName,
       expectedPubkey: signer.pubkey,
     });
+    handedOff = true;
     return { pubkey: signer.pubkey, signer, authEvent };
   } catch (err) {
     if (elapsedEl) {
@@ -628,7 +638,9 @@ async function runNip07Flow(
     await Promise.race([new Promise(r => setTimeout(r, 2500)), cancelled]);
     return null;
   } finally {
+    ended = true;
     window.clearInterval(ticker);
+    if (!handedOff && acquired) await close(acquired);
   }
 }
 
@@ -931,19 +943,22 @@ async function buildSessionFromRedirectFlowResult(
         clientSecretKey,
         timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
       });
-      if (cancelled) { await closeCancelledSigner(bunkerSigner); return null; }
+      if (cancelled) { await closeCancelledSigner(bunkerSigner); clientSecretKey.fill(0); return null; }
       if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
         // Bunker came back as a different key than the identity we proved.
         // Discard it and keep the auth-only identity (result.pubkey) rather than
         // signing as the wrong key — the consumer can prompt for a proper signer
         // if it needs one.
         console.warn('[signet-login] Signet relay upgrade: bunker pubkey mismatch — continuing identity-only', { connected: bunkerSigner.pubkey, expected });
-        void bunkerSigner.close().catch(() => { /* ignore */ });
+        await closeCancelledSigner(bunkerSigner);
+        clientSecretKey.fill(0);
       } else {
         signer = bunkerSigner;
         method = 'bunker';
       }
     } catch (err) {
+      clientSecretKey.fill(0);
+      if (cancelled) return null;
       // Bunker connect failed or timed out — signer offline, or a stale handoff
       // URI (the common cross-device failure: the producer re-handed a dead
       // connect string). Do NOT fail the whole sign-in: fall back to the
@@ -1074,7 +1089,8 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions, aborted: Pr
         else settle(signer);
       } catch (err) {
         active = false;
-        if (cancelled) { sk.fill(0); settle(null); return; }
+        sk.fill(0);
+        if (cancelled) { settle(null); return; }
         if (status) { status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`; status.style.color = '#d04848'; }
         connectBtn.disabled = false;
       }
@@ -1241,7 +1257,8 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions, abort
       })
       .catch(err => {
         active = false;
-        if (cancelled) { sk.fill(0); settle(null); return; }
+        sk.fill(0);
+        if (cancelled) { settle(null); return; }
         if (settled) return;  // already cancelled
         if (status) {
           status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
@@ -1498,7 +1515,8 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       const cancellation = createFlowCancellation(refs, aborted);
       try {
         if (routeChoice === 'nip07') {
-          const result = await Promise.race([runNip07Flow(refs, resolved), aborted]);
+          const result = await runNip07Flow(refs, resolved, cancellation.promise);
+          if (cancellation.cancelled && result) { await closeCancelledSigner(result.signer); return null; }
           if (userAborted) return null;
           if (!result) {
             if (resolved.preferredMethod) return null;

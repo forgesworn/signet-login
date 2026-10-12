@@ -323,6 +323,7 @@ export async function handleRedirectCallback(options = {}) {
             timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
         })
             .catch((err) => {
+            clientSecretKey.fill(0);
             console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
             return null;
         })
@@ -335,7 +336,8 @@ export async function handleRedirectCallback(options = {}) {
             // identity under the consumer's feet.
             if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
                 console.warn('[signet-login] redirect upgrade: bunker pubkey mismatch — staying auth-only (cannot sign)', { connected: bunkerSigner.pubkey, expected });
-                void bunkerSigner.close().catch(() => { });
+                await bunkerSigner.close().catch(() => { });
+                clientSecretKey.fill(0);
                 return null;
             }
             // Live now — re-persist with real bunker creds so the next load
@@ -343,8 +345,15 @@ export async function handleRedirectCallback(options = {}) {
             const liveSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
             if (displayName)
                 liveSession.displayName = displayName;
-            if (options.storage?.required)
-                await persistSession(liveSession, options.storage);
+            if (options.storage?.required) {
+                try {
+                    await persistSession(liveSession, options.storage);
+                }
+                catch (error) {
+                    clientSecretKey.fill(0);
+                    throw error;
+                }
+            }
             else
                 void persistSession(liveSession, options.storage).catch(() => { });
             return bunkerSigner;

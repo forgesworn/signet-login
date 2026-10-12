@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('signet-verify', async original => ({ ...(await original<typeof import('signet-verify')>()), waitForAuthResponse: vi.fn() }));
 vi.mock('../src/signers.js', async original=>({...await original<typeof import('../src/signers.js')>(),createBunkerSigner:vi.fn(),createBunkerSignerFromNostrConnect:vi.fn()}));
 vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn(async () => {}) } }));
-import { createBunkerSigner, createBunkerSignerFromNostrConnect } from '../src/signers.js';
+import { createBunkerSigner, createBunkerSignerFromNostrConnect, Nip07Signer } from '../src/signers.js';
 import { bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPendingRelayAuth, clearPersistentClientSkFromStorage } from '../src/storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { login, restoreSession, handleRedirectCallback } from '../src/signet-login.js';
 import { loadSessionFromStorage, saveSessionToStorage, clearSessionFromStorage, loadPendingRelayAuth, loadPendingRedirectFromStorage, savePendingRelayAuth, savePendingRedirectToStorage } from '../src/storage.js';
 import { startRedirect } from '../src/redirect.js';
 import { STORAGE_KEYS, type SignetStorage } from '../src/types.js';
-import { makeAuthEvent } from './helpers/auth-event.js';
+import { makeAuthEvent, callbackSearchForAuthEvent } from './helpers/auth-event.js';
 const challenge = 'a'.repeat(64);
 function store() {
   const data = new Map<string, string>();
@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.mocked(waitForAuthResponse).mockReset().mockImplementation(() => new Promise(() => {}));
   vi.spyOn(window, 'open').mockReturnValue(null);
 });
-afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML=''; });
+afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML=''; delete window.nostr; });
 describe('atomic required sessions', () => {
   it('replaces and clears whole sessions in single acknowledged batches without individual field effects', async () => {
     const {adapter, data} = store(); const initial = session();
@@ -247,5 +247,114 @@ describe('cancellation continues through authentication and upgrade handoff',()=
     vi.mocked(waitForAuthResponse).mockResolvedValue({pubkey:event.pubkey,authEvent:event,bunkerUri:`bunker://${event.pubkey}?relay=wss%3A%2F%2Frelay.test`} as never);
     const pending=relay(adapter,method);await vi.waitFor(()=>expect(createBunkerSigner).toHaveBeenCalledOnce());expect(deletions(adapter)).toHaveLength(1);cancel(action);const close=vi.fn(async()=>{});deliver({pubkey:event.pubkey,close} as unknown as Awaited<ReturnType<typeof createBunkerSigner>>);
     await expect(pending).resolves.toBeNull();expect(close).toHaveBeenCalledOnce();expect(adapter.setItems).not.toHaveBeenCalled();
+  });
+});
+
+describe('extension cancellation and discarded connection keys', () => {
+  function cancel() { document.querySelector('dialog')!.dispatchEvent(new Event('cancel', { cancelable: true })); }
+  it('native cancel during extension discovery prevents a late signature request and closes the late wrapper', async () => {
+    const { adapter } = store();
+    let deliver!: (key: string) => void;
+    const getPublicKey = vi.fn(() => new Promise<string>(resolve => { deliver = resolve; }));
+    const signEvent = vi.fn();
+    window.nostr = { getPublicKey, signEvent };
+    const close = vi.spyOn(Nip07Signer.prototype, 'close');
+    const pending = login({ appName: 'Test', challenge, theme: 'dark', preferredMethod: 'nip07', storage: adapter });
+    await vi.waitFor(() => expect(getPublicKey).toHaveBeenCalledOnce());
+    cancel();
+    await expect(pending).resolves.toBeNull();
+    deliver(session().pubkey);
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(signEvent).not.toHaveBeenCalled();
+    expect(adapter.setItems).not.toHaveBeenCalled();
+  });
+  for (const transientFailure of [false, true]) it(`native cancel during extension signing discards the reply and prevents retry (failure=${transientFailure})`, async () => {
+    const { adapter } = store();
+    let deliver!: (event: ReturnType<typeof makeAuthEvent>) => void, refuse!: (error: Error) => void;
+    const signEvent = vi.fn(() => new Promise<ReturnType<typeof makeAuthEvent>>((yes, no) => { deliver = yes; refuse = no; }));
+    window.nostr = { getPublicKey: async () => session().pubkey, signEvent };
+    const close = vi.spyOn(Nip07Signer.prototype, 'close');
+    const pending = login({ appName: 'Test', challenge, theme: 'dark', preferredMethod: 'nip07', storage: adapter });
+    await vi.waitFor(() => expect(signEvent).toHaveBeenCalledOnce());
+    cancel();
+    await expect(pending).resolves.toBeNull();
+    expect(close).toHaveBeenCalledOnce();
+    if (transientFailure) refuse(new Error('Request failed.'));
+    else deliver(makeAuthEvent({ challenge, origin: window.location.origin, appName: 'Test' }));
+    // The SDK's transient retry waits 250 ms. Cancellation must fence it too.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(signEvent).toHaveBeenCalledOnce();
+    expect(adapter.setItems).not.toHaveBeenCalled();
+  });
+  it('a failed pasted connection wipes its actual key buffer, then retries the retained identity with a fresh buffer', async () => {
+    const { adapter, data } = store();
+    vi.mocked(createBunkerSigner).mockRejectedValue(new Error('network failed'));
+    const pending = login({ appName: 'Test', challenge, theme: 'dark', preferredMethod: 'bunker', storage: adapter });
+    await vi.waitFor(() => expect(document.querySelector('#signet-login-bunker-input')).not.toBeNull());
+    (document.querySelector('#signet-login-bunker-input') as HTMLTextAreaElement).value = `bunker://${session().pubkey}?relay=wss%3A%2F%2Frelay.test`;
+    const connect = document.querySelector<HTMLButtonElement>('[data-action="connect"]')!;
+    connect.click();
+    await vi.waitFor(() => expect(connect.disabled).toBe(false));
+    const first = vi.mocked(createBunkerSigner).mock.calls[0][0].clientSecretKey;
+    expect(first.every(byte => byte === 0)).toBe(true);
+    const retained = data.get(STORAGE_KEYS.clientSk);
+    connect.click();
+    await vi.waitFor(() => expect(createBunkerSigner).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(connect.disabled).toBe(false));
+    const second = vi.mocked(createBunkerSigner).mock.calls[1][0].clientSecretKey;
+    expect(second).not.toBe(first);
+    expect(second.every(byte => byte === 0)).toBe(true);
+    expect(data.get(STORAGE_KEYS.clientSk)).toBe(retained);
+    expect(adapter.compareAndSetItem).toHaveBeenCalledOnce();
+    cancel();
+    await expect(pending).resolves.toBeNull();
+  });
+  for (const mismatch of [false, true]) it(`relay upgrade disposes its key and awaits a mismatched signer's close (mismatch=${mismatch})`, async () => {
+    const { adapter } = store(), receipt = deferred();
+    const event = makeAuthEvent({ challenge, origin: window.location.origin });
+    const close = vi.fn(() => receipt.promise);
+    vi.mocked(waitForAuthResponse).mockResolvedValue({ pubkey: event.pubkey, authEvent: event, bunkerUri: `bunker://${event.pubkey}?relay=wss%3A%2F%2Frelay.test` } as never);
+    vi.mocked(createBunkerSigner).mockImplementation(async ({ clientSecretKey }) => {
+      if (!mismatch) throw new Error('offline');
+      return { pubkey: 'b'.repeat(64), clientSecretKey, close } as unknown as Awaited<ReturnType<typeof createBunkerSigner>>;
+    });
+    let settled = false;
+    const pending = relay(adapter).then(value => { settled = true; return value; });
+    await vi.waitFor(() => expect(createBunkerSigner).toHaveBeenCalledOnce());
+    const key = vi.mocked(createBunkerSigner).mock.calls[0][0].clientSecretKey;
+    if (mismatch) {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      expect(adapter.setItems).not.toHaveBeenCalled();
+      receipt.yes();
+    }
+    await expect(pending).resolves.toMatchObject({ method: 'redirect' });
+    expect(key.every(byte => byte === 0)).toBe(true);
+    expect(adapter.setItems).toHaveBeenCalledOnce();
+  });
+  for (const failure of ['connection', 'mismatch', 'custody'] as const) it(`callback upgrade wipes its actual key on ${failure} and joins signer disposal`, async () => {
+    const { adapter } = store(), receipt = deferred();
+    const event = makeAuthEvent({ challenge, origin: window.location.origin });
+    await savePendingRedirectToStorage({ challenge, origin: window.location.origin, appName: 'Test', createdAt: Date.now() }, adapter);
+    const close = vi.fn(() => receipt.promise);
+    vi.mocked(createBunkerSigner).mockImplementation(async ({ clientSecretKey, uri }) => {
+      if (failure === 'connection') throw new Error('offline');
+      return { pubkey: failure === 'mismatch' ? 'b'.repeat(64) : event.pubkey, clientSecretKey, bunkerUri: uri, close } as unknown as Awaited<ReturnType<typeof createBunkerSigner>>;
+    });
+    if (failure === 'custody') adapter.setItems.mockRejectedValue(new Error('held'));
+    window.history.replaceState(null, '', `/${callbackSearchForAuthEvent(event, { bunker: `bunker://${event.pubkey}?relay=wss%3A%2F%2Frelay.test` })}`);
+    let settled = false;
+    const pending = handleRedirectCallback({ storage: adapter });
+    const observed = pending.then(value => { settled = true; return value; }, error => { settled = true; throw error; });
+    const outcome = failure === 'custody' ? expect(observed).rejects.toThrow('held') : expect(observed).resolves.toMatchObject({ kind: 'session', session: { method: 'redirect' } });
+    await vi.waitFor(() => expect(createBunkerSigner).toHaveBeenCalledOnce());
+    const key = vi.mocked(createBunkerSigner).mock.calls[0][0].clientSecretKey;
+    if (failure !== 'connection') {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      receipt.yes();
+    }
+    await outcome;
+    expect(key.every(byte => byte === 0)).toBe(true);
   });
 });
