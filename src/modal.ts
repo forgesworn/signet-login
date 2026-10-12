@@ -194,6 +194,30 @@ function tearDown(refs: ModalRefs): void {
   refs.style.remove();
 }
 
+function createFlowCancellation(refs: ModalRefs, aborted: Promise<null>) {
+  let cancelled = false;
+  let resolve!: (value: null) => void;
+  const promise = new Promise<null>(yes => { resolve = yes; });
+  const cancel = (): void => { cancelled = true; resolve(null); };
+  const click = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-action="back"],[data-action="cancel"]')) cancel();
+  };
+  refs.dialog.addEventListener('click', click);
+  refs.dialog.addEventListener('cancel', cancel);
+  void aborted.then(cancel);
+  return { promise, get cancelled() { return cancelled; }, cleanup() {
+    refs.dialog.removeEventListener('click', click);
+    refs.dialog.removeEventListener('cancel', cancel);
+  } };
+}
+
+async function closeCancelledSigner(signer: SignetSession['signer']): Promise<void> {
+  try { await signer.close(); } catch { /* Revocation cannot be waived. */ }
+  const key = (signer as { clientSecretKey?: Uint8Array }).clientSecretKey;
+  key?.fill(0);
+}
+
 function createBackNavigationCancel(): { promise: Promise<null>; cleanup(): void } {
   let settled = false;
   let resolveCancel!: (value: null) => void;
@@ -516,6 +540,7 @@ async function waitForNip07Operation<T>(
 async function runNip07Flow(
   refs: ModalRefs,
   opts: ResolvedOptions,
+  aborted: Promise<null>,
 ): Promise<Nip07Result | null> {
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
@@ -548,22 +573,33 @@ async function runNip07Flow(
   // hanging on the unresolvable extension promise. (We can't truly abort
   // the NIP-07 promise since it has no abort signal, but we stop waiting
   // for it and let it resolve into the void.)
-  const cancelled = new Promise<null>(resolve => {
+  const buttonCancelled = new Promise<null>(resolve => {
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => resolve(null));
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', () => resolve(null));
   });
+
+  const cancelled = Promise.race([buttonCancelled, aborted]);
+  let revoked = false, ended = false, handedOff = false;
+  let acquired: Nip07Signer | undefined;
+  let closing: Promise<void> | undefined;
+  const close = (signer: Nip07Signer): Promise<void> => closing ??= signer.close().catch(() => {});
+  void cancelled.then(() => { revoked = true; });
 
   try {
     // Race each NIP-07 phase against cancellation and the caller-configured
     // timeout. NIP-07 has no abort signal, but this keeps a provider that
     // never settles from trapping the modal forever.
+    const acquisition = createNip07Signer();
+    void acquisition.then(signer => { if (revoked || ended) return close(signer); }).catch(() => {});
     const signer = await waitForNip07Operation(
-      createNip07Signer(),
+      acquisition,
       cancelled,
       opts.timeout,
       'get-public-key',
     );
     if (!signer) return null;
+    acquired = signer;
+    if (revoked) return null;
 
     elapsed = 0;
     waitStage = 'signature approval';
@@ -583,16 +619,14 @@ async function runNip07Flow(
       opts.timeout,
       'sign-event',
     );
-    if (!authEvent) {
-      try { await signer.close(); } catch { /* ignore */ }
-      return null;
-    }
+    if (!authEvent || revoked) return null;
     assertValidLoginAuthEvent(authEvent, {
       expectedChallenge: opts.challenge,
       expectedOrigin: opts.origin,
       expectedAppName: opts.appName,
       expectedPubkey: signer.pubkey,
     });
+    handedOff = true;
     return { pubkey: signer.pubkey, signer, authEvent };
   } catch (err) {
     if (elapsedEl) {
@@ -604,7 +638,9 @@ async function runNip07Flow(
     await Promise.race([new Promise(r => setTimeout(r, 2500)), cancelled]);
     return null;
   } finally {
+    ended = true;
     window.clearInterval(ticker);
+    if (!handedOff && acquired) await close(acquired);
   }
 }
 
@@ -625,6 +661,7 @@ type AuthResponseWithBunker = Awaited<ReturnType<typeof waitForAuthResponse>> & 
 
 interface RedirectFlowOptions {
   sameDevice?: boolean;
+  cancelled?: Promise<null>;
 }
 
 async function runRedirectFlow(
@@ -635,6 +672,8 @@ async function runRedirectFlow(
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
   const sameDevice = flowOpts.sameDevice === true;
+  let cancelled = false;
+  void flowOpts.cancelled?.then(() => { cancelled = true; });
 
   // Resume an in-flight sign-in rather than starting a second one: the response
   // may already be on the relay, addressed to the key that sign-in minted.
@@ -642,6 +681,12 @@ async function runRedirectFlow(
   // SDK-generated one is fresh on every login() call, so any live record for
   // this origin is ours to pick up, adopting its challenge.
   const resumed = await loadPendingRelayAuth(opts.storage);
+  if (cancelled) { await clearPendingRelayAuth(opts.storage, resumed); return null; }
+  if (opts.storage?.required && resumed && (resumed.origin !== opts.origin ||
+      resumed.appName !== opts.appName || resumed.relayUrl !== opts.relayUrl ||
+      (opts.challengeFromConsumer && resumed.challenge !== opts.challenge))) {
+    throw new Error('required-storage-pending-relay-binding-mismatch');
+  }
   const reusable = resumed && resumed.origin === opts.origin &&
     (!opts.challengeFromConsumer || resumed.challenge === opts.challenge)
     ? resumed
@@ -655,16 +700,19 @@ async function runRedirectFlow(
   // and on resume the link and QR rebuild the identical request.
   const issuedAt = reusable ? reusable.issuedAt : Math.floor(Date.now() / 1000);
 
-  if (!reusable) {
-    await savePendingRelayAuth({
+  const pendingRecord = reusable ?? {
       challenge,
       origin: opts.origin,
       appName: opts.appName,
       relayUrl: opts.relayUrl,
       sessionSkHex: bytesToHex(sessionPrivKey),
       issuedAt,
-    }, opts.storage);
+  };
+  if (!reusable) {
+    try { await savePendingRelayAuth(pendingRecord, opts.storage); }
+    catch (error) { sessionPrivKey.fill(0); throw error; }
   }
+  if (cancelled) { try { await clearPendingRelayAuth(opts.storage, pendingRecord); return null; } finally { sessionPrivKey.fill(0); } }
 
   const params = new URLSearchParams({
     auth: '1',
@@ -711,7 +759,7 @@ async function runRedirectFlow(
     });
   }
 
-  return new Promise<RedirectFlowResult | null>(resolve => {
+  return new Promise<RedirectFlowResult | null>((resolve, reject) => {
     let settled = false;
     const backNavigation = createBackNavigationCancel();
     // Cancellation is wired now that signet-verify accepts an AbortSignal
@@ -743,9 +791,15 @@ async function runRedirectFlow(
     const countdownTimer = setInterval(renderCountdown, 1000);
     renderCountdown();
 
+    let clearing: Promise<void> | undefined;
+    const clear = (): Promise<void> => clearing ??= clearPendingRelayAuth(opts.storage, pendingRecord);
+    let completion: RedirectFlowResult | null = null;
     const settle = (v: RedirectFlowResult | null): void => {
-      if (settled) return;
+      // Cancellation may arrive after approval while its deletion receipt is
+      // still unknown. Revoke that approval before the receipt resolves.
+      if (settled) { if (v === null) completion = null; return; }
       settled = true;
+      completion = v;
       backNavigation.cleanup();
       waitAbort.abort();
       clearInterval(countdownTimer);
@@ -754,10 +808,10 @@ async function runRedirectFlow(
       // browser Back gesture — errors do not auto-settle), so the request goes
       // with it. Clearing here, not in the rejection handler: `settled` is
       // already true by the time the abort's rejection lands, so it never sees it.
-      if (v === null) void clearPendingRelayAuth(opts.storage);
-      resolve(v);
+      void clear().then(() => resolve(completion), reject);
     };
     backNavigation.promise.then(() => settle(null));
+    void flowOpts.cancelled?.then(() => settle(null));
 
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
       settle(null);
@@ -766,7 +820,7 @@ async function runRedirectFlow(
       settle(null);
     });
 
-    waitForAuthResponse({
+    const waiting = waitForAuthResponse({
       requestId: challenge, // the effective challenge — a resumed one on resume
       relayUrl: opts.relayUrl,
       sessionPrivKey,
@@ -776,7 +830,10 @@ async function runRedirectFlow(
       timeout: opts.explicitTimeout,
       issuedAt,
       abortSignal: waitAbort.signal,
-    }).then(rawResult => {
+    });
+    // The receiver owns this buffer until its abort/completion has joined.
+    void waiting.finally(() => sessionPrivKey.fill(0)).catch(() => {});
+    waiting.then(rawResult => {
       if (settled) return;
       const result = rawResult as AuthResponseWithBunker;
       const authEvent: SignetAuthEvent = {
@@ -803,9 +860,8 @@ async function runRedirectFlow(
       if (result.displayName) out.displayName = result.displayName;
       if (result.bunkerUri) out.bunkerUri = result.bunkerUri;
       // Settled — the persisted key has no further use.
-      void clearPendingRelayAuth(opts.storage);
       settle(out);
-    }).catch((err: Error & { code?: string }) => {
+    }).catch(async (err: Error & { code?: string }) => {
       if (settled) return;
       // The current wait is over either way — a leaked ticker would keep a
       // dead dialog counting down (or re-announcing "expired" every second).
@@ -815,7 +871,14 @@ async function runRedirectFlow(
       // `timeout` / `relay-error` are not — keep the anchor so a retry asks the
       // relay from the right point instead of re-anchoring past the response.
       if (code === 'expired' || code === 'denied' || code === 'aborted') {
-        void clearPendingRelayAuth(opts.storage);
+        try { await clear(); }
+        catch (error) {
+          settled = true;
+          backNavigation.cleanup();
+          waitAbort.abort();
+          reject(error);
+          return;
+        }
       }
       const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
       if (status) {
@@ -852,8 +915,12 @@ async function buildSessionFromRedirectFlowResult(
   refs: ModalRefs,
   result: RedirectFlowResult,
   opts: ResolvedOptions,
-  _aborted: Promise<null>,
+  aborted: Promise<null>,
 ): Promise<SignetSession | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
+  await Promise.resolve();
+  if (cancelled) return null;
   // Default: auth-only ephemeral signer (identity proof, no live signing).
   let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
   let method: SignetSession['method'] = 'redirect';
@@ -866,6 +933,7 @@ async function buildSessionFromRedirectFlowResult(
   // the relay handshake can finish.
   if (result.bunkerUri) {
     const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+    if (cancelled) { clientSecretKey.fill(0); return null; }
     const expected = result.pubkey;
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
     if (status) status.textContent = 'Connecting signer...';
@@ -875,18 +943,22 @@ async function buildSessionFromRedirectFlowResult(
         clientSecretKey,
         timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
       });
+      if (cancelled) { await closeCancelledSigner(bunkerSigner); clientSecretKey.fill(0); return null; }
       if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
         // Bunker came back as a different key than the identity we proved.
         // Discard it and keep the auth-only identity (result.pubkey) rather than
         // signing as the wrong key — the consumer can prompt for a proper signer
         // if it needs one.
         console.warn('[signet-login] Signet relay upgrade: bunker pubkey mismatch — continuing identity-only', { connected: bunkerSigner.pubkey, expected });
-        void bunkerSigner.close().catch(() => { /* ignore */ });
+        await closeCancelledSigner(bunkerSigner);
+        clientSecretKey.fill(0);
       } else {
         signer = bunkerSigner;
         method = 'bunker';
       }
     } catch (err) {
+      clientSecretKey.fill(0);
+      if (cancelled) return null;
       // Bunker connect failed or timed out — signer offline, or a stale handoff
       // URI (the common cross-device failure: the producer re-handed a dead
       // connect string). Do NOT fail the whole sign-in: fall back to the
@@ -912,7 +984,9 @@ async function buildSessionFromRedirectFlowResult(
 
 // ── Paste bunker URI ──────────────────────────────────────────────────────────
 
-async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<BunkerSignerImpl | null> {
+async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions, aborted: Promise<null>): Promise<BunkerSignerImpl | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
   const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
@@ -934,8 +1008,9 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     </div>
   `;
 
-  return new Promise<BunkerSignerImpl | null>(resolve => {
+  return new Promise<BunkerSignerImpl | null>((resolve, reject) => {
     let settled = false;
+    let active = false;
     let scanGeneration = 0;
     const settle = (v: BunkerSignerImpl | null): void => {
       if (settled) return;
@@ -952,10 +1027,12 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     const scanBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="scan"]');
     let scanner: QrScannerHandle | null = null;
 
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
-      scanner?.stop();
-      settle(null);
-    });
+    const cancel = (): void => {
+      cancelled = true; scanner?.stop();
+      if (!active || !opts.storage?.required) settle(null);
+    };
+    void aborted.then(cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', cancel);
 
     scanBtn?.addEventListener('click', () => {
       if (!input || !scanContainer) return;
@@ -986,27 +1063,35 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     });
 
     connectBtn?.addEventListener('click', async () => {
+      if (active || settled || cancelled) return;
       const uri = input?.value.trim() ?? '';
-      if (!uri) {
-        if (status) status.textContent = 'Please paste a bunker URI.';
-        return;
-      }
-      if (status) {
-        status.textContent = 'Connecting…';
-        status.style.color = '';
-      }
-      connectBtn.disabled = true;
-      try {
-        const signer = await createBunkerSigner({
-          uri,
-          clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts.storage),
-        });
-        settle(signer);
-      } catch (err) {
-        if (status) {
-          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
-          status.style.color = '#d04848';
+      if (!uri) { if (status) status.textContent = 'Please paste a bunker URI.'; return; }
+      active = true; connectBtn.disabled = true;
+      if (status) { status.textContent = 'Connecting…'; status.style.color = ''; }
+      let sk: Uint8Array;
+      try { sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage); }
+      catch (error) {
+        active = false;
+        if (opts.storage?.required) {
+          settled = true; scanGeneration++; scanner?.stop(); reject(error); return;
         }
+        if (cancelled) { settle(null); return; }
+        if (status) status.textContent = `✗ ${error instanceof Error ? error.message : String(error)}`;
+        connectBtn.disabled = false; return;
+      }
+      if (cancelled) { sk.fill(0); active = false; settle(null); return; }
+      try {
+        const signer = await createBunkerSigner({ uri, clientSecretKey: sk,
+          ...(opts.storage?.required ? {timeoutMs: opts.timeout} : {}),
+        });
+        active = false;
+        if (cancelled) { await signer.close().catch(() => {}); sk.fill(0); settle(null); }
+        else settle(signer);
+      } catch (err) {
+        active = false;
+        sk.fill(0);
+        if (cancelled) { settle(null); return; }
+        if (status) { status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`; status.style.color = '#d04848'; }
         connectBtn.disabled = false;
       }
     });
@@ -1046,7 +1131,9 @@ function nostrConnectStatusText(status: NostrConnectStatus): string | null {
  * URI and the user scans it with their signer (nsec.app, Amber, Keychat…).
  * The signer connects to our chosen relay and signs ad-hoc from there.
  */
-async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<BunkerSignerImpl | null> {
+async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions, aborted: Promise<null>): Promise<BunkerSignerImpl | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
 
@@ -1054,6 +1141,7 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
   // logins (bunkers auto-approve a bound client pubkey). The connect `secret`
   // stays fresh per handshake — it's a one-time challenge, not an identity.
   const sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+  if (cancelled) { sk.fill(0); return null; }
   const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
   const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
 
@@ -1130,20 +1218,21 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
 
   return new Promise<BunkerSignerImpl | null>(resolve => {
     let settled = false;
+    let active = true;
     const settle = (v: BunkerSignerImpl | null): void => {
       if (settled) return;
       settled = true;
       resolve(v);
     };
 
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
-      ac.abort();
-      settle(null);
-    });
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', () => {
-      ac.abort();
-      settle(null);
-    });
+    const cancel = (): void => {
+      cancelled = true; ac.abort();
+      if (!active && !settled) { sk.fill(0); settle(null); }
+      else if (!opts.storage?.required) settle(null);
+    };
+    void aborted.then(cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', cancel);
 
     const handleStatus = (event: NostrConnectStatus): void => {
       const text = nostrConnectStatusText(event);
@@ -1161,8 +1250,15 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
       timeoutMs: opts.timeout,
       onStatus: handleStatus,
     })
-      .then(signer => settle(signer))
+      .then(async signer => {
+        active = false;
+        if (cancelled) { await signer.close().catch(() => {}); sk.fill(0); settle(null); }
+        else settle(signer);
+      })
       .catch(err => {
+        active = false;
+        sk.fill(0);
+        if (cancelled) { settle(null); return; }
         if (settled) return;  // already cancelled
         if (status) {
           status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
@@ -1352,8 +1448,8 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
     origin,
     mobile,
     challengeFromConsumer,
-    methods: methodConfig.methods,
-    advancedMethods: methodConfig.advancedMethods,
+    methods: opts.storage?.required ? methodConfig.methods.filter(method => method !== 'nsec') : methodConfig.methods,
+    advancedMethods: opts.storage?.required ? methodConfig.advancedMethods.filter(method => method !== 'nsec') : methodConfig.advancedMethods,
     relayUrl,
     relayUrls,
     nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
@@ -1402,7 +1498,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
   // flow await against this lets the modal exit cleanly.
   let userAborted = false;
   const aborted = new Promise<null>((resolve) => {
-    refs.dialog.addEventListener('cancel', () => { userAborted = true; resolve(null); });
+    refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
   });
 
   try {
@@ -1412,172 +1508,200 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         : await Promise.race([renderPicker(refs, resolved), aborted]);
       const routeChoice = choice === null ? null : routePickerChoice(choice);
 
+      if (resolved.storage?.required && routeChoice === 'nsec') throw new Error('required-storage-nsec-is-memory-only');
       if (userAborted) return null;
       if (routeChoice === null || routeChoice === 'cancel') return null;
 
-      if (routeChoice === 'nip07') {
-        const result = await Promise.race([runNip07Flow(refs, resolved), aborted]);
-        if (userAborted) return null;
-        if (!result) {
-          if (resolved.preferredMethod) return null;
-          continue;  // back to picker
-        }
-        return {
-          pubkey: result.pubkey,
-          method: 'nip07',
-          signer: result.signer,
-          authEvent: result.authEvent,
-        };
-      }
-
-      if (routeChoice === 'redirect') {
-        // Same-device Signet in the modal must keep this app tab alive and keep
-        // the My Signet tab alive as the ongoing bunker. Use the relay-backed
-        // auth response path here; explicit `login({ mode: 'redirect' })`
-        // remains the same-tab redirect API for mobile/single-device callers.
-        const result = await Promise.race([runRedirectFlow(refs, resolved, { sameDevice: true }), aborted]);
-        if (userAborted) return null;
-        if (!result) {
-          if (resolved.preferredMethod) return null;
-          continue;
-        }
-        const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, aborted);
-        if (userAborted) return null;
-        if (!session) {
-          if (resolved.preferredMethod) return null;
-          continue;
-        }
-        return session;
-      }
-
-      if (routeChoice === 'amber') {
-        // Same-tab navigation to a `nostrsigner:` URL. Android dispatches
-        // it to Amber; the page comes back via callbackUrl with the signed
-        // event in `?event=`. Picked up on next boot by handleRedirectCallback.
-        await startAmberSignIn({
-          appName: resolved.appName,
-          challenge: resolved.challenge,
-          origin: resolved.origin,
-          ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
-          ...(resolved.storage !== undefined ? { storage: resolved.storage } : {}),
-        });
-        return null;  // unreachable
-      }
-
-      if (routeChoice === 'qr') {
-        const result = await Promise.race([runRedirectFlow(refs, resolved), aborted]);
-        if (userAborted) return null;
-        if (!result) {
-          if (resolved.preferredMethod) return null;
-          continue;
-        }
-        const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, aborted);
-        if (userAborted) return null;
-        if (!session) {
-          if (resolved.preferredMethod) return null;
-          continue;
-        }
-        return session;
-      }
-
-      if (routeChoice === 'bunker') {
-        const signer = await Promise.race([runBunkerFlow(refs, resolved), aborted]);
-        if (userAborted) return null;
-        if (!signer) {
-          if (resolved.preferredMethod) return null;
-          continue;
+      const cancellation = createFlowCancellation(refs, aborted);
+      try {
+        if (routeChoice === 'nip07') {
+          const result = await runNip07Flow(refs, resolved, cancellation.promise);
+          if (cancellation.cancelled && result) { await closeCancelledSigner(result.signer); return null; }
+          if (userAborted) return null;
+          if (!result) {
+            if (resolved.preferredMethod) return null;
+            continue;  // back to picker
+          }
+          return {
+            pubkey: result.pubkey,
+            method: 'nip07',
+            signer: result.signer,
+            authEvent: result.authEvent,
+          };
         }
 
-        // Sign a kind-21236 auth event so we have a uniform proof shape
-        const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
-          kind: 21236,
-          content: '',
-          tags: [
-            ['challenge', resolved.challenge],
-            ['origin', resolved.origin],
-            ['app', resolved.appName],
-          ],
-        }) as SignetAuthEvent, {
-          expectedChallenge: resolved.challenge,
-          expectedOrigin: resolved.origin,
-          expectedAppName: resolved.appName,
-          expectedPubkey: signer.pubkey,
-        });
-
-        return {
-          pubkey: signer.pubkey,
-          method: 'bunker',
-          signer,
-          authEvent,
-        };
-      }
-
-      if (routeChoice === 'nostrconnect') {
-        const signer = await Promise.race([runNostrConnectFlow(refs, resolved), aborted]);
-        if (userAborted) return null;
-        if (!signer) {
-          if (resolved.preferredMethod) return null;
-          continue;
+        if (routeChoice === 'redirect') {
+          // Same-device Signet in the modal must keep this app tab alive and keep
+          // the My Signet tab alive as the ongoing bunker. Use the relay-backed
+          // auth response path here; explicit `login({ mode: 'redirect' })`
+          // remains the same-tab redirect API for mobile/single-device callers.
+          const result = await runRedirectFlow(refs, resolved, { sameDevice: true, cancelled: cancellation.promise });
+          if (userAborted) return null;
+          if (!result) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+          const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation.promise);
+          if (cancellation.cancelled && session) { await closeCancelledSigner(session.signer); return null; }
+          if (userAborted) return null;
+          if (!session) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+          return session;
         }
 
-        const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
-          kind: 21236,
-          content: '',
-          tags: [
-            ['challenge', resolved.challenge],
-            ['origin', resolved.origin],
-            ['app', resolved.appName],
-          ],
-        }) as SignetAuthEvent, {
-          expectedChallenge: resolved.challenge,
-          expectedOrigin: resolved.origin,
-          expectedAppName: resolved.appName,
-          expectedPubkey: signer.pubkey,
-        });
-
-        // Surfaces as 'bunker' since the session shape is identical to a
-        // bunker URI session — same signer, same persistence path, same
-        // capabilities. The picker choice routed us here; from this point
-        // on the rest of the SDK doesn't care about the initiation direction.
-        return {
-          pubkey: signer.pubkey,
-          method: 'bunker',
-          signer,
-          authEvent,
-        };
-      }
-
-      if (routeChoice === 'nsec') {
-        const signer = await Promise.race([runNsecFlow(refs, resolved), aborted]);
-        if (userAborted) return null;
-        if (!signer) {
-          if (resolved.preferredMethod) return null;
-          continue;
+        if (routeChoice === 'amber') {
+          // Same-tab navigation to a `nostrsigner:` URL. Android dispatches
+          // it to Amber; the page comes back via callbackUrl with the signed
+          // event in `?event=`. Picked up on next boot by handleRedirectCallback.
+          await startAmberSignIn({
+            appName: resolved.appName,
+            challenge: resolved.challenge,
+            origin: resolved.origin,
+            ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
+            ...(resolved.storage !== undefined ? { storage: resolved.storage } : {}),
+          });
+          return null;  // unreachable
         }
 
-        const authEvent = assertValidLoginAuthEvent(await signer.signEvent({
-          kind: 21236,
-          content: '',
-          tags: [
-            ['challenge', resolved.challenge],
-            ['origin', resolved.origin],
-            ['app', resolved.appName],
-          ],
-        }) as SignetAuthEvent, {
-          expectedChallenge: resolved.challenge,
-          expectedOrigin: resolved.origin,
-          expectedAppName: resolved.appName,
-          expectedPubkey: signer.pubkey,
-        });
+        if (routeChoice === 'qr') {
+          const result = await runRedirectFlow(refs, resolved, { cancelled: cancellation.promise });
+          if (userAborted) return null;
+          if (!result) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+          const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation.promise);
+          if (cancellation.cancelled && session) { await closeCancelledSigner(session.signer); return null; }
+          if (userAborted) return null;
+          if (!session) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+          return session;
+        }
 
-        return {
-          pubkey: signer.pubkey,
-          method: 'nsec',
-          signer,
-          authEvent,
-        };
-      }
+        if (routeChoice === 'bunker') {
+          const signer = await runBunkerFlow(refs, resolved, cancellation.promise);
+          if (cancellation.cancelled && signer) { await closeCancelledSigner(signer); return null; }
+          if (userAborted) return null;
+          if (!signer) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
 
+          // Sign a kind-21236 auth event so we have a uniform proof shape
+          let authEvent: SignetAuthEvent;
+          try { authEvent = assertValidLoginAuthEvent(await signer.signEvent({
+            kind: 21236,
+            content: '',
+            tags: [
+              ['challenge', resolved.challenge],
+              ['origin', resolved.origin],
+              ['app', resolved.appName],
+            ],
+          }) as SignetAuthEvent, {
+            expectedChallenge: resolved.challenge,
+            expectedOrigin: resolved.origin,
+            expectedAppName: resolved.appName,
+            expectedPubkey: signer.pubkey,
+          }); } catch (error) {
+            await closeCancelledSigner(signer);
+            if(cancellation.cancelled) return null;
+            throw error;
+          }
+
+          if (cancellation.cancelled) { await closeCancelledSigner(signer); return null; }
+          return {
+            pubkey: signer.pubkey,
+            method: 'bunker',
+            signer,
+            authEvent,
+          };
+        }
+
+        if (routeChoice === 'nostrconnect') {
+          const signer = await runNostrConnectFlow(refs, resolved, cancellation.promise);
+          if (cancellation.cancelled && signer) { await closeCancelledSigner(signer); return null; }
+          if (userAborted) return null;
+          if (!signer) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+
+          let authEvent: SignetAuthEvent;
+          try { authEvent = assertValidLoginAuthEvent(await signer.signEvent({
+            kind: 21236,
+            content: '',
+            tags: [
+              ['challenge', resolved.challenge],
+              ['origin', resolved.origin],
+              ['app', resolved.appName],
+            ],
+          }) as SignetAuthEvent, {
+            expectedChallenge: resolved.challenge,
+            expectedOrigin: resolved.origin,
+            expectedAppName: resolved.appName,
+            expectedPubkey: signer.pubkey,
+          }); } catch (error) {
+            await closeCancelledSigner(signer);
+            if(cancellation.cancelled) return null;
+            throw error;
+          }
+
+          // Surfaces as 'bunker' since the session shape is identical to a
+          // bunker URI session — same signer, same persistence path, same
+          // capabilities. The picker choice routed us here; from this point
+          // on the rest of the SDK doesn't care about the initiation direction.
+          if (cancellation.cancelled) { await closeCancelledSigner(signer); return null; }
+          return {
+            pubkey: signer.pubkey,
+            method: 'bunker',
+            signer,
+            authEvent,
+          };
+        }
+
+        if (routeChoice === 'nsec') {
+          const signer = await Promise.race([runNsecFlow(refs, resolved), aborted]);
+          if (cancellation.cancelled && signer) { await closeCancelledSigner(signer); return null; }
+          if (userAborted) return null;
+          if (!signer) {
+            if (resolved.preferredMethod) return null;
+            continue;
+          }
+
+          let authEvent: SignetAuthEvent;
+          try { authEvent = assertValidLoginAuthEvent(await signer.signEvent({
+            kind: 21236,
+            content: '',
+            tags: [
+              ['challenge', resolved.challenge],
+              ['origin', resolved.origin],
+              ['app', resolved.appName],
+            ],
+          }) as SignetAuthEvent, {
+            expectedChallenge: resolved.challenge,
+            expectedOrigin: resolved.origin,
+            expectedAppName: resolved.appName,
+            expectedPubkey: signer.pubkey,
+          }); } catch (error) {
+            await closeCancelledSigner(signer);
+            if(cancellation.cancelled) return null;
+            throw error;
+          }
+
+          if (cancellation.cancelled) { await closeCancelledSigner(signer); return null; }
+          return {
+            pubkey: signer.pubkey,
+            method: 'nsec',
+            signer,
+            authEvent,
+          };
+        }
+
+      } finally { cancellation.cleanup(); }
       // Unknown choice — restart picker
     }
   } finally {

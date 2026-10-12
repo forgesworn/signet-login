@@ -20,6 +20,7 @@ import {
   loadPendingRedirectFromStorage,
   clearPendingRedirectFromStorage,
 } from '../src/storage.js';
+import { makeAuthEvent } from './helpers/auth-event.js';
 import { STORAGE_KEYS, type SignetStorage } from '../src/types.js';
 
 const fakePubkey = 'a'.repeat(64);
@@ -37,6 +38,15 @@ function memoryStorage(): SignetStorage & { data: Map<string, string> } {
   const data = new Map<string, string>();
   return {
     data,
+    async compareAndSetItem(key: string, expected: string | null, value: string | null) {
+      if ((data.get(key) ?? null) !== expected) return false;
+      if(value === null) data.delete(key); else data.set(key, value); return true;
+    },
+    async getItems(keys: readonly string[]) { return Object.fromEntries(keys.map(key => [key, data.get(key) ?? null])); },
+    async setItems(changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>) {
+      if(Object.entries(expected).some(([key,value])=>(data.get(key) ?? null)!==value)) return false;
+      for (const [key, value] of Object.entries(changes)) { if (value === null) data.delete(key); else data.set(key, value); } return true;
+    },
     async getItem(key: string) {
       return data.get(key) ?? null;
     },
@@ -285,5 +295,73 @@ describe('storage', () => {
       await clearPendingRedirectFromStorage(store);
       expect(await loadPendingRedirectFromStorage(store)).toBeNull();
     });
+  });
+});
+
+describe('required custom custody', () => {
+  const failure = new Error('custody held');
+  it('propagates a failed read before generating or writing a replacement client key', async () => {
+    const random = vi.spyOn(crypto, 'getRandomValues');
+    const setItem = vi.fn(async () => {});
+    const store: SignetStorage = { required: true, compareAndSetItem: async () => true, getItem: async () => { throw failure; }, setItem, removeItem: async () => {} };
+    try {
+      await expect(loadOrCreatePersistentClientSkFromStorage(store)).rejects.toBe(failure);
+      expect(random).not.toHaveBeenCalled(); expect(setItem).not.toHaveBeenCalled();
+    } finally { random.mockRestore(); }
+  });
+  for (const invalid of ['', 'not-hex', '00'.repeat(32), 'ff'.repeat(32)]) it(`preserves an invalid existing client key without replacement: ${invalid.length ? invalid.slice(0, 6) : 'empty'}`, async () => {
+    const store = { ...memoryStorage(), required: true };
+    store.data.set(STORAGE_KEYS.clientSk, invalid);
+    const random = vi.spyOn(crypto, 'getRandomValues');
+    try {
+      await expect(loadOrCreatePersistentClientSkFromStorage(store)).rejects.toThrow('required-storage-invalid-client-key');
+      expect(random).not.toHaveBeenCalled(); expect(store.data.get(STORAGE_KEYS.clientSk)).toBe(invalid);
+    } finally { random.mockRestore(); }
+  });
+  it('wipes the actual provisional key when native retention rejects', async () => {
+    let generated: Uint8Array | undefined;
+    const nativeRandom = crypto.getRandomValues.bind(crypto);
+    const random = vi.spyOn(crypto, 'getRandomValues').mockImplementation(array => {
+      const result = nativeRandom(array);
+      generated = array as Uint8Array; return result;
+    });
+    const store: SignetStorage = { required: true, compareAndSetItem: async () => { throw failure; }, getItem: async () => null, setItem: async () => { throw failure; }, removeItem: async () => {} };
+    try {
+      await expect(loadOrCreatePersistentClientSkFromStorage(store)).rejects.toBe(failure);
+      expect(generated?.length).toBe(32); expect(generated?.every(byte => byte === 0)).toBe(true);
+    } finally { random.mockRestore(); }
+  });
+  it('keeps the exact new client key private until the backend acknowledges it', async () => {
+    let acknowledge!: () => void, retained: string | undefined, returned = false;
+    const receipt = new Promise<void>(resolve => { acknowledge = resolve; });
+    const store: SignetStorage = { required: true, getItem: async () => null, compareAndSetItem: async (_key, _expected, value) => { retained = value!; await receipt; return true; },
+      setItem: async () => {}, removeItem: async () => {} };
+    const work = loadOrCreatePersistentClientSkFromStorage(store).then(key => { returned = true; return key; });
+    for(let i=0;i<4;i++) await Promise.resolve();
+    expect(retained).toMatch(/^[0-9a-f]{64}$/); expect(returned).toBe(false);
+    acknowledge(); const key = await work;
+    expect(bytesToHexLocal(key)).toBe(retained); key.fill(0);
+  });
+  it('propagates session write and logout deletion failures without acknowledging success', async () => {
+    const store: SignetStorage = { required: true, compareAndSetItem: async () => { throw failure; }, getItem: async () => null, setItem: async () => { throw failure; }, removeItem: async () => { throw failure; }, setItems: async () => { throw failure; }, getItems: async keys => Object.fromEntries(keys.map(key=>[key,null])) };
+    const event = makeAuthEvent({ challenge: 'a'.repeat(64), origin: window.location.origin });
+    await expect(saveSessionToStorage({ pubkey: event.pubkey, method: 'nip07', authEventJson: JSON.stringify(event) }, store)).rejects.toBe(failure);
+    await expect(clearSessionFromStorage(store)).rejects.toBe(failure);
+    await expect(savePendingRedirectToStorage({ challenge: 'a'.repeat(64), origin: 'https://example.test', appName: 'KithMoot', createdAt: 1 }, store)).rejects.toBe(failure);
+  });
+  it('holds partial or malformed stored sessions without clearing their bytes', async () => {
+    const store = { ...memoryStorage(), required: true };
+    store.data.set(STORAGE_KEYS.pubkey, fakePubkey);
+    await expect(loadSessionFromStorage(store)).rejects.toThrow('required-storage-invalid-session');
+    expect([...store.data]).toEqual([[STORAGE_KEYS.pubkey, fakePubkey]]);
+  });
+  it('allows an authenticated backend to prove an absent session', async () => {
+    await expect(loadSessionFromStorage({ ...memoryStorage(), required: true })).resolves.toBeNull();
+  });
+  it('retains best-effort compatibility for a backend that has not opted in', async () => {
+    const store: SignetStorage = { getItem: async () => { throw failure; }, setItem: async () => { throw failure; }, removeItem: async () => { throw failure; } };
+    const key = await loadOrCreatePersistentClientSkFromStorage(store);
+    expect(key).toHaveLength(32); key.fill(0);
+    await expect(clearSessionFromStorage(store)).resolves.toBeUndefined();
   });
 });

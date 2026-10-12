@@ -207,6 +207,23 @@ describe('createNip07Signer', () => {
     await expect(signer.signEvent({ kind: 1, content: 'hi' })).rejects.toThrow(/User rejected/);
     expect(signEventMock).toHaveBeenCalledOnce();
   });
+
+  it('closing an extension wrapper prevents new signing and encryption requests without changing its provider', async () => {
+    const signEvent = vi.fn(), encrypt = vi.fn(), decrypt = vi.fn();
+    const provider = { getPublicKey: async () => 'c'.repeat(64), signEvent,
+      nip04: { encrypt, decrypt }, nip44: { encrypt, decrypt } };
+    const signer = new Nip07Signer('c'.repeat(64), provider);
+    await signer.close();
+    await expect(signer.signEvent({ kind: 1, content: 'closed' })).rejects.toThrow('nip07-signer-closed');
+    for (const api of [signer.nip04!, signer.nip44!]) {
+      await expect(api.encrypt('d'.repeat(64), 'private')).rejects.toThrow('nip07-signer-closed');
+      await expect(api.decrypt('d'.repeat(64), 'ciphertext')).rejects.toThrow('nip07-signer-closed');
+    }
+    expect(signEvent).not.toHaveBeenCalled();
+    expect(encrypt).not.toHaveBeenCalled();
+    expect(decrypt).not.toHaveBeenCalled();
+    expect(await provider.getPublicKey()).toBe('c'.repeat(64));
+  });
 });
 
 describe('EphemeralSigner', () => {

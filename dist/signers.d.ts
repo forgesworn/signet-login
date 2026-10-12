@@ -29,6 +29,7 @@ export declare function hasNip07(): boolean;
 export declare class Nip07Signer implements SignetSigner {
     readonly pubkey: string;
     private readonly provider;
+    private closed;
     readonly method: "nip07";
     readonly capabilities: SignerCapabilities;
     readonly nip04?: SignetSigner['nip04'];
@@ -36,6 +37,7 @@ export declare class Nip07Signer implements SignetSigner {
     constructor(pubkey: string, provider: Nip07Provider);
     signEvent(template: EventTemplate): Promise<NostrEvent>;
     close(): Promise<void>;
+    private assertActive;
 }
 /** Connects to the page's NIP-07 provider and returns a Nip07Signer. */
 export declare function createNip07Signer(): Promise<Nip07Signer>;

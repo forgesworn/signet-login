@@ -115,6 +115,23 @@ export type NostrConnectStatusHandler = (status: NostrConnectStatus) => void;
 export type SignetDeliveryMode = 'relay' | 'redirect';
 /** Key-value storage backend used for Signet Access session persistence. */
 export interface SignetStorage {
+    /** Opt in to required custody: backend rejection propagates to the caller
+     * instead of becoming an absent read or a successful skipped write.
+     * Keep this policy fixed for the backend's lifetime. The backend owns
+     * concurrency, atomic snapshots, corruption checks and unknown receipts. */
+    readonly required?: boolean;
+    /** Required mode session reads must return one coherent snapshot containing
+     * exactly every requested key (null means authenticated absence). */
+    getItems?(keys: readonly string[]): Readonly<Record<string, string | null>> | Promise<Readonly<Record<string, string | null>>>;
+    /** Required session replacement/deletion atomically compares every expected
+     * key before committing all changes. null means absence/removal. Return true
+     * only after acknowledgement, false on a definite mismatch; unknown commits
+     * remain pending until the backend has reconciled them. */
+    setItems?(changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>): boolean | Promise<boolean>;
+    /** Required first-use and pending custody: atomically replace exactly the
+     * expected value (null means absence). Resolve true only after the change
+     * acknowledges, false on a known mismatch. Unknown commits remain pending. */
+    compareAndSetItem?(key: string, expected: string | null, value: string | null): boolean | Promise<boolean>;
     getItem(key: string): string | null | Promise<string | null>;
     setItem(key: string, value: string): void | Promise<void>;
     removeItem(key: string): void | Promise<void>;

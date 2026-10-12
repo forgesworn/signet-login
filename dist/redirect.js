@@ -76,14 +76,14 @@ export async function startRedirect(opts) {
     };
     await savePendingRedirectToStorage(pending, opts.storage);
     const url = buildRedirectAuthUrl(opts);
-    const cancelledByBack = new Promise(resolve => {
+    const cancelledByBack = new Promise((resolve, reject) => {
         let settled = false;
         const finish = () => {
             if (settled)
                 return;
             settled = true;
             window.removeEventListener('pageshow', onPageShow);
-            void clearPendingRedirectFromStorage(opts.storage).finally(() => resolve(null));
+            void clearPendingRedirectFromStorage(opts.storage, pending).then(() => resolve(null), reject);
         };
         const onPageShow = (event) => {
             if (event.persisted)
@@ -288,12 +288,13 @@ export function consumeCallback(options = {}) {
     return consumeCallbackWithPending(loadPendingRedirect(), finalize, options);
 }
 export async function consumeCallbackFromStorage(storage, options = {}) {
+    const pending = await loadPendingRedirectFromStorage(storage);
     const finalize = async (result) => {
-        await clearPendingRedirectFromStorage(storage);
+        await clearPendingRedirectFromStorage(storage, pending);
         cleanupCallbackUrl();
         return result;
     };
-    return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize, options);
+    return await consumeCallbackWithPending(pending, finalize, options);
 }
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid
 // importing the full types module just for one constant.

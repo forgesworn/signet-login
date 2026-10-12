@@ -118,13 +118,13 @@ export async function startRedirect(opts: RedirectStartOptions): Promise<null> {
   };
   await savePendingRedirectToStorage(pending, opts.storage);
   const url = buildRedirectAuthUrl(opts);
-  const cancelledByBack = new Promise<null>(resolve => {
+  const cancelledByBack = new Promise<null>((resolve, reject) => {
     let settled = false;
     const finish = (): void => {
       if (settled) return;
       settled = true;
       window.removeEventListener('pageshow', onPageShow);
-      void clearPendingRedirectFromStorage(opts.storage).finally(() => resolve(null));
+      void clearPendingRedirectFromStorage(opts.storage, pending).then(() => resolve(null), reject);
     };
     const onPageShow = (event: PageTransitionEvent): void => {
       if (event.persisted) finish();
@@ -384,12 +384,13 @@ export async function consumeCallbackFromStorage(
   storage?: SignetStorage,
   options: ConsumeCallbackOptions = {},
 ): Promise<ConsumeCallbackResult> {
+  const pending = await loadPendingRedirectFromStorage(storage);
   const finalize = async <T extends ConsumeCallbackResult>(result: T): Promise<T> => {
-    await clearPendingRedirectFromStorage(storage);
+    await clearPendingRedirectFromStorage(storage, pending);
     cleanupCallbackUrl();
     return result;
   };
-  return await consumeCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize, options);
+  return await consumeCallbackWithPending(pending, finalize, options);
 }
 
 // Re-export DEFAULTS for tree-shaking-friendly callers that want to avoid

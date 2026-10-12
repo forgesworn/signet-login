@@ -191,10 +191,11 @@ export function consumeAmberCallback() {
     return consumeAmberCallbackWithPending(loadPendingRedirect(), finalize);
 }
 export async function consumeAmberCallbackFromStorage(storage) {
+    const pending = await loadPendingRedirectFromStorage(storage);
     const finalize = async (result) => {
-        await clearPendingRedirectFromStorage(storage);
+        await clearPendingRedirectFromStorage(storage, pending);
         cleanupAmberCallbackUrl();
         return result;
     };
-    return await consumeAmberCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
+    return await consumeAmberCallbackWithPending(pending, finalize);
 }

@@ -121,4 +121,32 @@ describe('redirect-bunker background upgrade persistence', () => {
       process.off('unhandledRejection', onUnhandledRejection);
     }
   });
+  for (const waitForBunker of [false, true]) for (const fails of [false, true]) it(`required callback awaits live custody (wait=${waitForBunker}, reject=${fails})`, async () => {
+    const authEvent = makeAuthEvent({ challenge: CHALLENGE, origin: ORIGIN_JSDOM });
+    savePendingRedirect({ challenge: CHALLENGE, origin: ORIGIN_JSDOM, appName: APP_NAME, createdAt: Date.now() });
+    const bunkerUri = `bunker://${authEvent.pubkey}?relay=wss%3A%2F%2Frelay.example`;
+    const signer = {
+      pubkey: authEvent.pubkey, method: 'bunker' as const,
+      capabilities: { canSignEvents: true, hasNip44: true }, bunkerUri,
+      clientSecretKey: new Uint8Array(32).fill(3), close: vi.fn(async () => {}),
+      signEvent: vi.fn(async () => authEvent),
+    };
+    vi.mocked(createBunkerSigner).mockResolvedValue(signer as unknown as Awaited<ReturnType<typeof createBunkerSigner>>);
+    let acknowledge!: () => void, reject!: (error: Error) => void;
+    const receipt = new Promise<void>((yes, no) => { acknowledge = yes; reject = no; });
+    vi.mocked(saveSessionToStorage).mockImplementation(async () => { await receipt; });
+    const storage = { required: true, compareAndSetItem: async (key: string, expected: string | null, value: string | null) => { if(localStorage.getItem(key)!==expected)return false; if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);return true; }, getItems: async () => ({}), setItems: async () => true, getItem: (key: string) => localStorage.getItem(key),
+      setItem: (key: string, value: string) => localStorage.setItem(key, value), removeItem: (key: string) => localStorage.removeItem(key) };
+    setLocation(callbackSearchForAuthEvent(authEvent, { bunker: bunkerUri }));
+    let settled = false;
+    const request = handleRedirectCallback({ storage, waitForBunker });
+    const observed = request.then(value => { settled = true; return value; }, error => { settled = true; throw error; });
+    const outcome = fails ? expect(observed).rejects.toThrow('custody held') : expect(observed).resolves.toMatchObject({ kind: 'session' });
+    await vi.waitFor(() => expect(saveSessionToStorage).toHaveBeenCalledOnce());
+    expect(settled).toBe(false); expect(signer.signEvent).not.toHaveBeenCalled();
+    if (fails) reject(new Error('custody held')); else acknowledge();
+    await outcome;
+    if (fails) expect(signer.close).toHaveBeenCalledOnce();
+    else { const result = await request; if(result.kind !== 'session') throw new Error('expected session'); await result.session.signer.signEvent({ kind: 1, content: 'retained', tags: [], created_at: 1 }); expect(signer.signEvent).toHaveBeenCalledOnce(); await result.session.signer.close(); }
+  });
 });

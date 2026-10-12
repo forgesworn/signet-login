@@ -261,10 +261,11 @@ export function consumeAmberCallback(): ConsumeAmberResult {
 }
 
 export async function consumeAmberCallbackFromStorage(storage?: SignetStorage): Promise<ConsumeAmberResult> {
+  const pending = await loadPendingRedirectFromStorage(storage);
   const finalize = async <T extends ConsumeAmberResult>(result: T): Promise<T> => {
-    await clearPendingRedirectFromStorage(storage);
+    await clearPendingRedirectFromStorage(storage, pending);
     cleanupAmberCallbackUrl();
     return result;
   };
-  return await consumeAmberCallbackWithPending(await loadPendingRedirectFromStorage(storage), finalize);
+  return await consumeAmberCallbackWithPending(pending, finalize);
 }

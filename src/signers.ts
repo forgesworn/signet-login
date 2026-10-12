@@ -53,6 +53,7 @@ export function hasNip07(): boolean {
 }
 
 export class Nip07Signer implements SignetSigner {
+  private closed = false;
   readonly method = 'nip07' as const;
   readonly capabilities: SignerCapabilities;
   readonly nip04?: SignetSigner['nip04'];
@@ -62,14 +63,14 @@ export class Nip07Signer implements SignetSigner {
     this.capabilities = { canSignEvents: true, hasNip44: !!provider.nip44 };
     if (provider.nip04) {
       this.nip04 = {
-        encrypt: (peer, pt) => provider.nip04!.encrypt(peer, pt),
-        decrypt: (peer, ct) => provider.nip04!.decrypt(peer, ct),
+        encrypt: async (peer, pt) => { this.assertActive(); return provider.nip04!.encrypt(peer, pt); },
+        decrypt: async (peer, ct) => { this.assertActive(); return provider.nip04!.decrypt(peer, ct); },
       };
     }
     if (provider.nip44) {
       this.nip44 = {
-        encrypt: (peer, pt) => provider.nip44!.encrypt(peer, pt),
-        decrypt: (peer, ct) => provider.nip44!.decrypt(peer, ct),
+        encrypt: async (peer, pt) => { this.assertActive(); return provider.nip44!.encrypt(peer, pt); },
+        decrypt: async (peer, ct) => { this.assertActive(); return provider.nip44!.decrypt(peer, ct); },
       };
     }
   }
@@ -85,11 +86,20 @@ export class Nip07Signer implements SignetSigner {
       created_at: template.created_at ?? Math.floor(Date.now() / 1000),
       tags: template.tags ?? [],
     };
-    return retryTransientNip07Sign(() => this.provider.signEvent(filled));
+    return retryTransientNip07Sign(() => {
+      this.assertActive();
+      return this.provider.signEvent(filled);
+    });
   }
 
   async close(): Promise<void> {
-    // NIP-07 extensions have no concept of disconnect — nothing to do.
+    // Revoke this wrapper, including any queued retry. NIP-07 provides no
+    // way to disconnect the extension or abort a request already handed to it.
+    this.closed = true;
+  }
+
+  private assertActive(): void {
+    if (this.closed) throw new Error('nip07-signer-closed');
   }
 }
 
@@ -1123,7 +1133,7 @@ export class DeferredBunkerSigner implements SignetSigner {
         this.capabilities.canSignEvents = true;
         this.capabilities.hasNip44 = true;
       }
-    });
+    }).catch(() => { /* live() still propagates the failed upgrade. */ });
     this.nip04 = {
       encrypt: async (peer, pt) => (await this.live()).nip04!.encrypt(peer, pt),
       decrypt: async (peer, ct) => (await this.live()).nip04!.decrypt(peer, ct),
