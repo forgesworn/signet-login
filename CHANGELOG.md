@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.0 (2026-10-12)
+
+### Features
+
+- add required atomic storage custody
+
+### Bug Fixes
+
+- dispose cancelled and discarded signer operations
+- retain custody and cancellation through sign-in handoff
+
+
+
 ## 0.17.4 (2026-09-28)
 
 ### Bug Fixes
