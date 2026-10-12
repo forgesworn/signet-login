@@ -36,6 +36,12 @@ import {
 function memoryStorage(): SignetStorage {
   const data = new Map<string, string>();
   return {
+    async compareAndSetItem(key: string, expected: string | null, value: string | null) {
+      if ((data.get(key) ?? null) !== expected) return false;
+      if(value === null) data.delete(key); else data.set(key, value); return true;
+    },
+    async getItems(keys: readonly string[]) { return Object.fromEntries(keys.map(key => [key, data.get(key) ?? null])); },
+    async setItems(changes: Readonly<Record<string, string | null>>) { for(const [key,value] of Object.entries(changes)) { if(value===null) data.delete(key); else data.set(key,value); } },
     async getItem(key: string) {
       return data.get(key) ?? null;
     },
@@ -345,5 +351,25 @@ describe('decodeClientSecretKey', () => {
     expect(decoded).not.toBeNull();
     expect(decoded?.length).toBe(32);
     expect(Array.from(decoded ?? []).every((b) => b === 0)).toBe(true);
+  });
+});
+
+
+describe('required restore mismatch custody', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+  it('restores a valid distinct remote-signer and user identity using the retained session client key', async () => {
+    const storage = { ...memoryStorage(), required: true }; const proof = await buildSignedBunkerProof();
+    expect(new URL(proof.bunkerUri).hostname).not.toBe(proof.pubkey);
+    await persistBunkerSession(storage, proof); stubSuccessfulReconnect(proof.pubkey);
+    const restored = await restoreSession({storage}); expect(restored?.pubkey).toBe(proof.pubkey);
+    expect(vi.mocked(createBunkerSigner)).toHaveBeenLastCalledWith(expect.objectContaining({uri:proof.bunkerUri,clientSecretKey:proof.clientSk}));
+  });
+  it('closes a mismatched bunker without clearing the verified stored session or swallowing a custody hold', async () => {
+    const storage = { ...memoryStorage(), required: true }; const proof = await buildSignedBunkerProof();
+    await persistBunkerSession(storage, proof); const before = await loadSessionFromStorage(storage);
+    const close = vi.fn(async () => {});
+    vi.mocked(createBunkerSigner).mockResolvedValue({ pubkey: 'a'.repeat(64), close } as unknown as Awaited<ReturnType<typeof createBunkerSigner>>);
+    await expect(restoreSession({storage})).rejects.toThrow('required-storage-restored-signer-mismatch');
+    expect(close).toHaveBeenCalledOnce(); expect(await loadSessionFromStorage(storage)).toEqual(before);
   });
 });

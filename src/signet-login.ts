@@ -45,6 +45,7 @@ import { DEFAULTS } from './types.js';
 import { showLoginModal } from './modal.js';
 import {
   saveSessionToStorage,
+  assertRequiredSessionStorage,
   loadSessionFromStorage,
   clearSessionFromStorage,
   bytesToHexLocal,
@@ -169,6 +170,9 @@ export interface LogoutOptions {
  * option.
  */
 export async function login(opts: LoginOptions): Promise<SignetSession | null> {
+  assertRequiredSessionStorage(opts.storage);
+  if (opts.storage?.required && opts.preferredMethod === 'nsec') throw new Error('required-storage-nsec-is-memory-only');
+  if (opts.storage?.required && opts.persist === false) throw new Error('required-storage-session-persistence-required');
   // Redirect mode short-circuits the picker — the user is going to signet-app.
   // We don't gate on preferredMethod here: redirect mode implies the consumer
   // wants the Sign in with Signet method, which is the only method that uses
@@ -333,37 +337,24 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       await clearSessionFromStorage(opts?.storage);
       return null;
     }
+    let signer: BunkerSignerImpl;
     try {
-      // Reconnect with the SESSION'S stored client key. The global
-      // `STORAGE_KEYS.clientSk` is only for new logins/pairings — restore must
-      // never read or write it, so an explicit `clearPersistentClientSk()`
-      // stays effective and a legacy session key is never lost to migration.
-      const signer = await createBunkerSigner({
-        uri: stored.bunkerUri,
-        clientSecretKey,
-        onStatus: opts?.onNostrConnectStatus,
+      // Restore uses the session's client key, never a newly generated one.
+      signer = await createBunkerSigner({
+        uri: stored.bunkerUri, clientSecretKey, onStatus: opts?.onNostrConnectStatus,
       });
-      if (signer.pubkey !== stored.pubkey) {
-        console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session', { connected: signer.pubkey, expected: stored.pubkey });
-        await signer.close();
-        await clearSessionFromStorage(opts?.storage);
-        return null;
-      }
-      return {
-        pubkey: stored.pubkey,
-        method: 'bunker',
-        signer,
-        authEvent,
-      };
     } catch (err) {
-      // Transient reconnect failure (relay slow, signer device asleep/busy). Do
-      // NOT clear the stored creds — a single hiccup must not permanently break
-      // the bond and force a fresh pairing (the symptom: "the signer keeps
-      // asking to authorise"). Keep them so the next restore reconnects with the
-      // SAME client key, which the signer device still recognises.
-      console.warn('[signet-login] restore: bunker reconnect failed — keeping creds for the next retry (NOT clearing). The signer device should still recognise us on reconnect.', err);
+      console.warn('[signet-login] restore: bunker reconnect failed — keeping creds for the next retry.', err);
       return null;
     }
+    if (signer.pubkey !== stored.pubkey) {
+      await signer.close().catch(() => {});
+      if (opts?.storage?.required) throw new Error('required-storage-restored-signer-mismatch');
+      console.warn('[signet-login] restore: reconnected bunker pubkey mismatch — clearing session');
+      await clearSessionFromStorage(opts?.storage);
+      return null;
+    }
+    return { pubkey: stored.pubkey, method: 'bunker', signer, authEvent };
   }
 
   // method === 'redirect' or 'amber' — both restore as ephemeral (auth-only).
@@ -422,6 +413,7 @@ export const handleCallback = handlePopupCallback;
  * authenticated the user.
  */
 export async function handleRedirectCallback(options: HandleRedirectCallbackOptions = {}): Promise<ConsumeCallbackResult | ConsumeAmberResult> {
+  assertRequiredSessionStorage(options.storage);
   // Try Amber first — its callback shape (event= param) is disjoint from
   // signet-app's (pubkey/signature/eventId), so the order doesn't matter
   // for valid callbacks. Picking Amber first only affects the 'no-callback'
@@ -458,7 +450,12 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
       clientSecretKey,
       timeoutMs: REDIRECT_BUNKER_CONNECT_TIMEOUT_MS,
     })
-      .then((bunkerSigner): BunkerSignerImpl | null => {
+      .catch((err): null => {
+        console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
+        return null;
+      })
+      .then(async (bunkerSigner): Promise<BunkerSignerImpl | null> => {
+        if (!bunkerSigner) return null;
         // Sanity: the bunker must sign as the same pubkey the redirect
         // authenticated. A mismatch means a misconfigured deployment or a
         // tampered URL — drop back to auth-only rather than silently swapping
@@ -472,21 +469,24 @@ export async function handleRedirectCallback(options: HandleRedirectCallbackOpti
         // restores a connected signer instead of an auth-only stub.
         const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
         if (displayName) liveSession.displayName = displayName;
-        void persistSession(liveSession, options.storage).catch(() => {});
+        if (options.storage?.required) await persistSession(liveSession, options.storage);
+        else void persistSession(liveSession, options.storage).catch(() => {});
         return bunkerSigner;
-      })
-      .catch((err): BunkerSignerImpl | null => {
-        console.warn('[signet-login] redirect upgrade: createBunkerSigner failed — staying auth-only (no live signing). Reconnect/relay issue or signer device unreachable.', err);
-        return null;
       });
 
-    if (options.waitForBunker) {
+    // Required custody has no background session writer: await the one live
+    // receipt and propagate its rejection before exposing any session.
+    if (options.waitForBunker || options.storage?.required) {
       const bunkerSigner = await upgrade;
       if (bunkerSigner) {
         const liveSession: SignetSession = { pubkey: expected, method: 'bunker', signer: bunkerSigner, authEvent };
         if (displayName) liveSession.displayName = displayName;
-        await persistSession(liveSession, options.storage);
+        if (!options.storage?.required) await persistSession(liveSession, options.storage);
         return { kind: 'session', session: liveSession };
+      }
+      if (options.storage?.required) {
+        await persistSession(result.session, options.storage);
+        return result;
       }
     }
 
@@ -538,7 +538,10 @@ async function persistSession(session: SignetSession, storage?: SignetStorage): 
   // even the method to storage would leak that this user has used a paste
   // path. Reload lands the user back on the picker, which is the contract
   // we surface in runNsecFlow's warning copy.
-  if (session.method === 'nsec') return;
+  if (session.method === 'nsec') {
+    if (storage?.required) throw new Error('required-storage-nsec-is-memory-only');
+    return;
+  }
 
   const payload: Parameters<typeof saveSessionToStorage>[0] = {
     pubkey: session.pubkey,
@@ -561,7 +564,14 @@ async function persistSession(session: SignetSession, storage?: SignetStorage): 
   if (session.expiresAt !== undefined) payload.expiresAt = session.expiresAt;
   if (session.displayName !== undefined) payload.displayName = session.displayName;
 
-  await saveSessionToStorage(payload, storage);
+  try {
+    await saveSessionToStorage(payload, storage);
+  } catch (error) {
+    if (storage?.required) {
+      try { await session.signer.close?.(); } catch { /* Closing cannot waive the failed receipt. */ }
+    }
+    throw error;
+  }
 }
 
 // ── Auto-attach to window.Signet (additive) ───────────────────────────────────

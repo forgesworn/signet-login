@@ -625,6 +625,7 @@ type AuthResponseWithBunker = Awaited<ReturnType<typeof waitForAuthResponse>> & 
 
 interface RedirectFlowOptions {
   sameDevice?: boolean;
+  cancelled?: Promise<null>;
 }
 
 async function runRedirectFlow(
@@ -635,6 +636,8 @@ async function runRedirectFlow(
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
   const sameDevice = flowOpts.sameDevice === true;
+  let cancelled = false;
+  void flowOpts.cancelled?.then(() => { cancelled = true; });
 
   // Resume an in-flight sign-in rather than starting a second one: the response
   // may already be on the relay, addressed to the key that sign-in minted.
@@ -642,6 +645,12 @@ async function runRedirectFlow(
   // SDK-generated one is fresh on every login() call, so any live record for
   // this origin is ours to pick up, adopting its challenge.
   const resumed = await loadPendingRelayAuth(opts.storage);
+  if (cancelled) { await clearPendingRelayAuth(opts.storage, resumed); return null; }
+  if (opts.storage?.required && resumed && (resumed.origin !== opts.origin ||
+      resumed.appName !== opts.appName || resumed.relayUrl !== opts.relayUrl ||
+      (opts.challengeFromConsumer && resumed.challenge !== opts.challenge))) {
+    throw new Error('required-storage-pending-relay-binding-mismatch');
+  }
   const reusable = resumed && resumed.origin === opts.origin &&
     (!opts.challengeFromConsumer || resumed.challenge === opts.challenge)
     ? resumed
@@ -655,16 +664,19 @@ async function runRedirectFlow(
   // and on resume the link and QR rebuild the identical request.
   const issuedAt = reusable ? reusable.issuedAt : Math.floor(Date.now() / 1000);
 
-  if (!reusable) {
-    await savePendingRelayAuth({
+  const pendingRecord = reusable ?? {
       challenge,
       origin: opts.origin,
       appName: opts.appName,
       relayUrl: opts.relayUrl,
       sessionSkHex: bytesToHex(sessionPrivKey),
       issuedAt,
-    }, opts.storage);
+  };
+  if (!reusable) {
+    try { await savePendingRelayAuth(pendingRecord, opts.storage); }
+    catch (error) { sessionPrivKey.fill(0); throw error; }
   }
+  if (cancelled) { try { await clearPendingRelayAuth(opts.storage, pendingRecord); return null; } finally { sessionPrivKey.fill(0); } }
 
   const params = new URLSearchParams({
     auth: '1',
@@ -711,7 +723,7 @@ async function runRedirectFlow(
     });
   }
 
-  return new Promise<RedirectFlowResult | null>(resolve => {
+  return new Promise<RedirectFlowResult | null>((resolve, reject) => {
     let settled = false;
     const backNavigation = createBackNavigationCancel();
     // Cancellation is wired now that signet-verify accepts an AbortSignal
@@ -743,9 +755,15 @@ async function runRedirectFlow(
     const countdownTimer = setInterval(renderCountdown, 1000);
     renderCountdown();
 
+    let clearing: Promise<void> | undefined;
+    const clear = (): Promise<void> => clearing ??= clearPendingRelayAuth(opts.storage, pendingRecord);
+    let completion: RedirectFlowResult | null = null;
     const settle = (v: RedirectFlowResult | null): void => {
-      if (settled) return;
+      // Cancellation may arrive after approval while its deletion receipt is
+      // still unknown. Revoke that approval before the receipt resolves.
+      if (settled) { if (v === null) completion = null; return; }
       settled = true;
+      completion = v;
       backNavigation.cleanup();
       waitAbort.abort();
       clearInterval(countdownTimer);
@@ -754,10 +772,10 @@ async function runRedirectFlow(
       // browser Back gesture — errors do not auto-settle), so the request goes
       // with it. Clearing here, not in the rejection handler: `settled` is
       // already true by the time the abort's rejection lands, so it never sees it.
-      if (v === null) void clearPendingRelayAuth(opts.storage);
-      resolve(v);
+      void clear().then(() => resolve(completion), reject);
     };
     backNavigation.promise.then(() => settle(null));
+    void flowOpts.cancelled?.then(() => settle(null));
 
     refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
       settle(null);
@@ -766,7 +784,7 @@ async function runRedirectFlow(
       settle(null);
     });
 
-    waitForAuthResponse({
+    const waiting = waitForAuthResponse({
       requestId: challenge, // the effective challenge — a resumed one on resume
       relayUrl: opts.relayUrl,
       sessionPrivKey,
@@ -776,7 +794,10 @@ async function runRedirectFlow(
       timeout: opts.explicitTimeout,
       issuedAt,
       abortSignal: waitAbort.signal,
-    }).then(rawResult => {
+    });
+    // The receiver owns this buffer until its abort/completion has joined.
+    void waiting.finally(() => sessionPrivKey.fill(0)).catch(() => {});
+    waiting.then(rawResult => {
       if (settled) return;
       const result = rawResult as AuthResponseWithBunker;
       const authEvent: SignetAuthEvent = {
@@ -803,9 +824,8 @@ async function runRedirectFlow(
       if (result.displayName) out.displayName = result.displayName;
       if (result.bunkerUri) out.bunkerUri = result.bunkerUri;
       // Settled — the persisted key has no further use.
-      void clearPendingRelayAuth(opts.storage);
       settle(out);
-    }).catch((err: Error & { code?: string }) => {
+    }).catch(async (err: Error & { code?: string }) => {
       if (settled) return;
       // The current wait is over either way — a leaked ticker would keep a
       // dead dialog counting down (or re-announcing "expired" every second).
@@ -815,7 +835,14 @@ async function runRedirectFlow(
       // `timeout` / `relay-error` are not — keep the anchor so a retry asks the
       // relay from the right point instead of re-anchoring past the response.
       if (code === 'expired' || code === 'denied' || code === 'aborted') {
-        void clearPendingRelayAuth(opts.storage);
+        try { await clear(); }
+        catch (error) {
+          settled = true;
+          backNavigation.cleanup();
+          waitAbort.abort();
+          reject(error);
+          return;
+        }
       }
       const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
       if (status) {
@@ -852,8 +879,12 @@ async function buildSessionFromRedirectFlowResult(
   refs: ModalRefs,
   result: RedirectFlowResult,
   opts: ResolvedOptions,
-  _aborted: Promise<null>,
+  aborted: Promise<null>,
 ): Promise<SignetSession | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
+  await Promise.resolve();
+  if (cancelled) return null;
   // Default: auth-only ephemeral signer (identity proof, no live signing).
   let signer: SignetSession['signer'] = new EphemeralSigner(result.pubkey, result.authEvent);
   let method: SignetSession['method'] = 'redirect';
@@ -866,6 +897,7 @@ async function buildSessionFromRedirectFlowResult(
   // the relay handshake can finish.
   if (result.bunkerUri) {
     const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+    if (cancelled) { clientSecretKey.fill(0); return null; }
     const expected = result.pubkey;
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-status');
     if (status) status.textContent = 'Connecting signer...';
@@ -875,6 +907,7 @@ async function buildSessionFromRedirectFlowResult(
         clientSecretKey,
         timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
       });
+      if (cancelled) { await bunkerSigner.close().catch(() => {}); return null; }
       if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
         // Bunker came back as a different key than the identity we proved.
         // Discard it and keep the auth-only identity (result.pubkey) rather than
@@ -912,7 +945,9 @@ async function buildSessionFromRedirectFlowResult(
 
 // ── Paste bunker URI ──────────────────────────────────────────────────────────
 
-async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<BunkerSignerImpl | null> {
+async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions, aborted: Promise<null>): Promise<BunkerSignerImpl | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
   const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
@@ -934,8 +969,9 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     </div>
   `;
 
-  return new Promise<BunkerSignerImpl | null>(resolve => {
+  return new Promise<BunkerSignerImpl | null>((resolve, reject) => {
     let settled = false;
+    let active = false;
     let scanGeneration = 0;
     const settle = (v: BunkerSignerImpl | null): void => {
       if (settled) return;
@@ -952,10 +988,12 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     const scanBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="scan"]');
     let scanner: QrScannerHandle | null = null;
 
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
-      scanner?.stop();
-      settle(null);
-    });
+    const cancel = (): void => {
+      cancelled = true; scanner?.stop();
+      if (!active) settle(null);
+    };
+    void aborted.then(cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', cancel);
 
     scanBtn?.addEventListener('click', () => {
       if (!input || !scanContainer) return;
@@ -986,27 +1024,32 @@ async function runBunkerFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Bu
     });
 
     connectBtn?.addEventListener('click', async () => {
+      if (active || settled || cancelled) return;
       const uri = input?.value.trim() ?? '';
-      if (!uri) {
-        if (status) status.textContent = 'Please paste a bunker URI.';
-        return;
-      }
-      if (status) {
-        status.textContent = 'Connecting…';
-        status.style.color = '';
-      }
-      connectBtn.disabled = true;
-      try {
-        const signer = await createBunkerSigner({
-          uri,
-          clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts.storage),
-        });
-        settle(signer);
-      } catch (err) {
-        if (status) {
-          status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
-          status.style.color = '#d04848';
+      if (!uri) { if (status) status.textContent = 'Please paste a bunker URI.'; return; }
+      active = true; connectBtn.disabled = true;
+      if (status) { status.textContent = 'Connecting…'; status.style.color = ''; }
+      let sk: Uint8Array;
+      try { sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage); }
+      catch (error) {
+        active = false;
+        if (opts.storage?.required) {
+          settled = true; scanGeneration++; scanner?.stop(); reject(error); return;
         }
+        if (cancelled) { settle(null); return; }
+        if (status) status.textContent = `✗ ${error instanceof Error ? error.message : String(error)}`;
+        connectBtn.disabled = false; return;
+      }
+      if (cancelled) { sk.fill(0); active = false; settle(null); return; }
+      try {
+        const signer = await createBunkerSigner({ uri, clientSecretKey: sk, timeoutMs: opts.timeout });
+        active = false;
+        if (cancelled) { await signer.close().catch(() => {}); sk.fill(0); settle(null); }
+        else settle(signer);
+      } catch (err) {
+        active = false;
+        if (cancelled) { sk.fill(0); settle(null); return; }
+        if (status) { status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`; status.style.color = '#d04848'; }
         connectBtn.disabled = false;
       }
     });
@@ -1046,7 +1089,9 @@ function nostrConnectStatusText(status: NostrConnectStatus): string | null {
  * URI and the user scans it with their signer (nsec.app, Amber, Keychat…).
  * The signer connects to our chosen relay and signs ad-hoc from there.
  */
-async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<BunkerSignerImpl | null> {
+async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions, aborted: Promise<null>): Promise<BunkerSignerImpl | null> {
+  let cancelled = false;
+  void aborted.then(() => { cancelled = true; });
   const dark = isDarkMode(opts.theme);
   const muted = dark ? '#888' : '#666';
 
@@ -1054,6 +1099,7 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
   // logins (bunkers auto-approve a bound client pubkey). The connect `secret`
   // stays fresh per handshake — it's a one-time challenge, not an identity.
   const sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+  if (cancelled) { sk.fill(0); return null; }
   const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
   const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
 
@@ -1136,14 +1182,10 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
       resolve(v);
     };
 
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', () => {
-      ac.abort();
-      settle(null);
-    });
-    refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', () => {
-      ac.abort();
-      settle(null);
-    });
+    const cancel = (): void => { cancelled = true; ac.abort(); if (!opts.storage?.required) settle(null); };
+    void aborted.then(cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="back"]')?.addEventListener('click', cancel);
+    refs.dialog.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.addEventListener('click', cancel);
 
     const handleStatus = (event: NostrConnectStatus): void => {
       const text = nostrConnectStatusText(event);
@@ -1161,8 +1203,12 @@ async function runNostrConnectFlow(refs: ModalRefs, opts: ResolvedOptions): Prom
       timeoutMs: opts.timeout,
       onStatus: handleStatus,
     })
-      .then(signer => settle(signer))
+      .then(async signer => {
+        if (cancelled) { await signer.close().catch(() => {}); sk.fill(0); settle(null); }
+        else settle(signer);
+      })
       .catch(err => {
+        if (cancelled) { sk.fill(0); settle(null); return; }
         if (settled) return;  // already cancelled
         if (status) {
           status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
@@ -1352,8 +1398,8 @@ function resolveOptions(opts: LoginOptions): ResolvedOptions {
     origin,
     mobile,
     challengeFromConsumer,
-    methods: methodConfig.methods,
-    advancedMethods: methodConfig.advancedMethods,
+    methods: opts.storage?.required ? methodConfig.methods.filter(method => method !== 'nsec') : methodConfig.methods,
+    advancedMethods: opts.storage?.required ? methodConfig.advancedMethods.filter(method => method !== 'nsec') : methodConfig.advancedMethods,
     relayUrl,
     relayUrls,
     nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
@@ -1402,7 +1448,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
   // flow await against this lets the modal exit cleanly.
   let userAborted = false;
   const aborted = new Promise<null>((resolve) => {
-    refs.dialog.addEventListener('cancel', () => { userAborted = true; resolve(null); });
+    refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
   });
 
   try {
@@ -1412,6 +1458,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         : await Promise.race([renderPicker(refs, resolved), aborted]);
       const routeChoice = choice === null ? null : routePickerChoice(choice);
 
+      if (resolved.storage?.required && routeChoice === 'nsec') throw new Error('required-storage-nsec-is-memory-only');
       if (userAborted) return null;
       if (routeChoice === null || routeChoice === 'cancel') return null;
 
@@ -1435,7 +1482,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
         // the My Signet tab alive as the ongoing bunker. Use the relay-backed
         // auth response path here; explicit `login({ mode: 'redirect' })`
         // remains the same-tab redirect API for mobile/single-device callers.
-        const result = await Promise.race([runRedirectFlow(refs, resolved, { sameDevice: true }), aborted]);
+        const result = await runRedirectFlow(refs, resolved, { sameDevice: true, cancelled: aborted });
         if (userAborted) return null;
         if (!result) {
           if (resolved.preferredMethod) return null;
@@ -1465,7 +1512,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       }
 
       if (routeChoice === 'qr') {
-        const result = await Promise.race([runRedirectFlow(refs, resolved), aborted]);
+        const result = await runRedirectFlow(refs, resolved, { cancelled: aborted });
         if (userAborted) return null;
         if (!result) {
           if (resolved.preferredMethod) return null;
@@ -1481,7 +1528,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       }
 
       if (routeChoice === 'bunker') {
-        const signer = await Promise.race([runBunkerFlow(refs, resolved), aborted]);
+        const signer = await runBunkerFlow(refs, resolved, aborted);
         if (userAborted) return null;
         if (!signer) {
           if (resolved.preferredMethod) return null;
@@ -1513,7 +1560,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       }
 
       if (routeChoice === 'nostrconnect') {
-        const signer = await Promise.race([runNostrConnectFlow(refs, resolved), aborted]);
+        const signer = await runNostrConnectFlow(refs, resolved, aborted);
         if (userAborted) return null;
         if (!signer) {
           if (resolved.preferredMethod) return null;

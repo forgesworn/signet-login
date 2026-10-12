@@ -15,6 +15,8 @@ export interface PersistedSession {
     expiresAt?: number;
     displayName?: string;
 }
+/** Check the required session contract before login can produce effects. */
+export declare function assertRequiredSessionStorage(storage?: SignetStorage): void;
 /** Save a session. Caller must serialise authEvent to JSON. */
 export declare function saveSession(s: PersistedSession): void;
 /** Async-storage variant of `saveSession`. */
@@ -78,7 +80,7 @@ export declare function loadPendingRedirectFromStorage(storage?: SignetStorage):
 /** Clear the pending-redirect record. Safe to call when none exists. */
 export declare function clearPendingRedirect(): void;
 /** Async-storage variant of `clearPendingRedirect`. */
-export declare function clearPendingRedirectFromStorage(storage?: SignetStorage): Promise<void>;
+export declare function clearPendingRedirectFromStorage(storage?: SignetStorage, expected?: PendingRedirect | null): Promise<void>;
 /**
  * Persist the in-flight cross-device (relay) sign-in. Called immediately after
  * minting the session keypair so a page discarded while the user is in the
@@ -92,6 +94,6 @@ export declare function savePendingRelayAuth(record: PendingRelayAuth, storage?:
  */
 export declare function loadPendingRelayAuth(storage?: SignetStorage): Promise<PendingRelayAuth | null>;
 /** Clear the pending relay-auth record. Safe to call when none exists. */
-export declare function clearPendingRelayAuth(storage?: SignetStorage): Promise<void>;
+export declare function clearPendingRelayAuth(storage?: SignetStorage, expected?: PendingRelayAuth | null): Promise<void>;
 export declare function bytesToHexLocal(bytes: Uint8Array): string;
 export declare function hexToBytesLocal(hex: string): Uint8Array;

@@ -281,6 +281,42 @@ await Signet.logout(session, { storage: encryptedStorage });
 
 Use the same storage adapter for `login`, `restoreSession`, `handleRedirectCallback`, and `logout`.
 
+For custody that must succeed before login can proceed, set the adapter's
+`required: true` and keep that policy fixed for its lifetime. Read, write and
+delete errors then propagate. An unreadable or invalid stored client key is
+never replaced, and a new private client key is returned only after its write
+acknowledges; the mutable provisional key buffer is wiped on rejection
+(immutable strings already passed to the backend cannot be wiped). A nonempty malformed session
+holds rather than being treated as a fresh login. A redirect's live bunker
+upgrade also waits for required session persistence before returning a session
+or allowing signing, even without `waitForBunker`. Cancellation and successful
+relay approval wait for pending-state deletion; failed deletion rejects the flow.
+Malformed pending records and bunker credentials hold without replacement.
+
+Required adapters must also implement `compareAndSetItem(key, expected, value)`.
+It atomically changes only the exact expected value, returns `true` after the
+change acknowledges, or `false` on a definite mismatch. `null` means absence
+or removal. Client-key first use converges on the retained key; pending records
+are created only in an absent slot and removed only against their captured
+receipt. A conflicting pending request holds without overwriting or deleting
+it. Unknown CAS results must stay pending through backend reconciliation.
+
+Required adapters must implement `getItems(keys)` for a coherent session snapshot
+and `setItems(changes)` for atomic session replacement/deletion. Every requested
+key must appear in a snapshot with a string or `null`; `null` in a replacement
+removes a key. Missing batch methods reject before login effects; `persist: false` is rejected
+with required custody. The memory-only `nsec` route is hidden, and explicitly
+selecting it rejects before private-key entry. The SDK never simulates atomicity
+with sequential key writes. Stored auth proofs are integrity-checked; this is
+not fresh server authentication or an independent authority/absence proof.
+
+The adapter must implement these atomic operations, serialize concurrent
+writers, authenticate snapshots and absence, perform schema validation
+and reconcile uncertain commits. Keep an uncertain operation pending until it has
+a definite outcome; rejecting it must stop the consumer's effects. This option
+does not encrypt data or provide rollback resistance. Adapters without
+`required: true` retain the existing best-effort persistence behaviour.
+
 For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp — without it the SDK cannot rebuild the signed event and **cannot verify the signature**, so the returned `pubkey` would be unverified. **`handleRedirectCallback` rejects those callbacks by default** (`reason: 't-required'`). Only opt into accepting them if you control the signet-app deployment and knowingly accept an unverified pubkey:
 
 ```js

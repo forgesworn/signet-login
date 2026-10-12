@@ -1123,7 +1123,7 @@ export class DeferredBunkerSigner implements SignetSigner {
         this.capabilities.canSignEvents = true;
         this.capabilities.hasNip44 = true;
       }
-    });
+    }).catch(() => { /* live() still propagates the failed upgrade. */ });
     this.nip04 = {
       encrypt: async (peer, pt) => (await this.live()).nip04!.encrypt(peer, pt),
       decrypt: async (peer, ct) => (await this.live()).nip04!.decrypt(peer, ct),

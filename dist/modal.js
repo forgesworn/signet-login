@@ -520,12 +520,23 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     const sameDevice = flowOpts.sameDevice === true;
+    let cancelled = false;
+    void flowOpts.cancelled?.then(() => { cancelled = true; });
     // Resume an in-flight sign-in rather than starting a second one: the response
     // may already be on the relay, addressed to the key that sign-in minted.
     // A consumer-supplied challenge must match — their server is bound to it. An
     // SDK-generated one is fresh on every login() call, so any live record for
     // this origin is ours to pick up, adopting its challenge.
     const resumed = await loadPendingRelayAuth(opts.storage);
+    if (cancelled) {
+        await clearPendingRelayAuth(opts.storage, resumed);
+        return null;
+    }
+    if (opts.storage?.required && resumed && (resumed.origin !== opts.origin ||
+        resumed.appName !== opts.appName || resumed.relayUrl !== opts.relayUrl ||
+        (opts.challengeFromConsumer && resumed.challenge !== opts.challenge))) {
+        throw new Error('required-storage-pending-relay-binding-mismatch');
+    }
     const reusable = resumed && resumed.origin === opts.origin &&
         (!opts.challengeFromConsumer || resumed.challenge === opts.challenge)
         ? resumed
@@ -537,15 +548,31 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     // against, so the consumer's wait and the signer's check measure one clock —
     // and on resume the link and QR rebuild the identical request.
     const issuedAt = reusable ? reusable.issuedAt : Math.floor(Date.now() / 1000);
+    const pendingRecord = reusable ?? {
+        challenge,
+        origin: opts.origin,
+        appName: opts.appName,
+        relayUrl: opts.relayUrl,
+        sessionSkHex: bytesToHex(sessionPrivKey),
+        issuedAt,
+    };
     if (!reusable) {
-        await savePendingRelayAuth({
-            challenge,
-            origin: opts.origin,
-            appName: opts.appName,
-            relayUrl: opts.relayUrl,
-            sessionSkHex: bytesToHex(sessionPrivKey),
-            issuedAt,
-        }, opts.storage);
+        try {
+            await savePendingRelayAuth(pendingRecord, opts.storage);
+        }
+        catch (error) {
+            sessionPrivKey.fill(0);
+            throw error;
+        }
+    }
+    if (cancelled) {
+        try {
+            await clearPendingRelayAuth(opts.storage, pendingRecord);
+            return null;
+        }
+        finally {
+            sessionPrivKey.fill(0);
+        }
     }
     const params = new URLSearchParams({
         auth: '1',
@@ -589,7 +616,7 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             // — the visible link below the canvas still gets the user across.
         });
     }
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
         let settled = false;
         const backNavigation = createBackNavigationCancel();
         // Cancellation is wired now that signet-verify accepts an AbortSignal
@@ -619,10 +646,19 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         };
         const countdownTimer = setInterval(renderCountdown, 1000);
         renderCountdown();
+        let clearing;
+        const clear = () => clearing ?? (clearing = clearPendingRelayAuth(opts.storage, pendingRecord));
+        let completion = null;
         const settle = (v) => {
-            if (settled)
+            // Cancellation may arrive after approval while its deletion receipt is
+            // still unknown. Revoke that approval before the receipt resolves.
+            if (settled) {
+                if (v === null)
+                    completion = null;
                 return;
+            }
             settled = true;
+            completion = v;
             backNavigation.cleanup();
             waitAbort.abort();
             clearInterval(countdownTimer);
@@ -631,18 +667,17 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             // browser Back gesture — errors do not auto-settle), so the request goes
             // with it. Clearing here, not in the rejection handler: `settled` is
             // already true by the time the abort's rejection lands, so it never sees it.
-            if (v === null)
-                void clearPendingRelayAuth(opts.storage);
-            resolve(v);
+            void clear().then(() => resolve(completion), reject);
         };
         backNavigation.promise.then(() => settle(null));
+        void flowOpts.cancelled?.then(() => settle(null));
         refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', () => {
             settle(null);
         });
         refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', () => {
             settle(null);
         });
-        waitForAuthResponse({
+        const waiting = waitForAuthResponse({
             requestId: challenge, // the effective challenge — a resumed one on resume
             relayUrl: opts.relayUrl,
             sessionPrivKey,
@@ -652,7 +687,10 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             timeout: opts.explicitTimeout,
             issuedAt,
             abortSignal: waitAbort.signal,
-        }).then(rawResult => {
+        });
+        // The receiver owns this buffer until its abort/completion has joined.
+        void waiting.finally(() => sessionPrivKey.fill(0)).catch(() => { });
+        waiting.then(rawResult => {
             if (settled)
                 return;
             const result = rawResult;
@@ -682,9 +720,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             if (result.bunkerUri)
                 out.bunkerUri = result.bunkerUri;
             // Settled — the persisted key has no further use.
-            void clearPendingRelayAuth(opts.storage);
             settle(out);
-        }).catch((err) => {
+        }).catch(async (err) => {
             if (settled)
                 return;
             // The current wait is over either way — a leaked ticker would keep a
@@ -695,7 +732,16 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             // `timeout` / `relay-error` are not — keep the anchor so a retry asks the
             // relay from the right point instead of re-anchoring past the response.
             if (code === 'expired' || code === 'denied' || code === 'aborted') {
-                void clearPendingRelayAuth(opts.storage);
+                try {
+                    await clear();
+                }
+                catch (error) {
+                    settled = true;
+                    backNavigation.cleanup();
+                    waitAbort.abort();
+                    reject(error);
+                    return;
+                }
             }
             const status = refs.dialog.querySelector('#signet-login-status');
             if (status) {
@@ -728,7 +774,12 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         }
     });
 }
-async function buildSessionFromRedirectFlowResult(refs, result, opts, _aborted) {
+async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
+    let cancelled = false;
+    void aborted.then(() => { cancelled = true; });
+    await Promise.resolve();
+    if (cancelled)
+        return null;
     // Default: auth-only ephemeral signer (identity proof, no live signing).
     let signer = new EphemeralSigner(result.pubkey, result.authEvent);
     let method = 'redirect';
@@ -740,6 +791,10 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, _aborted) 
     // the relay handshake can finish.
     if (result.bunkerUri) {
         const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+        if (cancelled) {
+            clientSecretKey.fill(0);
+            return null;
+        }
         const expected = result.pubkey;
         const status = refs.dialog.querySelector('#signet-login-status');
         if (status)
@@ -750,6 +805,10 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, _aborted) 
                 clientSecretKey,
                 timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
             });
+            if (cancelled) {
+                await bunkerSigner.close().catch(() => { });
+                return null;
+            }
             if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
                 // Bunker came back as a different key than the identity we proved.
                 // Discard it and keep the auth-only identity (result.pubkey) rather than
@@ -788,7 +847,9 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, _aborted) 
     return session;
 }
 // ── Paste bunker URI ──────────────────────────────────────────────────────────
-async function runBunkerFlow(refs, opts) {
+async function runBunkerFlow(refs, opts, aborted) {
+    let cancelled = false;
+    void aborted.then(() => { cancelled = true; });
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
@@ -808,8 +869,9 @@ async function runBunkerFlow(refs, opts) {
       <button data-action="connect" style="${buttonStyle(dark, true)}width:auto;flex:1;padding:8px 16px;text-align:center;">Connect</button>
     </div>
   `;
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
         let settled = false;
+        let active = false;
         let scanGeneration = 0;
         const settle = (v) => {
             if (settled)
@@ -825,10 +887,14 @@ async function runBunkerFlow(refs, opts) {
         const connectBtn = refs.dialog.querySelector('[data-action="connect"]');
         const scanBtn = refs.dialog.querySelector('[data-action="scan"]');
         let scanner = null;
-        refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', () => {
+        const cancel = () => {
+            cancelled = true;
             scanner?.stop();
-            settle(null);
-        });
+            if (!active)
+                settle(null);
+        };
+        void aborted.then(cancel);
+        refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', cancel);
         scanBtn?.addEventListener('click', () => {
             if (!input || !scanContainer)
                 return;
@@ -859,25 +925,66 @@ async function runBunkerFlow(refs, opts) {
             });
         });
         connectBtn?.addEventListener('click', async () => {
+            if (active || settled || cancelled)
+                return;
             const uri = input?.value.trim() ?? '';
             if (!uri) {
                 if (status)
                     status.textContent = 'Please paste a bunker URI.';
                 return;
             }
+            active = true;
+            connectBtn.disabled = true;
             if (status) {
                 status.textContent = 'Connecting…';
                 status.style.color = '';
             }
-            connectBtn.disabled = true;
+            let sk;
             try {
-                const signer = await createBunkerSigner({
-                    uri,
-                    clientSecretKey: await loadOrCreatePersistentClientSkFromStorage(opts.storage),
-                });
-                settle(signer);
+                sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+            }
+            catch (error) {
+                active = false;
+                if (opts.storage?.required) {
+                    settled = true;
+                    scanGeneration++;
+                    scanner?.stop();
+                    reject(error);
+                    return;
+                }
+                if (cancelled) {
+                    settle(null);
+                    return;
+                }
+                if (status)
+                    status.textContent = `✗ ${error instanceof Error ? error.message : String(error)}`;
+                connectBtn.disabled = false;
+                return;
+            }
+            if (cancelled) {
+                sk.fill(0);
+                active = false;
+                settle(null);
+                return;
+            }
+            try {
+                const signer = await createBunkerSigner({ uri, clientSecretKey: sk, timeoutMs: opts.timeout });
+                active = false;
+                if (cancelled) {
+                    await signer.close().catch(() => { });
+                    sk.fill(0);
+                    settle(null);
+                }
+                else
+                    settle(signer);
             }
             catch (err) {
+                active = false;
+                if (cancelled) {
+                    sk.fill(0);
+                    settle(null);
+                    return;
+                }
                 if (status) {
                     status.textContent = `✗ ${err instanceof Error ? err.message : String(err)}`;
                     status.style.color = '#d04848';
@@ -918,13 +1025,19 @@ function nostrConnectStatusText(status) {
  * URI and the user scans it with their signer (nsec.app, Amber, Keychat…).
  * The signer connects to our chosen relay and signs ad-hoc from there.
  */
-async function runNostrConnectFlow(refs, opts) {
+async function runNostrConnectFlow(refs, opts, aborted) {
+    let cancelled = false;
+    void aborted.then(() => { cancelled = true; });
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     // Persistent client key so the advertised client pubkey is stable across
     // logins (bunkers auto-approve a bound client pubkey). The connect `secret`
     // stays fresh per handshake — it's a one-time challenge, not an identity.
     const sk = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
+    if (cancelled) {
+        sk.fill(0);
+        return null;
+    }
     const clientPubkey = bytesToHex(schnorr.getPublicKey(sk));
     const secret = bytesToHex(schnorr.utils.randomPrivateKey()).slice(0, 32);
     const uri = buildNostrConnectUri({
@@ -1003,14 +1116,11 @@ async function runNostrConnectFlow(refs, opts) {
             settled = true;
             resolve(v);
         };
-        refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', () => {
-            ac.abort();
-            settle(null);
-        });
-        refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', () => {
-            ac.abort();
-            settle(null);
-        });
+        const cancel = () => { cancelled = true; ac.abort(); if (!opts.storage?.required)
+            settle(null); };
+        void aborted.then(cancel);
+        refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', cancel);
+        refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', cancel);
         const handleStatus = (event) => {
             const text = nostrConnectStatusText(event);
             if (status && text) {
@@ -1026,8 +1136,21 @@ async function runNostrConnectFlow(refs, opts) {
             timeoutMs: opts.timeout,
             onStatus: handleStatus,
         })
-            .then(signer => settle(signer))
+            .then(async (signer) => {
+            if (cancelled) {
+                await signer.close().catch(() => { });
+                sk.fill(0);
+                settle(null);
+            }
+            else
+                settle(signer);
+        })
             .catch(err => {
+            if (cancelled) {
+                sk.fill(0);
+                settle(null);
+                return;
+            }
             if (settled)
                 return; // already cancelled
             if (status) {
@@ -1188,8 +1311,8 @@ function resolveOptions(opts) {
         origin,
         mobile,
         challengeFromConsumer,
-        methods: methodConfig.methods,
-        advancedMethods: methodConfig.advancedMethods,
+        methods: opts.storage?.required ? methodConfig.methods.filter(method => method !== 'nsec') : methodConfig.methods,
+        advancedMethods: opts.storage?.required ? methodConfig.advancedMethods.filter(method => method !== 'nsec') : methodConfig.advancedMethods,
         relayUrl,
         relayUrls,
         nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
@@ -1241,7 +1364,7 @@ async function runLoginModal(opts) {
     // flow await against this lets the modal exit cleanly.
     let userAborted = false;
     const aborted = new Promise((resolve) => {
-        refs.dialog.addEventListener('cancel', () => { userAborted = true; resolve(null); });
+        refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
     });
     try {
         while (true) {
@@ -1249,6 +1372,8 @@ async function runLoginModal(opts) {
                 ? resolved.preferredMethod
                 : await Promise.race([renderPicker(refs, resolved), aborted]);
             const routeChoice = choice === null ? null : routePickerChoice(choice);
+            if (resolved.storage?.required && routeChoice === 'nsec')
+                throw new Error('required-storage-nsec-is-memory-only');
             if (userAborted)
                 return null;
             if (routeChoice === null || routeChoice === 'cancel')
@@ -1274,7 +1399,7 @@ async function runLoginModal(opts) {
                 // the My Signet tab alive as the ongoing bunker. Use the relay-backed
                 // auth response path here; explicit `login({ mode: 'redirect' })`
                 // remains the same-tab redirect API for mobile/single-device callers.
-                const result = await Promise.race([runRedirectFlow(refs, resolved, { sameDevice: true }), aborted]);
+                const result = await runRedirectFlow(refs, resolved, { sameDevice: true, cancelled: aborted });
                 if (userAborted)
                     return null;
                 if (!result) {
@@ -1306,7 +1431,7 @@ async function runLoginModal(opts) {
                 return null; // unreachable
             }
             if (routeChoice === 'qr') {
-                const result = await Promise.race([runRedirectFlow(refs, resolved), aborted]);
+                const result = await runRedirectFlow(refs, resolved, { cancelled: aborted });
                 if (userAborted)
                     return null;
                 if (!result) {
@@ -1325,7 +1450,7 @@ async function runLoginModal(opts) {
                 return session;
             }
             if (routeChoice === 'bunker') {
-                const signer = await Promise.race([runBunkerFlow(refs, resolved), aborted]);
+                const signer = await runBunkerFlow(refs, resolved, aborted);
                 if (userAborted)
                     return null;
                 if (!signer) {
@@ -1356,7 +1481,7 @@ async function runLoginModal(opts) {
                 };
             }
             if (routeChoice === 'nostrconnect') {
-                const signer = await Promise.race([runNostrConnectFlow(refs, resolved), aborted]);
+                const signer = await runNostrConnectFlow(refs, resolved, aborted);
                 if (userAborted)
                     return null;
                 if (!signer) {

@@ -964,7 +964,7 @@ export class DeferredBunkerSigner {
                 this.capabilities.canSignEvents = true;
                 this.capabilities.hasNip44 = true;
             }
-        });
+        }).catch(() => { });
         this.nip04 = {
             encrypt: async (peer, pt) => (await this.live()).nip04.encrypt(peer, pt),
             decrypt: async (peer, ct) => (await this.live()).nip04.decrypt(peer, ct),
