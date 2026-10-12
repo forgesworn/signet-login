@@ -3,7 +3,7 @@ vi.mock('signet-verify', async original => ({ ...(await original<typeof import('
 vi.mock('../src/signers.js', async original=>({...await original<typeof import('../src/signers.js')>(),createBunkerSigner:vi.fn(),createBunkerSignerFromNostrConnect:vi.fn()}));
 vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn(async () => {}) } }));
 import { createBunkerSigner, createBunkerSignerFromNostrConnect } from '../src/signers.js';
-import { bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPendingRelayAuth } from '../src/storage.js';
+import { bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPendingRelayAuth, clearPersistentClientSkFromStorage } from '../src/storage.js';
 import { waitForAuthResponse } from 'signet-verify';
 import { login, restoreSession, handleRedirectCallback } from '../src/signet-login.js';
 import { loadSessionFromStorage, saveSessionToStorage, clearSessionFromStorage, loadPendingRelayAuth, loadPendingRedirectFromStorage, savePendingRelayAuth, savePendingRedirectToStorage } from '../src/storage.js';
@@ -23,8 +23,9 @@ function store() {
     setItem: vi.fn(async (key: string, value: string) => { data.set(key, value); }),
     removeItem: vi.fn(async (key: string) => { data.delete(key); }),
     getItems: vi.fn(async (keys: readonly string[]) => Object.fromEntries(keys.map(key => [key, data.get(key) ?? null]))),
-    setItems: vi.fn(async (changes: Readonly<Record<string, string | null>>) => {
-      for(const [key, value] of Object.entries(changes)) { if(value === null) data.delete(key); else data.set(key, value); }
+    setItems: vi.fn(async (changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>) => {
+      if(Object.entries(expected).some(([key,value])=>(data.get(key) ?? null)!==value)) return false;
+      for(const [key, value] of Object.entries(changes)) { if(value === null) data.delete(key); else data.set(key, value); } return true;
     }),
   } satisfies SignetStorage;
   return { data, adapter };
@@ -53,15 +54,16 @@ describe('atomic required sessions', () => {
     await saveSessionToStorage({...initial, method:'bunker', bunkerUri:`bunker://${initial.pubkey}?relay=wss%3A%2F%2Frelay.test`, bunkerClientSkHex:'03'.repeat(32), displayName:'Old'}, adapter);
     const old = await loadSessionFromStorage(adapter); const receipt = deferred();
     const commit = adapter.setItems.getMockImplementation()!;
-    adapter.setItems.mockImplementationOnce(async changes => { expect(Object.isFrozen(changes)).toBe(true); await receipt.promise; await commit(changes); });
+    adapter.setItems.mockImplementationOnce(async (changes,expected) => { expect(Object.isFrozen(changes)).toBe(true); await receipt.promise; return commit(changes,expected); });
     let returned = false; const pending = saveSessionToStorage(initial, adapter).then(() => { returned=true; });
     await vi.waitFor(() => expect(adapter.setItems).toHaveBeenCalledTimes(2));
     expect(await loadSessionFromStorage(adapter)).toEqual(old); expect(returned).toBe(false);
     receipt.yes(); await pending; expect(await loadSessionFromStorage(adapter)).toEqual(initial);
     expect(data.has(STORAGE_KEYS.bunkerClientSk)).toBe(false); expect(data.has(STORAGE_KEYS.displayName)).toBe(false);
-    data.set(STORAGE_KEYS.pendingRelayAuth, 'private'); data.set(STORAGE_KEYS.pendingRedirect, 'redirect');
+    await savePendingRelayAuth({challenge,origin:window.location.origin,appName:'Test',relayUrl:'wss://relay.test',sessionSkHex:'03'.repeat(32),issuedAt:Math.floor(Date.now()/1000)},adapter);
+    await savePendingRedirectToStorage({challenge,origin:window.location.origin,appName:'Test',createdAt:Date.now()},adapter);
     await clearSessionFromStorage(adapter); expect(data.size).toBe(0);
-    expect(adapter.setItems).toHaveBeenCalledTimes(3); expect(adapter.setItem).not.toHaveBeenCalled(); expect(adapter.removeItem).not.toHaveBeenCalled(); expect(adapter.getItem).not.toHaveBeenCalled();
+    expect(adapter.setItems).toHaveBeenCalledTimes(3); expect(adapter.setItem).not.toHaveBeenCalled(); expect(adapter.removeItem).not.toHaveBeenCalled();
   });
   it('does not fall back to individual reads/writes when the batch contract is missing', async () => {
     const {adapter} = store(); const incomplete = {...adapter, getItems:undefined, setItems:undefined};
@@ -126,7 +128,7 @@ describe('required pending records and cleanup', () => {
   });
   it('reports success only after pending deletion and the atomic session receipt', async()=>{
     const {adapter,data}=store(), deletion=deferred(), retention=deferred();
-    holdDeletion(adapter,deletion); const commit=adapter.setItems.getMockImplementation()!; adapter.setItems.mockImplementation(async changes=>{await retention.promise;await commit(changes);});
+    holdDeletion(adapter,deletion); const commit=adapter.setItems.getMockImplementation()!; adapter.setItems.mockImplementation(async (changes,expected)=>{await retention.promise;return commit(changes,expected);});
     const event=makeAuthEvent({challenge,origin:window.location.origin}); vi.mocked(waitForAuthResponse).mockResolvedValue({pubkey:event.pubkey,authEvent:event} as never);
     let settled=false; const pending=relay(adapter).then(value=>{settled=true;return value;});
     await vi.waitFor(()=>expect(deletions(adapter)).toHaveLength(1)); expect(settled).toBe(false); expect(adapter.setItems).not.toHaveBeenCalled(); deletion.yes();
@@ -199,5 +201,51 @@ describe('required pairing cancellation owns and joins work',()=>{
   });
   it('propagates pasted-bunker retention failure without leaving login pending',async()=>{
     const {adapter}=store();adapter.compareAndSetItem.mockRejectedValue(new Error('held'));const pending=pairing(adapter,'bunker');const outcome=expect(pending).rejects.toThrow('held');await paste();await outcome;expect(createBunkerSigner).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('required session and reset cleanup retain captured ownership',()=>{
+  function record(){return {challenge,origin:window.location.origin,appName:'Test',relayUrl:'wss://relay.test',sessionSkHex:'03'.repeat(32),issuedAt:Math.floor(Date.now()/1000)};}
+  it('session clearing cannot delete a pending request replaced after capture',async()=>{
+    const {adapter,data}=store();await saveSessionToStorage(session(),adapter);await savePendingRelayAuth(record(),adapter);const replacement=JSON.stringify({...record(),challenge:'b'.repeat(64)});const commit=adapter.setItems.getMockImplementation()!;
+    adapter.setItems.mockImplementationOnce(async(changes,expected)=>{data.set(STORAGE_KEYS.pendingRelayAuth,replacement);return commit(changes,expected);});
+    await expect(clearSessionFromStorage(adapter)).rejects.toThrow('pending-conflict');expect(data.get(STORAGE_KEYS.pendingRelayAuth)).toBe(replacement);
+  });
+  it('expired-session cleanup preserves a pending request that appears after its absent snapshot',async()=>{
+    const {adapter,data}=store();await saveSessionToStorage({...session(),expiresAt:Date.now()-1},adapter);const replacement=JSON.stringify(record());const commit=adapter.setItems.getMockImplementation()!;
+    adapter.setItems.mockImplementationOnce(async(changes,expected)=>{data.set(STORAGE_KEYS.pendingRelayAuth,replacement);return commit(changes,expected);});
+    await expect(loadSessionFromStorage(adapter)).resolves.toBeNull();expect(data.get(STORAGE_KEYS.pendingRelayAuth)).toBe(replacement);expect(deletions(adapter)).toHaveLength(0);
+  });
+  it('an expired snapshot cannot clear a newer session',async()=>{
+    const {adapter,data}=store();await saveSessionToStorage({...session(),expiresAt:Date.now()-1},adapter);const get=adapter.getItem.getMockImplementation()!;let changed=false;
+    adapter.getItem.mockImplementation(async key=>{if(!changed){changed=true;data.set(STORAGE_KEYS.expiresAt,String(Date.now()+60000));data.set(STORAGE_KEYS.displayName,'New session');}return get(key);});
+    await expect(loadSessionFromStorage(adapter)).rejects.toThrow('session-conflict');expect(data.get(STORAGE_KEYS.displayName)).toBe('New session');expect(Number(data.get(STORAGE_KEYS.expiresAt))).toBeGreaterThan(Date.now());
+  });
+  it('captured client-key reset preserves a newer pairing key on mismatch',async()=>{
+    const {adapter,data}=store();data.set(STORAGE_KEYS.clientSk,'03'.repeat(32));const commit=adapter.compareAndSetItem.getMockImplementation()!;
+    adapter.compareAndSetItem.mockImplementation(async(key,expected,value)=>{data.set(key,'04'.repeat(32));return commit(key,expected,value);});
+    await expect(clearPersistentClientSkFromStorage(adapter)).rejects.toThrow('client-key-conflict');expect(data.get(STORAGE_KEYS.clientSk)).toBe('04'.repeat(32));expect(adapter.removeItem).not.toHaveBeenCalled();
+  });
+});
+describe('cancellation continues through authentication and upgrade handoff',()=>{
+  function cancel(action:string){if(action==='native')document.querySelector('dialog')!.dispatchEvent(new Event('cancel',{cancelable:true}));else document.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click();}
+  async function startPair(method:'bunker'|'nostrconnect',adapter:SignetStorage){const pending=login({appName:'Test',challenge,theme:'dark',preferredMethod:method,storage:adapter});if(method==='bunker'){await vi.waitFor(()=>expect(document.querySelector('#signet-login-bunker-input')).not.toBeNull());(document.querySelector('#signet-login-bunker-input') as HTMLTextAreaElement).value=`bunker://${session().pubkey}?relay=wss%3A%2F%2Frelay.test`;document.querySelector<HTMLButtonElement>('[data-action="connect"]')!.click();}return {pending};}
+  for(const action of ['back','cancel','native']) it(`NostrConnect failure followed by ${action} finishes cleanup`,async()=>{
+    const {adapter}=store();vi.mocked(createBunkerSignerFromNostrConnect).mockRejectedValue(new Error('network failed'));
+    const pending=login({appName:'Test',challenge,theme:'dark',preferredMethod:'nostrconnect',storage:adapter});await vi.waitFor(()=>expect(document.querySelector('#signet-login-nc-status')?.textContent).toContain('network failed'));cancel(action);await expect(pending).resolves.toBeNull();expect(adapter.setItems).not.toHaveBeenCalled();
+  });
+  for(const method of ['bunker','nostrconnect'] as const) for(const action of (method==='bunker'?['back','native']:['back','cancel','native'])) it(`${method} fences ${action} during authentication signing and closes once`,async()=>{
+    const {adapter}=store();let deliver!:(event:ReturnType<typeof makeAuthEvent>)=>void;const signing=new Promise<ReturnType<typeof makeAuthEvent>>(resolve=>{deliver=resolve;});
+    const event=makeAuthEvent({challenge,origin:window.location.origin,appName:'Test'}),key=new Uint8Array(32).fill(3),close=vi.fn(async()=>{}),signEvent=vi.fn(()=>signing);
+    const signer={pubkey:event.pubkey,bunkerUri:`bunker://${event.pubkey}?relay=wss%3A%2F%2Frelay.test`,clientSecretKey:key,close,signEvent} as unknown as Awaited<ReturnType<typeof createBunkerSigner>>;
+    vi.mocked(createBunkerSigner).mockResolvedValue(signer);vi.mocked(createBunkerSignerFromNostrConnect).mockResolvedValue(signer);
+    const {pending}=await startPair(method,adapter);await vi.waitFor(()=>expect(signEvent).toHaveBeenCalledOnce());cancel(action);deliver(event);await expect(pending).resolves.toBeNull();expect(close).toHaveBeenCalledOnce();expect(key.every(byte=>byte===0)).toBe(true);expect(adapter.setItems).not.toHaveBeenCalled();
+  });
+  for(const method of ['remote-signet','local-signet'] as const) for(const action of ['back','cancel','native']) it(`${method} fences ${action} during an approved bunker upgrade`,async()=>{
+    const {adapter}=store();const event=makeAuthEvent({challenge,origin:window.location.origin});let deliver!:(signer:Awaited<ReturnType<typeof createBunkerSigner>>)=>void;vi.mocked(createBunkerSigner).mockImplementation(()=>new Promise(resolve=>{deliver=resolve;}));
+    vi.mocked(waitForAuthResponse).mockResolvedValue({pubkey:event.pubkey,authEvent:event,bunkerUri:`bunker://${event.pubkey}?relay=wss%3A%2F%2Frelay.test`} as never);
+    const pending=relay(adapter,method);await vi.waitFor(()=>expect(createBunkerSigner).toHaveBeenCalledOnce());expect(deletions(adapter)).toHaveLength(1);cancel(action);const close=vi.fn(async()=>{});deliver({pubkey:event.pubkey,close} as unknown as Awaited<ReturnType<typeof createBunkerSigner>>);
+    await expect(pending).resolves.toBeNull();expect(close).toHaveBeenCalledOnce();expect(adapter.setItems).not.toHaveBeenCalled();
   });
 });

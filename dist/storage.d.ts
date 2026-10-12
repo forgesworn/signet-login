@@ -36,7 +36,7 @@ export declare function loadSessionFromStorage(storage?: SignetStorage): Promise
  * Use `clearPersistentClientSk` for an explicit reset. */
 export declare function clearSession(): void;
 /** Async-storage variant of `clearSession`. */
-export declare function clearSessionFromStorage(storage?: SignetStorage): Promise<void>;
+export declare function clearSessionFromStorage(storage?: SignetStorage, expected?: Readonly<Record<string, string | null>>): Promise<void>;
 /**
  * Load the persistent NIP-46 client secret key for this browser/origin,
  * generating and storing one on first use. Used for NEW logins/pairings

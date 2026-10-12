@@ -43,8 +43,9 @@ function memoryStorage(): SignetStorage & { data: Map<string, string> } {
       if(value === null) data.delete(key); else data.set(key, value); return true;
     },
     async getItems(keys: readonly string[]) { return Object.fromEntries(keys.map(key => [key, data.get(key) ?? null])); },
-    async setItems(changes: Readonly<Record<string, string | null>>) {
-      for (const [key, value] of Object.entries(changes)) { if (value === null) data.delete(key); else data.set(key, value); }
+    async setItems(changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>) {
+      if(Object.entries(expected).some(([key,value])=>(data.get(key) ?? null)!==value)) return false;
+      for (const [key, value] of Object.entries(changes)) { if (value === null) data.delete(key); else data.set(key, value); } return true;
     },
     async getItem(key: string) {
       return data.get(key) ?? null;
@@ -342,7 +343,7 @@ describe('required custom custody', () => {
     expect(bytesToHexLocal(key)).toBe(retained); key.fill(0);
   });
   it('propagates session write and logout deletion failures without acknowledging success', async () => {
-    const store: SignetStorage = { required: true, compareAndSetItem: async () => { throw failure; }, getItem: async () => null, setItem: async () => { throw failure; }, removeItem: async () => { throw failure; }, setItems: async () => { throw failure; } };
+    const store: SignetStorage = { required: true, compareAndSetItem: async () => { throw failure; }, getItem: async () => null, setItem: async () => { throw failure; }, removeItem: async () => { throw failure; }, setItems: async () => { throw failure; }, getItems: async keys => Object.fromEntries(keys.map(key=>[key,null])) };
     const event = makeAuthEvent({ challenge: 'a'.repeat(64), origin: window.location.origin });
     await expect(saveSessionToStorage({ pubkey: event.pubkey, method: 'nip07', authEventJson: JSON.stringify(event) }, store)).rejects.toBe(failure);
     await expect(clearSessionFromStorage(store)).rejects.toBe(failure);

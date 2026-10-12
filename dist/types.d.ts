@@ -123,10 +123,11 @@ export interface SignetStorage {
     /** Required mode session reads must return one coherent snapshot containing
      * exactly every requested key (null means authenticated absence). */
     getItems?(keys: readonly string[]): Readonly<Record<string, string | null>> | Promise<Readonly<Record<string, string | null>>>;
-    /** Required mode session replacement/deletion must commit all changes
-     * atomically. null removes a key. Resolve only after durable acknowledgement;
-     * keep an uncertain commit pending until the backend has reconciled it. */
-    setItems?(changes: Readonly<Record<string, string | null>>): void | Promise<void>;
+    /** Required session replacement/deletion atomically compares every expected
+     * key before committing all changes. null means absence/removal. Return true
+     * only after acknowledgement, false on a definite mismatch; unknown commits
+     * remain pending until the backend has reconciled them. */
+    setItems?(changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>): boolean | Promise<boolean>;
     /** Required first-use and pending custody: atomically replace exactly the
      * expected value (null means absence). Resolve true only after the change
      * acknowledges, false on a known mismatch. Unknown commits remain pending. */

@@ -135,7 +135,7 @@ describe('redirect-bunker background upgrade persistence', () => {
     let acknowledge!: () => void, reject!: (error: Error) => void;
     const receipt = new Promise<void>((yes, no) => { acknowledge = yes; reject = no; });
     vi.mocked(saveSessionToStorage).mockImplementation(async () => { await receipt; });
-    const storage = { required: true, compareAndSetItem: async (key: string, expected: string | null, value: string | null) => { if(localStorage.getItem(key)!==expected)return false; if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);return true; }, getItems: async () => ({}), setItems: async () => {}, getItem: (key: string) => localStorage.getItem(key),
+    const storage = { required: true, compareAndSetItem: async (key: string, expected: string | null, value: string | null) => { if(localStorage.getItem(key)!==expected)return false; if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value);return true; }, getItems: async () => ({}), setItems: async () => true, getItem: (key: string) => localStorage.getItem(key),
       setItem: (key: string, value: string) => localStorage.setItem(key, value), removeItem: (key: string) => localStorage.removeItem(key) };
     setLocation(callbackSearchForAuthEvent(authEvent, { bunker: bunkerUri }));
     let settled = false;

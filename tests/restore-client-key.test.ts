@@ -41,7 +41,7 @@ function memoryStorage(): SignetStorage {
       if(value === null) data.delete(key); else data.set(key, value); return true;
     },
     async getItems(keys: readonly string[]) { return Object.fromEntries(keys.map(key => [key, data.get(key) ?? null])); },
-    async setItems(changes: Readonly<Record<string, string | null>>) { for(const [key,value] of Object.entries(changes)) { if(value===null) data.delete(key); else data.set(key,value); } },
+    async setItems(changes: Readonly<Record<string, string | null>>, expected: Readonly<Record<string, string | null>>) { if(Object.entries(expected).some(([key,value])=>(data.get(key) ?? null)!==value)) return false; for(const [key,value] of Object.entries(changes)) { if(value===null) data.delete(key); else data.set(key,value); } return true; },
     async getItem(key: string) {
       return data.get(key) ?? null;
     },

@@ -302,7 +302,10 @@ receipt. A conflicting pending request holds without overwriting or deleting
 it. Unknown CAS results must stay pending through backend reconciliation.
 
 Required adapters must implement `getItems(keys)` for a coherent session snapshot
-and `setItems(changes)` for atomic session replacement/deletion. Every requested
+and `setItems(changes, expected)` for atomic session replacement/deletion.
+`setItems` compares all expected fields in that same transaction and returns
+`true` only after commit, or `false` on a definite mismatch. An expired snapshot
+cannot clear a newer session. Every requested
 key must appear in a snapshot with a string or `null`; `null` in a replacement
 removes a key. Missing batch methods reject before login effects; `persist: false` is rejected
 with required custody. The memory-only `nsec` route is hidden, and explicitly

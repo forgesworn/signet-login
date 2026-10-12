@@ -136,9 +136,11 @@ async function requiredSnapshot(storage: SignetStorage): Promise<Readonly<Record
   return Object.freeze(Object.fromEntries(SESSION_KEYS.map(key => [key, values[key]])));
 }
 
-async function requiredReplacement(storage: SignetStorage, changes: Record<string, string | null>): Promise<void> {
+async function requiredReplacement(storage: SignetStorage, changes: Record<string, string | null>, expected?: Readonly<Record<string, string | null>>): Promise<void> {
   if (!storage.setItems) throw new Error('required-storage-atomic-write-unavailable');
-  await storage.setItems(Object.freeze(changes));
+  const snapshot = expected ?? await requiredSnapshot(storage);
+  const committed = await storage.setItems(Object.freeze(changes), snapshot);
+  if (committed !== true) throw new Error(committed === false ? 'required-storage-session-conflict' : 'required-storage-invalid-batch-receipt');
 }
 
 function validSecret(hex: string | null | undefined): boolean {
@@ -297,7 +299,7 @@ export async function loadSessionFromStorage(storage?: SignetStorage): Promise<P
     return null;
   }
   if (result.expiresAt !== undefined && Date.now() > result.expiresAt) {
-    await clearSessionFromStorage(storage);
+    await clearSessionFromStorage(storage, snapshot ?? undefined);
     return null;
   }
   return result;
@@ -326,11 +328,14 @@ export function clearSession(): void {
 }
 
 /** Async-storage variant of `clearSession`. */
-export async function clearSessionFromStorage(storage?: SignetStorage): Promise<void> {
+export async function clearSessionFromStorage(storage?: SignetStorage, expected?: Readonly<Record<string, string | null>>): Promise<void> {
   if (storage?.required) {
-    await requiredReplacement(storage, Object.fromEntries([
-      ...SESSION_KEYS, STORAGE_KEYS.pendingRelayAuth, STORAGE_KEYS.pendingRedirect,
-    ].map(key => [key, null])));
+    const snapshot = expected ?? await requiredSnapshot(storage);
+    const relay = await loadPendingRelayAuth(storage);
+    const redirect = await loadPendingRedirectFromStorage(storage);
+    await requiredReplacement(storage, Object.fromEntries(SESSION_KEYS.map(key => [key, null])), snapshot);
+    await clearPendingRelayAuth(storage, relay);
+    await clearPendingRedirectFromStorage(storage, redirect);
     return;
   }
   await safeRemoveFrom(storage, STORAGE_KEYS.pubkey);
@@ -414,7 +419,13 @@ export function clearPersistentClientSk(): void {
 
 /** Async-storage variant of `clearPersistentClientSk`. */
 export async function clearPersistentClientSkFromStorage(storage?: SignetStorage): Promise<void> {
-  await safeRemoveFrom(storage, STORAGE_KEYS.clientSk);
+  if (storage?.required) {
+    const expected = await safeGetFrom(storage, STORAGE_KEYS.clientSk);
+    if (expected === null) return;
+    if (!validSecret(expected)) throw new Error('required-storage-invalid-client-key');
+    if (!await requiredCas(storage, STORAGE_KEYS.clientSk, expected, null) &&
+        await safeGetFrom(storage, STORAGE_KEYS.clientSk) !== null) throw new Error('required-storage-client-key-conflict');
+  } else await safeRemoveFrom(storage, STORAGE_KEYS.clientSk);
 }
 
 /**
