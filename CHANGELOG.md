@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.1 (2026-10-13)
+
+### Bug Fixes
+
+- detect late NIP-07 providers in the open picker (#56)
+
+
+
 ## 0.18.0 (2026-10-12)
 
 ### Features
