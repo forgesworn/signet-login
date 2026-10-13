@@ -174,9 +174,14 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
   // Capture phase: run BEFORE the host page's bubble-phase window keydown
   // handlers, so stopImmediatePropagation above actually pre-empts them.
   window.addEventListener('keydown', keyNav, true);
-  // Reset the cursor to the first button when a new SCREEN swaps in. childList
-  // (no subtree) so frequent status-text updates inside a screen don't reset it.
-  const mo = new MutationObserver(() => { selIndex = 0; showSel(); });
+  // A new screen starts at the first button. A picker availability update can
+  // restore its focused choice before this callback; keep that selection even
+  // when a newly available method changes its index. Ignore status-text updates.
+  const mo = new MutationObserver(() => {
+    const focused = focusedButton();
+    selIndex = focused ? visibleButtons().indexOf(focused) : 0;
+    showSel();
+  });
   mo.observe(dialog, { childList: true });
   showSel();
 
@@ -434,23 +439,21 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
   const mobile = opts.mobile;
 
   return new Promise<PickerChoice>(resolve => {
+    let cleanup = (): void => {};
+    const finish = (choice: PickerChoice): void => { cleanup(); resolve(choice); };
     let advancedOpen = false;
-    const availableMethods = opts.methods.filter(isMethodAvailable);
+    let availableMethods = opts.methods.filter(isMethodAvailable);
     const advancedSet = new Set(opts.advancedMethods.map(pickerMethodKey));
-    const primaryMethods = availableMethods.filter(method => !advancedSet.has(pickerMethodKey(method)));
-    const advancedMethods = availableMethods.filter(method => advancedSet.has(pickerMethodKey(method)));
 
     // Highlight the platform-likely Signet option wherever it is shown; fall back
     // to the first method when neither Signet option is available in that group.
     const highlightKey = likelySignetKey(mobile);
-    const primaryHasHighlight = primaryMethods.some(method => pickerMethodKey(method) === highlightKey);
-    const advancedHasHighlight = advancedMethods.some(method => pickerMethodKey(method) === highlightKey);
 
     const attachChoiceHandlers = (): void => {
       refs.dialog.querySelectorAll<HTMLButtonElement>('button[data-choice]').forEach(btn => {
         btn.addEventListener('click', () => {
           const choice = btn.dataset.choice as PickerChoice;
-          resolve(choice);
+          finish(choice);
         });
       });
       refs.dialog.querySelector<HTMLButtonElement>('[data-action="advanced"]')?.addEventListener('click', () => {
@@ -460,7 +463,14 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
     };
 
     const paint = (): void => {
-      const showAdvanced = advancedOpen || primaryMethods.length === 0;
+      const focused = document.activeElement instanceof HTMLButtonElement && refs.dialog.contains(document.activeElement)
+        ? document.activeElement : null;
+      const primaryMethods = availableMethods.filter(method => !advancedSet.has(pickerMethodKey(method)));
+      const advancedMethods = availableMethods.filter(method => advancedSet.has(pickerMethodKey(method)));
+      const primaryHasHighlight = primaryMethods.some(method => pickerMethodKey(method) === highlightKey);
+      const advancedHasHighlight = advancedMethods.some(method => pickerMethodKey(method) === highlightKey);
+      advancedOpen ||= primaryMethods.length === 0;
+      const showAdvanced = advancedOpen;
       const primaryHtml = primaryMethods
         .map((method, index) => methodButtonHtml(method, dark, muted, primaryHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0, mobile))
         .join('');
@@ -488,9 +498,37 @@ function renderPicker(refs: ModalRefs, opts: ResolvedOptions): Promise<PickerCho
         <button data-choice="cancel" style="background:transparent;color:${dark ? '#e0e0e0' : '#1a1a2e'};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:12px;cursor:pointer;font-size:0.95rem;width:100%;margin-top:12px;text-align:center;">Cancel</button>
       `;
       attachChoiceHandlers();
+      if (focused) {
+        const replacement = Array.from(refs.dialog.querySelectorAll<HTMLButtonElement>('button')).find(button =>
+          focused.dataset.choice ? button.dataset.choice === focused.dataset.choice
+            : button.dataset.action === focused.dataset.action);
+        replacement?.focus();
+      }
     };
 
     paint();
+    let interval: number | undefined;
+    const refresh = (): void => {
+      const next = opts.methods.filter(isMethodAvailable);
+      if (next.length === availableMethods.length && next.every((method, index) => method === availableMethods[index])) return;
+      availableMethods = next;
+      paint();
+    };
+    const cancel = (): void => finish('cancel');
+    cleanup = (): void => {
+      if (interval !== undefined) window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+      refs.dialog.removeEventListener('cancel', cancel);
+    };
+    refs.dialog.addEventListener('cancel', cancel);
+    if (opts.methods.includes('nip07')) {
+      // NIP-07 has no standard provider-ready event. Check only while choosing;
+      // detecting availability must never request a key or signature.
+      interval = window.setInterval(refresh, 250);
+      window.addEventListener('focus', refresh);
+      document.addEventListener('visibilitychange', refresh);
+    }
   });
 }
 
