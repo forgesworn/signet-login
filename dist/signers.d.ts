@@ -5,7 +5,7 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
-import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEvent, SignetSigner, SignerCapabilities } from './types.js';
+import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEvent, SignetSigner, SignerCapabilities, SignerEffectBoundary } from './types.js';
 /** The shape of `window.nostr` exposed by NIP-07 extensions. */
 interface Nip07Provider {
     getPublicKey(): Promise<string>;
@@ -29,13 +29,14 @@ export declare function hasNip07(): boolean;
 export declare class Nip07Signer implements SignetSigner {
     readonly pubkey: string;
     private readonly provider;
+    readonly providerEffectBoundary: 1;
     private closed;
     readonly method: "nip07";
     readonly capabilities: SignerCapabilities;
     readonly nip04?: SignetSigner['nip04'];
     readonly nip44?: SignetSigner['nip44'];
     constructor(pubkey: string, provider: Nip07Provider);
-    signEvent(template: EventTemplate): Promise<NostrEvent>;
+    signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;
     private assertActive;
 }
@@ -67,6 +68,7 @@ export declare class BunkerSignerImpl implements SignetSigner {
     readonly bunkerUri: string;
     /** The 32-byte client secret key used in this session — kept for reconnect. */
     readonly clientSecretKey: Uint8Array;
+    readonly providerEffectBoundary: 1;
     readonly method: "bunker";
     readonly capabilities: SignerCapabilities;
     readonly nip04: SignetSigner['nip04'];
@@ -77,7 +79,7 @@ export declare class BunkerSignerImpl implements SignetSigner {
     bunkerUri: string, 
     /** The 32-byte client secret key used in this session — kept for reconnect. */
     clientSecretKey: Uint8Array);
-    signEvent(template: EventTemplate): Promise<NostrEvent>;
+    signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;
 }
 /**
@@ -167,12 +169,13 @@ export declare function generateSecretKey(): Uint8Array;
 export declare class LocalSigner implements SignetSigner {
     readonly pubkey: string;
     private readonly privkey;
+    readonly providerEffectBoundary: 1;
     readonly method: "nsec";
     readonly capabilities: SignerCapabilities;
     readonly nip04: SignetSigner['nip04'];
     readonly nip44: SignetSigner['nip44'];
     constructor(pubkey: string, privkey: Uint8Array);
-    signEvent(template: EventTemplate): Promise<NostrEvent>;
+    signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;
 }
 /** True when the pasted text is a NIP-49 password-encrypted key (`ncryptsec1...`). */
@@ -216,6 +219,7 @@ export declare class DeferredBunkerSigner implements SignetSigner {
     readonly bunkerUri?: string | undefined;
     /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
     readonly clientSecretKey?: Uint8Array | undefined;
+    readonly providerEffectBoundary: 1;
     readonly method: "bunker";
     readonly capabilities: SignerCapabilities;
     readonly nip04: SignetSigner['nip04'];
@@ -229,7 +233,7 @@ export declare class DeferredBunkerSigner implements SignetSigner {
     /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
     clientSecretKey?: Uint8Array | undefined, optimisticCapabilities?: boolean);
     private live;
-    signEvent(template: EventTemplate): Promise<NostrEvent>;
+    signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;
 }
 export {};

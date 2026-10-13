@@ -21,6 +21,7 @@ export type {
   LoginMethod,
   LoginPickerMethod,
   SignerCapabilities,
+  SignerEffectBoundary,
   SignetSigner,
   SignetAuthEvent,
   SignetSession,

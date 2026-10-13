@@ -5,6 +5,7 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
+import { withProviderEffect } from './effects.js';
 import { parseBunkerInput } from 'nostr-tools/nip46';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
@@ -21,23 +22,24 @@ export class Nip07Signer {
     constructor(pubkey, provider) {
         this.pubkey = pubkey;
         this.provider = provider;
+        this.providerEffectBoundary = 1;
         this.closed = false;
         this.method = 'nip07';
         this.capabilities = { canSignEvents: true, hasNip44: !!provider.nip44 };
         if (provider.nip04) {
             this.nip04 = {
-                encrypt: async (peer, pt) => { this.assertActive(); return provider.nip04.encrypt(peer, pt); },
-                decrypt: async (peer, ct) => { this.assertActive(); return provider.nip04.decrypt(peer, ct); },
+                encrypt: async (peer, pt, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip04.encrypt(peer, pt); }),
+                decrypt: async (peer, ct, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip04.decrypt(peer, ct); }),
             };
         }
         if (provider.nip44) {
             this.nip44 = {
-                encrypt: async (peer, pt) => { this.assertActive(); return provider.nip44.encrypt(peer, pt); },
-                decrypt: async (peer, ct) => { this.assertActive(); return provider.nip44.decrypt(peer, ct); },
+                encrypt: async (peer, pt, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip44.encrypt(peer, pt); }),
+                decrypt: async (peer, ct, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip44.decrypt(peer, ct); }),
             };
         }
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         // NIP-07 requires a complete unsigned event. SignetSigner intentionally
         // accepts lightweight templates, so normalise at the provider boundary
         // for strict extensions such as Ditto (and preserve caller-supplied
@@ -46,12 +48,24 @@ export class Nip07Signer {
             kind: template.kind,
             content: template.content,
             created_at: template.created_at ?? Math.floor(Date.now() / 1000),
-            tags: template.tags ?? [],
+            tags: (template.tags ?? []).map(tag => [...tag]),
         };
-        return retryTransientNip07Sign(() => {
+        let providerFailed = false, providerFailure;
+        return retryTransientNip07Sign(() => withProviderEffect(boundary, () => {
             this.assertActive();
-            return this.provider.signEvent(filled);
-        });
+            try {
+                return this.provider.signEvent({ ...filled, tags: filled.tags.map(tag => [...tag]) }).catch(error => {
+                    providerFailed = true;
+                    providerFailure = error;
+                    throw error;
+                });
+            }
+            catch (error) {
+                providerFailed = true;
+                providerFailure = error;
+                return Promise.reject(error);
+            }
+        }), error => providerFailed && error === providerFailure);
     }
     async close() {
         // Revoke this wrapper, including any queued retry. NIP-07 provides no
@@ -63,12 +77,12 @@ export class Nip07Signer {
             throw new Error('nip07-signer-closed');
     }
 }
-async function retryTransientNip07Sign(sign) {
+async function retryTransientNip07Sign(sign, providerRejected) {
     try {
         return await sign();
     }
     catch (err) {
-        if (!isTransientNip07Error(err))
+        if (!providerRejected(err) || !isTransientNip07Error(err))
             throw err;
         await new Promise(resolve => setTimeout(resolve, 250));
         return sign();
@@ -99,15 +113,16 @@ export class BunkerSignerImpl {
         this.bunker = bunker;
         this.bunkerUri = bunkerUri;
         this.clientSecretKey = clientSecretKey;
+        this.providerEffectBoundary = 1;
         this.method = 'bunker';
         this.capabilities = { canSignEvents: true, hasNip44: true };
         this.nip04 = {
-            encrypt: (peer, pt) => bunker.nip04Encrypt(peer, pt),
-            decrypt: (peer, ct) => bunker.nip04Decrypt(peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, () => bunker.nip04Encrypt(peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, () => bunker.nip04Decrypt(peer, ct)),
         };
         this.nip44 = {
-            encrypt: (peer, pt) => bunker.nip44Encrypt(peer, pt),
-            decrypt: (peer, ct) => bunker.nip44Decrypt(peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, () => bunker.nip44Encrypt(peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, () => bunker.nip44Decrypt(peer, ct)),
         };
         this.nip46 = {
             ping: () => bunker.ping(),
@@ -124,7 +139,7 @@ export class BunkerSignerImpl {
             },
         };
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         // Build the event for the bunker to sign. SET pubkey to the signer's own key
         // rather than stripping it: some signers (e.g. Signet mobile) sign the event
         // as-given and don't fill pubkey themselves, returning `pubkey:""` — which
@@ -138,9 +153,9 @@ export class BunkerSignerImpl {
             kind: rest.kind,
             content: rest.content,
             created_at: rest.created_at ?? Math.floor(Date.now() / 1000),
-            tags: rest.tags ?? [],
+            tags: (rest.tags ?? []).map(tag => [...tag]),
         };
-        const verified = await this.bunker.signEvent(filled);
+        const verified = await withProviderEffect(boundary, () => this.bunker.signEvent(filled));
         return verified;
     }
     async close() {
@@ -847,25 +862,28 @@ export class LocalSigner {
     constructor(pubkey, privkey) {
         this.pubkey = pubkey;
         this.privkey = privkey;
+        this.providerEffectBoundary = 1;
         this.method = 'nsec';
         this.capabilities = { canSignEvents: true, hasNip44: true };
         this.nip04 = {
-            encrypt: async (peer, pt) => nip04Encrypt(this.privkey, peer, pt),
-            decrypt: async (peer, ct) => nip04Decrypt(this.privkey, peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, async () => nip04Encrypt(this.privkey, peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, async () => nip04Decrypt(this.privkey, peer, ct)),
         };
         this.nip44 = {
-            encrypt: async (peer, pt) => nip44Encrypt(pt, getConversationKey(this.privkey, peer)),
-            decrypt: async (peer, ct) => nip44Decrypt(ct, getConversationKey(this.privkey, peer)),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, async () => nip44Encrypt(pt, getConversationKey(this.privkey, peer))),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, async () => nip44Decrypt(ct, getConversationKey(this.privkey, peer))),
         };
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         const filled = {
             kind: template.kind,
             content: template.content,
             created_at: template.created_at ?? Math.floor(Date.now() / 1000),
-            tags: template.tags ?? [],
+            tags: (template.tags ?? []).map(tag => [...tag]),
         };
-        return finalizeEvent(filled, this.privkey);
+        if (boundary === undefined)
+            return finalizeEvent(filled, this.privkey);
+        return withProviderEffect(boundary, async () => finalizeEvent(filled, this.privkey));
     }
     async close() {
         // Best-effort wipe — the engine may already have copies in CoW pages, but
@@ -964,6 +982,7 @@ export class DeferredBunkerSigner {
         this.upgrade = upgrade;
         this.bunkerUri = bunkerUri;
         this.clientSecretKey = clientSecretKey;
+        this.providerEffectBoundary = 1;
         this.method = 'bunker';
         this.capabilities = {
             canSignEvents: optimisticCapabilities,
@@ -976,12 +995,12 @@ export class DeferredBunkerSigner {
             }
         }).catch(() => { });
         this.nip04 = {
-            encrypt: async (peer, pt) => (await this.live()).nip04.encrypt(peer, pt),
-            decrypt: async (peer, ct) => (await this.live()).nip04.decrypt(peer, ct),
+            encrypt: async (peer, pt, boundary) => (await this.live()).nip04.encrypt(peer, pt, boundary),
+            decrypt: async (peer, ct, boundary) => (await this.live()).nip04.decrypt(peer, ct, boundary),
         };
         this.nip44 = {
-            encrypt: async (peer, pt) => (await this.live()).nip44.encrypt(peer, pt),
-            decrypt: async (peer, ct) => (await this.live()).nip44.decrypt(peer, ct),
+            encrypt: async (peer, pt, boundary) => (await this.live()).nip44.encrypt(peer, pt, boundary),
+            decrypt: async (peer, ct, boundary) => (await this.live()).nip44.decrypt(peer, ct, boundary),
         };
         this.nip46 = {
             ping: async () => (await this.live()).nip46.ping(),
@@ -998,8 +1017,9 @@ export class DeferredBunkerSigner {
         }
         return signer;
     }
-    async signEvent(template) {
-        return (await this.live()).signEvent(template);
+    async signEvent(template, boundary) {
+        const captured = { ...template, tags: (template.tags ?? []).map(tag => [...tag]) };
+        return (await this.live()).signEvent(captured, boundary);
     }
     async close() {
         const signer = await this.upgrade.catch(() => null);
