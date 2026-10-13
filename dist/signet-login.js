@@ -15,6 +15,7 @@
  * in either load order on the same page).
  */
 import { DEFAULTS } from './types.js';
+import { withProviderEffect } from './effects.js';
 import { showLoginModal } from './modal.js';
 import { saveSessionToStorage, assertRequiredSessionStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, decodeClientSecretKey, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
@@ -90,6 +91,11 @@ export async function login(opts) {
  * kind-21236 login proof the built-in picker uses.
  */
 export async function createLoginAuthEvent(signer, opts) {
+    const boundary = opts.boundary;
+    if (boundary !== undefined)
+        return createGuardedLoginAuthEvent(signer, {
+            appName: opts.appName, challenge: opts.challenge, origin: opts.origin, boundary,
+        });
     const { appName } = opts;
     if (!appName || appName.length === 0)
         throw new Error('appName-required');
@@ -117,18 +123,126 @@ export async function createLoginAuthEvent(signer, opts) {
         expectedPubkey: signer.pubkey,
     });
 }
+/** Capture only the exact requested proof fields, without provider accessors,
+ * toJSON hooks or the nostr-tools verification cache. This path signs one
+ * fixed three-tag template; accepting a different valid event is not enough. */
+function captureGuardedLoginProof(raw, template, pubkey) {
+    const invalid = () => { throw new Error('auth-event-invalid: guarded-proof-template'); };
+    if (!raw || typeof raw !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)))
+        invalid();
+    const read = (name) => {
+        const field = Object.getOwnPropertyDescriptor(raw, name);
+        if (!field || !Object.prototype.hasOwnProperty.call(field, 'value'))
+            return invalid();
+        return field.value;
+    };
+    const id = read('id'), key = read('pubkey'), sig = read('sig');
+    if (typeof id !== 'string' || !/^[0-9a-f]{64}$/i.test(id) || key !== pubkey ||
+        typeof sig !== 'string' || !/^[0-9a-f]{128}$/i.test(sig) ||
+        read('kind') !== template.kind || read('content') !== template.content || read('created_at') !== template.created_at)
+        invalid();
+    const tags = read('tags');
+    const array = (value, length) => {
+        if (!Array.isArray(value))
+            invalid();
+        if (Object.getOwnPropertyDescriptor(value, 'length')?.value !== length)
+            invalid();
+        return value;
+    };
+    const rows = array(tags, 3);
+    const copied = template.tags.map((tag, index) => {
+        const row = Object.getOwnPropertyDescriptor(rows, String(index));
+        if (!row || !Object.prototype.hasOwnProperty.call(row, 'value'))
+            return invalid();
+        const parts = array(row.value, 2);
+        for (let i = 0; i < 2; i++) {
+            const part = Object.getOwnPropertyDescriptor(parts, String(i));
+            if (!part || !Object.prototype.hasOwnProperty.call(part, 'value') || part.value !== tag[i])
+                invalid();
+        }
+        return Object.freeze([...tag]);
+    });
+    return Object.freeze({ id, pubkey: key, sig, kind: 21236, content: '', created_at: template.created_at,
+        tags: Object.freeze(copied) });
+}
+async function createGuardedLoginAuthEvent(signer, opts) {
+    // Snapshot inputs and signer identity before any asynchronous decision.
+    const { appName, origin: suppliedOrigin, challenge: suppliedChallenge, boundary } = opts;
+    if (typeof boundary?.start !== 'function')
+        throw new Error('invalid-signer-effect-boundary');
+    const pubkey = signer.pubkey, method = signer.method, sign = signer.signEvent;
+    if (signer.providerEffectBoundary !== 1 || typeof sign !== 'function')
+        throw new Error('signer-effect-boundary-unsupported');
+    if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/.test(pubkey))
+        throw new Error('invalid-pubkey-from-signer');
+    if (typeof appName !== 'string' || !appName)
+        throw new Error('appName-required');
+    if (appName.length > 64)
+        throw new Error('appName-too-long');
+    const origin = suppliedOrigin ?? (typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+    if (typeof origin !== 'string' || !origin || origin.length > 1024)
+        throw new Error('origin-required-or-too-long');
+    if (suppliedChallenge !== undefined && (typeof suppliedChallenge !== 'string' || !/^[0-9a-f]{64}$/i.test(suppliedChallenge))) {
+        throw new Error('challenge-must-be-64-hex');
+    }
+    const check = () => {
+        if (signer.pubkey !== pubkey || signer.method !== method || signer.signEvent !== sign || signer.providerEffectBoundary !== 1) {
+            throw new Error('login-signer-changed');
+        }
+    };
+    const guarded = {
+        async start(provider) {
+            check();
+            const value = await withProviderEffect(boundary, () => { check(); return provider(); });
+            check();
+            return value;
+        },
+    };
+    const challenge = suppliedChallenge ?? await withProviderEffect(guarded, () => Promise.resolve(generateChallenge()));
+    const template = {
+        kind: 21236, created_at: Math.floor(Date.now() / 1000), content: '',
+        tags: [['challenge', challenge.toLowerCase()], ['origin', origin], ['app', appName]],
+    };
+    // Keep a separate expected template: a provider may mutate its argument.
+    let signingStarts = 0;
+    const signingBoundary = {
+        start: provider => guarded.start(() => { signingStarts++; return provider(); }),
+    };
+    const authEvent = captureGuardedLoginProof(await sign.call(signer, {
+        ...template, tags: template.tags.map(tag => [...tag]),
+    }, signingBoundary), template, pubkey);
+    if (signingStarts === 0)
+        throw new Error('signer-effect-boundary-not-used');
+    check();
+    const verified = assertValidLoginAuthEvent(authEvent, {
+        expectedChallenge: challenge.toLowerCase(), expectedOrigin: origin, expectedAppName: appName, expectedPubkey: pubkey,
+    });
+    return withProviderEffect(guarded, () => Promise.resolve(verified));
+}
 /**
  * Headless helper for custom UIs. Builds the same SignetSession shape returned
  * by `login()` from a signer the caller already obtained.
  */
 export async function createSessionFromSigner(signer, opts) {
-    const authEvent = await createLoginAuthEvent(signer, opts);
-    return {
-        pubkey: signer.pubkey,
-        method: signer.method,
+    const boundary = opts.boundary;
+    if (boundary === undefined) {
+        const authEvent = await createLoginAuthEvent(signer, { appName: opts.appName, challenge: opts.challenge, origin: opts.origin });
+        return { pubkey: signer.pubkey, method: signer.method, signer, authEvent };
+    }
+    const pubkey = signer.pubkey, method = signer.method, sign = signer.signEvent;
+    const authEvent = await createGuardedLoginAuthEvent(signer, {
+        appName: opts.appName, challenge: opts.challenge, origin: opts.origin, boundary,
+    });
+    if (authEvent.pubkey !== pubkey || signer.pubkey !== pubkey || signer.method !== method || signer.signEvent !== sign || signer.providerEffectBoundary !== 1) {
+        throw new Error('login-signer-changed');
+    }
+    const session = {
+        pubkey,
+        method,
         signer,
         authEvent,
     };
+    return Object.freeze(session);
 }
 /**
  * Generate a 64-hex random challenge. Mirrors the modal's helper but lives at

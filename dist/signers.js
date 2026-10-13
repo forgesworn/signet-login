@@ -104,13 +104,39 @@ function isTransientNip07Error(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /Request failed|Receiving end does not exist|Extension context invalidated|message port closed|context invalidated/i.test(msg);
 }
-/** Connects to the page's NIP-07 provider and returns a Nip07Signer. */
-export async function createNip07Signer() {
+/** Connects to the page's NIP-07 provider and returns a Nip07Signer.
+ * An optional boundary fences account discovery, including its result handoff.
+ * It does not authorise later signing or connect any other login method. */
+export async function createNip07Signer(boundary) {
     if (!hasNip07())
         throw new Error('no-nip07-provider');
     const provider = window.nostr;
-    const pubkey = await provider.getPublicKey();
-    if (!/^[0-9a-f]{64}$/i.test(pubkey))
+    if (boundary === undefined) {
+        const pubkey = await provider.getPublicKey();
+        if (!/^[0-9a-f]{64}$/i.test(pubkey))
+            throw new Error('invalid-pubkey-from-nip07');
+        return new Nip07Signer(pubkey.toLowerCase(), provider);
+    }
+    const discovery = provider.getPublicKey;
+    const signing = provider.signEvent;
+    const nip04 = provider.nip04, nip44 = provider.nip44;
+    const encrypt04 = nip04?.encrypt, decrypt04 = nip04?.decrypt;
+    const encrypt44 = nip44?.encrypt, decrypt44 = nip44?.decrypt;
+    const check = () => {
+        if (window.nostr !== provider || typeof discovery !== 'function' ||
+            provider.getPublicKey !== discovery || provider.signEvent !== signing ||
+            provider.nip04 !== nip04 || provider.nip44 !== nip44 ||
+            nip04?.encrypt !== encrypt04 || nip04?.decrypt !== decrypt04 ||
+            nip44?.encrypt !== encrypt44 || nip44?.decrypt !== decrypt44) {
+            throw new Error('nip07-discovery-provider-changed');
+        }
+    };
+    const pubkey = await withProviderEffect(boundary, () => {
+        check();
+        return discovery.call(provider);
+    });
+    check();
+    if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey))
         throw new Error('invalid-pubkey-from-nip07');
     return new Nip07Signer(pubkey.toLowerCase(), provider);
 }

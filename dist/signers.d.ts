@@ -40,8 +40,10 @@ export declare class Nip07Signer implements SignetSigner {
     close(): Promise<void>;
     private assertActive;
 }
-/** Connects to the page's NIP-07 provider and returns a Nip07Signer. */
-export declare function createNip07Signer(): Promise<Nip07Signer>;
+/** Connects to the page's NIP-07 provider and returns a Nip07Signer.
+ * An optional boundary fences account discovery, including its result handoff.
+ * It does not authorise later signing or connect any other login method. */
+export declare function createNip07Signer(boundary?: SignerEffectBoundary): Promise<Nip07Signer>;
 interface Nip46SignerClient {
     getPublicKey(): Promise<string>;
     signEvent(event: EventTemplate): Promise<NostrEvent>;

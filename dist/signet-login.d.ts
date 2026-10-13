@@ -15,7 +15,7 @@
  * in either load order on the same page).
  */
 export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignerEffectBoundary, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
-import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage } from './types.js';
+import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage, SignerEffectBoundary } from './types.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
@@ -56,6 +56,12 @@ export interface CreateLoginAuthEventOptions {
     challenge?: string;
     /** Origin to bind into the proof. Defaults to `window.location.origin`. */
     origin?: string;
+    /** Opt in to guarded headless authentication: fence challenge entropy and
+     * every signing attempt, require the SDK provider-boundary contract, and
+     * return a detached, verified proof. The caller still owns initial connection,
+     * native pending/session custody, operation lifetime and final adoption.
+     * This option does not protect the modal, restore or redirect paths. */
+    boundary?: SignerEffectBoundary;
 }
 export interface LogoutOptions {
     /** Storage backend to clear. Defaults to localStorage. */
