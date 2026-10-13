@@ -211,6 +211,7 @@ export declare class EphemeralSigner implements SignetSigner {
  * the session is still valid for identity proof.
  */
 export declare class DeferredBunkerSigner implements SignetSigner {
+    #private;
     readonly pubkey: string;
     readonly authEvent: SignetAuthEvent;
     /** Resolves to the connected bunker, or null if the connect failed. */
@@ -232,6 +233,9 @@ export declare class DeferredBunkerSigner implements SignetSigner {
     bunkerUri?: string | undefined, 
     /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
     clientSecretKey?: Uint8Array | undefined, optimisticCapabilities?: boolean);
+    private matchesBinding;
+    private refuse;
+    private invokeBound;
     private live;
     signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;

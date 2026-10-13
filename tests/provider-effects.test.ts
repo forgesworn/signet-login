@@ -22,6 +22,56 @@ function backend() {
     provisionRendezvous:vi.fn(async()=> 'opaque'),ping:vi.fn(async()=>{}),switchRelays:vi.fn(async()=>true),logout:vi.fn(async()=>{}),close:vi.fn(async()=>{})};
 }
 describe('per-call provider effect boundary',()=>{
+  for(const lifetime of ['refusal','close'] as const)it(`deferred ${lifetime} wipes its owned comparison key and preserves the borrowed source`,async()=>{
+    const raw=backend(),key=new Uint8Array(32).fill(4),uri='bunker://'+'a'.repeat(64)+'?relay=wss://relay.test';
+    const slice=Uint8Array.prototype.slice;let owned:Uint8Array|undefined;
+    const spy=vi.spyOn(Uint8Array.prototype,'slice').mockImplementation(function(this:Uint8Array,start?:number,end?:number){
+      const copy=slice.call(this,start,end);if(this===key)owned=copy;return copy;
+    });
+    let deferred:DeferredBunkerSigner;
+    try{deferred=new DeferredBunkerSigner(person,{} as SignetAuthEvent,Promise.resolve(new BunkerSignerImpl(person,raw,
+      lifetime==='refusal'?uri+'&secret=changed':uri,new Uint8Array(key))),uri,key);}finally{spy.mockRestore();}
+    expect(owned).toBeDefined();expect(owned).not.toBe(key);expect(owned).toEqual(key);
+    if(lifetime==='refusal')await expect(deferred.nip44!.encrypt(person,'private')).rejects.toThrow('deferred-bunker-binding-mismatch');
+    else await deferred.close();
+    expect(owned!.every(byte=>byte===0)).toBe(true);expect(key).toEqual(new Uint8Array(32).fill(4));expect(raw.close).toHaveBeenCalledOnce();
+  });
+  for (const mismatch of ['pubkey','uri','key','source-key','support'] as const)
+    for (const method of ['sign','nip04-encrypt','nip04-decrypt','nip44-encrypt','nip44-decrypt'] as const)
+      it(`deferred ${method} refuses ${mismatch} substitution before exposing input`,async()=>{
+        const raw=backend(),upgrade=gate<BunkerSignerImpl|null>(),{scope}=boundary(),key=new Uint8Array(32).fill(4);
+        const uri='bunker://'+'a'.repeat(64)+'?relay=wss://relay.test';
+        const deferred=new DeferredBunkerSigner(person,{} as SignetAuthEvent,upgrade.promise,uri,key);
+        const work=method==='sign'?deferred.signEvent(template(),scope):method==='nip04-encrypt'?deferred.nip04!.encrypt(person,'plain',scope):
+          method==='nip04-decrypt'?deferred.nip04!.decrypt(person,'encrypted',scope):method==='nip44-encrypt'?deferred.nip44!.encrypt(person,'plain',scope):deferred.nip44!.decrypt(person,'encrypted',scope);
+        const refused=expect(work).rejects.toThrow('deferred-bunker-binding-mismatch');
+        const resolved=new BunkerSignerImpl(mismatch==='pubkey'?'b'.repeat(64):person,raw,mismatch==='uri'?uri+'&secret=substituted':uri,
+          mismatch==='key'?new Uint8Array(32).fill(5):new Uint8Array(key));
+        if(mismatch==='source-key')key[0]=9;
+        if(mismatch==='support')Object.defineProperty(resolved,'providerEffectBoundary',{value:undefined});
+        upgrade.release(resolved);await refused;
+        for(const name of ['signEvent','nip04Encrypt','nip04Decrypt','nip44Encrypt','nip44Decrypt'] as const)expect(raw[name]).not.toHaveBeenCalled();
+        expect(raw.close).toHaveBeenCalledOnce();expect(deferred.capabilities.canSignEvents).toBe(false);
+        await deferred.close();expect(raw.close).toHaveBeenCalledOnce();
+      });
+  it('accepts an exact deferred binding and an equivalent trimmed constructor URI',async()=>{
+    const raw=backend(),key=new Uint8Array(32).fill(4),uri='bunker://'+'a'.repeat(64)+'?relay=wss://relay.test',{scope}=boundary();
+    const deferred=new DeferredBunkerSigner(person,{} as SignetAuthEvent,Promise.resolve(new BunkerSignerImpl(person,raw,uri,new Uint8Array(key))),` ${uri} `,key);
+    expect(await deferred.nip44!.encrypt(person,'plain',scope)).toBe('nip44 encrypted');expect(raw.nip44Encrypt).toHaveBeenCalledOnce();
+    await deferred.close();expect(key).toEqual(new Uint8Array(32).fill(4));
+  });
+  for(const method of ['sign','nip04-encrypt','nip04-decrypt','nip44-encrypt','nip44-decrypt'] as const)
+    it(`deferred ${method} rechecks upgrade binding inside the caller's asynchronous start decision`,async()=>{
+      const raw=backend(),key=new Uint8Array(32).fill(4),uri='bunker://'+'a'.repeat(64)+'?relay=wss://relay.test';
+      const resolved=new BunkerSignerImpl(person,raw,uri,new Uint8Array(key));
+      const deferred=new DeferredBunkerSigner(person,{} as SignetAuthEvent,Promise.resolve(resolved),uri,key);
+      const scope:SignerEffectBoundary={async start<T>(work:()=>Promise<T>){await Promise.resolve();resolved.clientSecretKey[0]=9;return work()}};
+      const work=method==='sign'?deferred.signEvent(template(),scope):method==='nip04-encrypt'?deferred.nip04!.encrypt(person,'plain',scope):
+        method==='nip04-decrypt'?deferred.nip04!.decrypt(person,'encrypted',scope):method==='nip44-encrypt'?deferred.nip44!.encrypt(person,'plain',scope):deferred.nip44!.decrypt(person,'encrypted',scope);
+      await expect(work).rejects.toThrow('deferred-bunker-binding-mismatch');
+      for(const name of ['signEvent','nip04Encrypt','nip04Decrypt','nip44Encrypt','nip44Decrypt'] as const)expect(raw[name]).not.toHaveBeenCalled();
+      expect(raw.close).toHaveBeenCalledOnce();expect(key).toEqual(new Uint8Array(32).fill(4));
+    });
   it('never retries a transient-looking boundary refusal after a successful provider call',async()=>{
     const sign=vi.fn(async(value:EventTemplate)=>finalizeEvent(value as Required<EventTemplate>,secret));let checks=0;
     const scope:SignerEffectBoundary={async start<T>(work:()=>Promise<T>){checks++;await work();throw Error('Request failed')}};

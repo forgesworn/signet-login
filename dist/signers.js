@@ -5,6 +5,18 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
+var __classPrivateFieldSet = (this && this.__classPrivateFieldSet) || function (receiver, state, value, kind, f) {
+    if (kind === "m") throw new TypeError("Private method is not writable");
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+    return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
+};
+var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (receiver, state, kind, f) {
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+    return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+};
+var _DeferredBunkerSigner_binding, _DeferredBunkerSigner_refusal, _DeferredBunkerSigner_closed;
 import { withProviderEffect } from './effects.js';
 import { parseBunkerInput } from 'nostr-tools/nip46';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
@@ -984,23 +996,31 @@ export class DeferredBunkerSigner {
         this.clientSecretKey = clientSecretKey;
         this.providerEffectBoundary = 1;
         this.method = 'bunker';
+        _DeferredBunkerSigner_binding.set(this, void 0);
+        _DeferredBunkerSigner_refusal.set(this, void 0);
+        _DeferredBunkerSigner_closed.set(this, false);
+        if (clientSecretKey !== undefined && (!(clientSecretKey instanceof Uint8Array) || clientSecretKey.length !== 32)) {
+            throw new Error('invalid-client-secret-key');
+        }
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_binding, { pubkey, uri: bunkerUri?.trim(), source: clientSecretKey,
+            key: clientSecretKey && Uint8Array.prototype.slice.call(clientSecretKey) }, "f");
         this.capabilities = {
             canSignEvents: optimisticCapabilities,
             hasNip44: optimisticCapabilities,
         };
         void this.upgrade.then(signer => {
-            if (signer) {
+            if (signer && !__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f") && !__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f") && this.matchesBinding(signer)) {
                 this.capabilities.canSignEvents = true;
                 this.capabilities.hasNip44 = true;
             }
         }).catch(() => { });
         this.nip04 = {
-            encrypt: async (peer, pt, boundary) => (await this.live()).nip04.encrypt(peer, pt, boundary),
-            decrypt: async (peer, ct, boundary) => (await this.live()).nip04.decrypt(peer, ct, boundary),
+            encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04.encrypt(peer, pt, guarded)); },
+            decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04.decrypt(peer, ct, guarded)); },
         };
         this.nip44 = {
-            encrypt: async (peer, pt, boundary) => (await this.live()).nip44.encrypt(peer, pt, boundary),
-            decrypt: async (peer, ct, boundary) => (await this.live()).nip44.decrypt(peer, ct, boundary),
+            encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44.encrypt(peer, pt, guarded)); },
+            decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44.decrypt(peer, ct, guarded)); },
         };
         this.nip46 = {
             ping: async () => (await this.live()).nip46.ping(),
@@ -1009,21 +1029,82 @@ export class DeferredBunkerSigner {
             provisionRendezvous: async (index, nonce, expiresAt) => (await this.live()).nip46.provisionRendezvous(index, nonce, expiresAt),
         };
     }
-    async live() {
+    matchesBinding(signer) {
+        try {
+            const { pubkey, uri, key, source } = __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f");
+            return this.pubkey === pubkey && signer.pubkey === pubkey && this.bunkerUri?.trim() === uri &&
+                (uri === undefined || signer.bunkerUri === uri) && this.clientSecretKey === source &&
+                (!key || source?.length === 32 && signer.clientSecretKey?.length === 32 &&
+                    key.every((byte, index) => source[index] === byte && signer.clientSecretKey[index] === byte)) && !__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f");
+        }
+        catch {
+            return false;
+        }
+    }
+    refuse(signer) {
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+            return;
+        this.capabilities.canSignEvents = false;
+        this.capabilities.hasNip44 = false;
+        __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f").key?.fill(0);
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_refusal, Promise.resolve().then(() => signer.close()).catch(() => { }), "f");
+    }
+    async invokeBound(signer, boundary, invoke) {
+        const guarded = boundary && {
+            start: (provider) => boundary.start(() => {
+                if (__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f"))
+                    throw new Error('deferred-bunker-closed');
+                // Recheck inside the consumer's decision too: its native read may
+                // have yielded since live() checked the upgraded signer.
+                if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f") || !this.matchesBinding(signer)) {
+                    this.refuse(signer);
+                    throw new Error('deferred-bunker-binding-mismatch');
+                }
+                return provider();
+            }),
+        };
+        try {
+            return await invoke(guarded);
+        }
+        finally {
+            if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+                await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+        }
+    }
+    async live(boundary) {
         const signer = await this.upgrade;
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f"))
+            throw new Error('deferred-bunker-closed');
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f")) {
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+            throw new Error('deferred-bunker-binding-mismatch');
+        }
         if (!signer) {
             throw new Error('signer-auth-only: the redirect bunker handoff did not connect, so this ' +
                 'session cannot sign. Reconnect the signer or paste a bunker URI to upgrade.');
+        }
+        // A substituted upgrade must never receive event data or plaintext, even
+        // if its final signature would later be rejected by the consumer.
+        if (!this.matchesBinding(signer) || boundary !== undefined && signer.providerEffectBoundary !== 1) {
+            this.refuse(signer);
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+            throw new Error('deferred-bunker-binding-mismatch');
         }
         return signer;
     }
     async signEvent(template, boundary) {
         const captured = { ...template, tags: (template.tags ?? []).map(tag => [...tag]) };
-        return (await this.live()).signEvent(captured, boundary);
+        const signer = await this.live(boundary);
+        return this.invokeBound(signer, boundary, guarded => signer.signEvent(captured, guarded));
     }
     async close() {
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_closed, true, "f");
         const signer = await this.upgrade.catch(() => null);
-        if (signer)
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+        else if (signer)
             await signer.close().catch(() => { });
+        __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f").key?.fill(0);
     }
 }
+_DeferredBunkerSigner_binding = new WeakMap(), _DeferredBunkerSigner_refusal = new WeakMap(), _DeferredBunkerSigner_closed = new WeakMap();

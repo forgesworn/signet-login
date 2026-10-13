@@ -22,6 +22,16 @@ method or local cryptography starts. Event tags are copied before yielding;
 each NIP-07 retry gets a fresh copy of the original template. Provider method
 receivers remain intact.
 
+Deferred upgrades must retain the constructor's pubkey and any supplied bunker
+URI and 32-byte client-key binding. URI comparison trims constructor whitespace
+and otherwise preserves exact route bytes. A substituted upgrade is closed and
+refused before it receives event data or plaintext; a boundary-aware call also
+requires support on the upgraded signer. Owned comparison-key copies are wiped
+on refusal/close without modifying the caller's source key.
+The binding is checked again inside the consumer's start decision, which may
+have yielded while authenticating native custody. Mismatch closure is joined
+before the deferred call rejects.
+
 Each callback starts at most once. A callback retained after its boundary
 settles cannot start a provider later. A boundary cannot fabricate an omitted
 provider call or substitute its result. If a boundary fails after starting a

@@ -1126,6 +1126,9 @@ export class DeferredBunkerSigner implements SignetSigner {
   readonly nip04: SignetSigner['nip04'];
   readonly nip44: SignetSigner['nip44'];
   readonly nip46: SignetSigner['nip46'];
+  readonly #binding: { pubkey: string; uri?: string; key?: Uint8Array; source?: Uint8Array };
+  #refusal?: Promise<void>;
+  #closed = false;
 
   constructor(
     public readonly pubkey: string,
@@ -1138,23 +1141,28 @@ export class DeferredBunkerSigner implements SignetSigner {
     public readonly clientSecretKey?: Uint8Array,
     optimisticCapabilities = true,
   ) {
+    if (clientSecretKey !== undefined && (!(clientSecretKey instanceof Uint8Array) || clientSecretKey.length !== 32)) {
+      throw new Error('invalid-client-secret-key');
+    }
+    this.#binding = { pubkey, uri: bunkerUri?.trim(), source: clientSecretKey,
+      key: clientSecretKey && Uint8Array.prototype.slice.call(clientSecretKey) };
     this.capabilities = {
       canSignEvents: optimisticCapabilities,
       hasNip44: optimisticCapabilities,
     };
     void this.upgrade.then(signer => {
-      if (signer) {
+      if (signer && !this.#closed && !this.#refusal && this.matchesBinding(signer)) {
         this.capabilities.canSignEvents = true;
         this.capabilities.hasNip44 = true;
       }
     }).catch(() => { /* live() still propagates the failed upgrade. */ });
     this.nip04 = {
-      encrypt: async (peer, pt, boundary) => (await this.live()).nip04!.encrypt(peer, pt, boundary),
-      decrypt: async (peer, ct, boundary) => (await this.live()).nip04!.decrypt(peer, ct, boundary),
+      encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04!.encrypt(peer, pt, guarded)); },
+      decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04!.decrypt(peer, ct, guarded)); },
     };
     this.nip44 = {
-      encrypt: async (peer, pt, boundary) => (await this.live()).nip44!.encrypt(peer, pt, boundary),
-      decrypt: async (peer, ct, boundary) => (await this.live()).nip44!.decrypt(peer, ct, boundary),
+      encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44!.encrypt(peer, pt, guarded)); },
+      decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44!.decrypt(peer, ct, guarded)); },
     };
     this.nip46 = {
       ping: async () => (await this.live()).nip46!.ping(),
@@ -1164,24 +1172,71 @@ export class DeferredBunkerSigner implements SignetSigner {
     };
   }
 
-  private async live(): Promise<BunkerSignerImpl> {
+  private matchesBinding(signer: BunkerSignerImpl): boolean {
+    try {
+      const { pubkey, uri, key, source } = this.#binding;
+      return this.pubkey === pubkey && signer.pubkey === pubkey && this.bunkerUri?.trim() === uri &&
+        (uri === undefined || signer.bunkerUri === uri) && this.clientSecretKey === source &&
+        (!key || source?.length === 32 && signer.clientSecretKey?.length === 32 &&
+          key.every((byte, index) => source[index] === byte && signer.clientSecretKey[index] === byte)) && !this.#closed;
+    } catch { return false; }
+  }
+
+  private refuse(signer: BunkerSignerImpl): void {
+    if (this.#refusal) return;
+    this.capabilities.canSignEvents = false; this.capabilities.hasNip44 = false;
+    this.#binding.key?.fill(0);
+    this.#refusal = Promise.resolve().then(() => signer.close()).catch(() => {});
+  }
+
+  private async invokeBound<T>(signer: BunkerSignerImpl, boundary: SignerEffectBoundary | undefined,
+    invoke: (guarded: SignerEffectBoundary | undefined) => Promise<T>): Promise<T> {
+    const guarded: SignerEffectBoundary | undefined = boundary && {
+      start: <V>(provider: () => Promise<V>) => boundary.start(() => {
+        if (this.#closed) throw new Error('deferred-bunker-closed');
+        // Recheck inside the consumer's decision too: its native read may
+        // have yielded since live() checked the upgraded signer.
+        if (this.#refusal || !this.matchesBinding(signer)) {
+          this.refuse(signer); throw new Error('deferred-bunker-binding-mismatch');
+        }
+        return provider();
+      }),
+    };
+    try { return await invoke(guarded); }
+    finally { if (this.#refusal) await this.#refusal; }
+  }
+
+  private async live(boundary?: SignerEffectBoundary): Promise<BunkerSignerImpl> {
     const signer = await this.upgrade;
+    if (this.#closed) throw new Error('deferred-bunker-closed');
+    if (this.#refusal) { await this.#refusal; throw new Error('deferred-bunker-binding-mismatch'); }
     if (!signer) {
       throw new Error(
         'signer-auth-only: the redirect bunker handoff did not connect, so this ' +
         'session cannot sign. Reconnect the signer or paste a bunker URI to upgrade.',
       );
     }
+    // A substituted upgrade must never receive event data or plaintext, even
+    // if its final signature would later be rejected by the consumer.
+    if (!this.matchesBinding(signer) || boundary !== undefined && signer.providerEffectBoundary !== 1) {
+      this.refuse(signer);
+      await this.#refusal;
+      throw new Error('deferred-bunker-binding-mismatch');
+    }
     return signer;
   }
 
   async signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent> {
     const captured = {...template, tags: (template.tags ?? []).map(tag => [...tag])};
-    return (await this.live()).signEvent(captured, boundary);
+    const signer = await this.live(boundary);
+    return this.invokeBound(signer, boundary, guarded => signer.signEvent(captured, guarded));
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     const signer = await this.upgrade.catch(() => null);
-    if (signer) await signer.close().catch(() => { /* ignore */ });
+    if (this.#refusal) await this.#refusal;
+    else if (signer) await signer.close().catch(() => { /* ignore */ });
+    this.#binding.key?.fill(0);
   }
 }
