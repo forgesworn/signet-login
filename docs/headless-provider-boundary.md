@@ -1,5 +1,14 @@
 # Guarded headless authentication
 
+Consumers must require `HEADLESS_PROVIDER_EFFECT_BOUNDARY === 1` before any
+initial effect. A previous SDK may accept and ignore the new arguments; function
+arity and the signer's narrower per-call marker cannot establish this contract.
+The export is also attached additively to `window.Signet`. That global getter
+returns no positive contract if another SDK replaces any of the three headless
+functions. A plain stale marker would otherwise survive an older additive SDK.
+Consumers must capture the supported functions before an asynchronous decision;
+the marker does not attest arbitrary cloned or subsequently modified objects.
+
 `createNip07Signer(boundary)` fences the extension's initial `getPublicKey`
 request through the existing `SignerEffectBoundary` contract. The selected
 provider, discovery/signing methods and NIP-04/NIP-44 method receivers must

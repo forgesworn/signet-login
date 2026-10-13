@@ -16,6 +16,9 @@
  */
 import { DEFAULTS } from './types.js';
 import { withProviderEffect } from './effects.js';
+/** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
+ * helpers. It does not advertise guarded modal, restore or carrier startup. */
+export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1;
 import { showLoginModal } from './modal.js';
 import { saveSessionToStorage, assertRequiredSessionStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, decodeClientSecretKey, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
@@ -597,6 +600,17 @@ if (typeof window !== 'undefined') {
         logout,
         handleCallback,
         handleRedirectCallback,
+    });
+    // An older additive SDK can later replace these functions without removing
+    // new properties. Never leave a stale positive contract beside old methods.
+    Object.defineProperty(SignetGlobal, 'HEADLESS_PROVIDER_EFFECT_BOUNDARY', {
+        configurable: true, enumerable: true,
+        get: () => SignetGlobal.createNip07Signer === createNip07Signer &&
+            SignetGlobal.createLoginAuthEvent === createLoginAuthEvent &&
+            SignetGlobal.createSessionFromSigner === createSessionFromSigner ? 1 : undefined,
+        // The IIFE footer assigns all ESM exports additively. Its marker write is
+        // not authority; the getter checks the actual current function bindings.
+        set: () => { },
     });
     window.Signet = SignetGlobal;
 }

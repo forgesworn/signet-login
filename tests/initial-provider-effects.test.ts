@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
-import { createNip07Signer, createLoginAuthEvent, createSessionFromSigner, createLocalSignerFromNsec, Nip07Signer } from '../src/signet-login.js';
+import { HEADLESS_PROVIDER_EFFECT_BOUNDARY, createNip07Signer, createLoginAuthEvent, createSessionFromSigner, createLocalSignerFromNsec, Nip07Signer } from '../src/signet-login.js';
 import type { EventTemplate, NostrEvent, SignerEffectBoundary, SignetSigner } from '../src/types.js';
 
 const secret = new Uint8Array(32).fill(7), pubkey = getPublicKey(secret), challenge = 'ab'.repeat(32);
@@ -22,6 +22,16 @@ function backend() {
 afterEach(() => { delete window.nostr; vi.restoreAllMocks(); });
 
 describe('initial NIP-07 discovery', () => {
+  it('does not leave a positive global contract beside replaced headless methods', () => {
+    const global = (window as unknown as { Signet: Record<string, unknown> }).Signet;
+    expect(HEADLESS_PROVIDER_EFFECT_BOUNDARY).toBe(1); expect(global.HEADLESS_PROVIDER_EFFECT_BOUNDARY).toBe(1);
+    for (const name of ['createNip07Signer', 'createLoginAuthEvent', 'createSessionFromSigner']) {
+      const original = global[name];
+      try { global[name] = vi.fn(); global.HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1; expect(global.HEADLESS_PROVIDER_EFFECT_BOUNDARY).toBeUndefined(); }
+      finally { global[name] = original; }
+      expect(global.HEADLESS_PROVIDER_EFFECT_BOUNDARY).toBe(1);
+    }
+  });
   it('refuses before asking the extension for an account', async () => {
     const raw = backend(), { state, scope } = boundary(); window.nostr = raw; state.live = false;
     await expect(createNip07Signer(scope)).rejects.toThrow('custody-held');

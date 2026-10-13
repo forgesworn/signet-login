@@ -45,6 +45,9 @@ import type {
 } from './types.js';
 import { DEFAULTS } from './types.js';
 import { withProviderEffect } from './effects.js';
+/** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
+ * helpers. It does not advertise guarded modal, restore or carrier startup. */
+export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1 as const;
 import { showLoginModal } from './modal.js';
 import {
   saveSessionToStorage,
@@ -713,6 +716,17 @@ if (typeof window !== 'undefined') {
     logout,
     handleCallback,
     handleRedirectCallback,
+  });
+  // An older additive SDK can later replace these functions without removing
+  // new properties. Never leave a stale positive contract beside old methods.
+  Object.defineProperty(SignetGlobal, 'HEADLESS_PROVIDER_EFFECT_BOUNDARY', {
+    configurable: true, enumerable: true,
+    get: () => SignetGlobal.createNip07Signer === createNip07Signer &&
+      SignetGlobal.createLoginAuthEvent === createLoginAuthEvent &&
+      SignetGlobal.createSessionFromSigner === createSessionFromSigner ? 1 : undefined,
+    // The IIFE footer assigns all ESM exports additively. Its marker write is
+    // not authority; the getter checks the actual current function bindings.
+    set: () => {},
   });
   (window as unknown as { Signet: Record<string, unknown> }).Signet = SignetGlobal;
 }

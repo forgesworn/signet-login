@@ -16,6 +16,9 @@
  */
 export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignerEffectBoundary, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
 import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage, SignerEffectBoundary } from './types.js';
+/** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
+ * helpers. It does not advertise guarded modal, restore or carrier startup. */
+export declare const HEADLESS_PROVIDER_EFFECT_BOUNDARY: 1;
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
