@@ -48,6 +48,10 @@ import { withProviderEffect } from './effects.js';
 /** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
  * helpers. It does not advertise guarded modal, restore or carrier startup. */
 export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1 as const;
+/** Exact SDK-local cache metadata identity for strict event adapters. This
+ * symbol is not signature verification or permission to invoke a signer. */
+import { verifiedSymbol } from 'nostr-tools/pure';
+export const SIGNET_VERIFIED_EVENT_SYMBOL: typeof verifiedSymbol = verifiedSymbol;
 import { showLoginModal } from './modal.js';
 import {
   saveSessionToStorage,
@@ -698,6 +702,7 @@ if (typeof window !== 'undefined') {
   const existing = (window as unknown as { Signet?: Record<string, unknown> }).Signet;
   const SignetGlobal = existing ?? {};
   Object.assign(SignetGlobal, {
+    SIGNET_VERIFIED_EVENT_SYMBOL,
     login,
     hasNip07,
     createNip07Signer,

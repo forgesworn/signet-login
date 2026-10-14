@@ -170,6 +170,12 @@ await fetch('/api/login', {
 ```
 
 Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
+
+`SIGNET_VERIFIED_EVENT_SYMBOL` exposes the exact cache-symbol identity used by
+this SDK's `nostr-tools` copy. Strict event adapters may recognise this metadata
+when dependencies are installed separately. The marker supplies no verification
+authority: validate the event's exact fields and verify its signature afresh.
+
 The IIFE bundle attaches the same helpers to `window.Signet`.
 
 ### NostrConnect and bunker roles

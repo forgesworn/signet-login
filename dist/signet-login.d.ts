@@ -19,6 +19,10 @@ import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetA
 /** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
  * helpers. It does not advertise guarded modal, restore or carrier startup. */
 export declare const HEADLESS_PROVIDER_EFFECT_BOUNDARY: 1;
+/** Exact SDK-local cache metadata identity for strict event adapters. This
+ * symbol is not signature verification or permission to invoke a signer. */
+import { verifiedSymbol } from 'nostr-tools/pure';
+export declare const SIGNET_VERIFIED_EVENT_SYMBOL: typeof verifiedSymbol;
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';

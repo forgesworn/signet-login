@@ -19,6 +19,10 @@ import { withProviderEffect } from './effects.js';
 /** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
  * helpers. It does not advertise guarded modal, restore or carrier startup. */
 export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1;
+/** Exact SDK-local cache metadata identity for strict event adapters. This
+ * symbol is not signature verification or permission to invoke a signer. */
+import { verifiedSymbol } from 'nostr-tools/pure';
+export const SIGNET_VERIFIED_EVENT_SYMBOL = verifiedSymbol;
 import { showLoginModal } from './modal.js';
 import { saveSessionToStorage, assertRequiredSessionStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, decodeClientSecretKey, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
 import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
@@ -582,6 +586,7 @@ if (typeof window !== 'undefined') {
     const existing = window.Signet;
     const SignetGlobal = existing ?? {};
     Object.assign(SignetGlobal, {
+        SIGNET_VERIFIED_EVENT_SYMBOL,
         login,
         hasNip07,
         createNip07Signer,

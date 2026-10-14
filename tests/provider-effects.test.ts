@@ -1,5 +1,6 @@
+import { SIGNET_VERIFIED_EVENT_SYMBOL } from '../src/signet-login.js';
 import { describe, expect, it, vi } from 'vitest';
-import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { finalizeEvent, getPublicKey, verifyEvent, verifiedSymbol } from 'nostr-tools/pure';
 import { Nip07Signer, BunkerSignerImpl, DeferredBunkerSigner, LocalSigner, EphemeralSigner } from '../src/signers.js';
 import { withProviderEffect } from '../src/effects.js';
 import type { EventTemplate, SignerEffectBoundary, SignetAuthEvent } from '../src/types.js';
@@ -164,3 +165,25 @@ describe('per-call provider effect boundary',()=>{
     await expect(withProviderEffect(substitute,effect)).rejects.toThrow('result-substituted');
   });
 });
+
+
+describe('exact SDK verification-cache metadata',()=>{
+  it('exports the same symbol used by a genuine local signer, without changing event data',async()=>{
+    const signer=new LocalSigner(person,new Uint8Array(secret)),event=await signer.signEvent(template())
+    expect(SIGNET_VERIFIED_EVENT_SYMBOL).toBe(verifiedSymbol)
+    expect(Object.getOwnPropertySymbols(event)).toEqual([SIGNET_VERIFIED_EVENT_SYMBOL])
+    expect(Object.getOwnPropertyDescriptor(event,SIGNET_VERIFIED_EVENT_SYMBOL)?.value).toBe(true)
+    expect(verifyEvent(JSON.parse(JSON.stringify(event)))).toBe(true)
+    expect(JSON.stringify(event)).not.toContain('verified')
+    await signer.close()
+  })
+  it('identifies the genuine bunker backend cache without granting verification authority',async()=>{
+    const raw=backend(),signer=new BunkerSignerImpl(person,raw,'bunker://'+person+'?relay=wss://relay.test',new Uint8Array(32).fill(4))
+    const event=await signer.signEvent(template())
+    expect(Object.getOwnPropertySymbols(event)).toEqual([SIGNET_VERIFIED_EVENT_SYMBOL])
+    const detached=JSON.parse(JSON.stringify(event));detached.sig='0'.repeat(128)
+    expect(verifyEvent(detached)).toBe(false)
+    expect(event[SIGNET_VERIFIED_EVENT_SYMBOL as keyof typeof event]).toBe(true)
+    await signer.close()
+  })
+})
