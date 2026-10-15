@@ -1,18 +1,12 @@
 # Changelog
 
-## 0.19.0 (2026-10-15)
+## 0.19.1 (2026-10-15)
 
-### Features
-
-- carry and listen on up to three relays in the Signet QR/redirect flow (#60)
-
-
-
-## Unreleased
+First npm publication of the 0.19 line; 0.19.0 was tagged but not published.
 
 ### Bug Fixes
 
-- the Signet QR/redirect link (`remote-signet`, `local-signet`) now names up to three relays (`relay=` repeated, primary first, deduplicated) and the flow listens on all of them, so one relay the phone cannot reach no longer fails sign-in. Pending records gain an optional `relayUrls`; records without it resume as `[relayUrl]`.
+- the Signet QR/redirect link (`remote-signet`, `local-signet`) now names up to three relays (`relay=` repeated, primary first, deduplicated) and the flow listens on all of them, so one relay the phone cannot reach no longer fails sign-in. Pending records gain an optional `relayUrls`; records without it resume as `[relayUrl]`. (#60)
 
 ## 0.18.2 (2026-10-15)
 
