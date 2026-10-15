@@ -6,6 +6,23 @@
 
 - the Signet QR/redirect link (`remote-signet`, `local-signet`) now names up to three relays (`relay=` repeated, primary first, deduplicated) and the flow listens on all of them, so one relay the phone cannot reach no longer fails sign-in. Pending records gain an optional `relayUrls`; records without it resume as `[relayUrl]`.
 
+## 0.18.2 (2026-10-15)
+
+### Signer custody
+
+- Fence provider effects with the caller's native custody boundary and retain
+  ownership until pending provider work settles, including cancellation.
+- Add `createNip07SignerWithDiscoveryBoundary` so provider metadata is checked
+  before entering native authority and captured discovery starts inside it.
+- Require `nostr-tools` 2.25.2 or later.
+
+### Release verification
+
+- Allow explicitly identified completed public compatibility runs to satisfy the
+  six-consumer release gate, with reviewed workflows, successful started jobs and
+  steps, exact candidate metadata and unchanged consumer heads.
+- Check the publisher's rebuilt package against the tested candidate's file names
+  and bytes, and refuse a release checkout that moved after compatibility.
 
 ## 0.18.1 (2026-10-13)
 

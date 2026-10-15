@@ -47,18 +47,38 @@ export interface SignerCapabilities {
 }
 
 /** Unified signer interface — three backends, one shape. */
+export interface SignerEffectBoundary {
+  /** Check the caller's live native custody, then invoke start synchronously
+   * inside that decision. Await provider settlement outside native locks.
+   * Reject stale decisions; return the same result only after the caller's
+   * handoff checks. No provider key or connection is exposed by this hook. */
+  start<T>(provider: () => Promise<T>): Promise<T>;
+}
+/** Separate contract for guarded NIP-07 account discovery. */
+export interface Nip07DiscoveryBoundary {
+  readonly discoveryPreflightBoundary: 1;
+  /** Run prepare outside native authority, then freshly validate native
+   * custody and invoke effect synchronously inside that decision. No await
+   * or provider metadata access belongs between the decision and effect.
+   * Join the provider outside the native callback and validate its handoff. */
+  start<T>(prepare: () => void, effect: () => Promise<T>): Promise<T>;
+}
 export interface SignetSigner {
   readonly pubkey: string;
   readonly method: LoginMethod;
   readonly capabilities: SignerCapabilities;
-  signEvent(template: EventTemplate): Promise<NostrEvent>;
+  /** Version 1 gates each sign/NIP-04/NIP-44 provider start, including retries
+   * and deferred upgrades. It does not fence transport-internal wire frames,
+   * initial connection/login or the separate NIP-46 management methods. */
+  readonly providerEffectBoundary?: 1;
+  signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
   nip04?: {
-    encrypt(peerPubkey: string, plaintext: string): Promise<string>;
-    decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    encrypt(peerPubkey: string, plaintext: string, boundary?: SignerEffectBoundary): Promise<string>;
+    decrypt(peerPubkey: string, ciphertext: string, boundary?: SignerEffectBoundary): Promise<string>;
   };
   nip44?: {
-    encrypt(peerPubkey: string, plaintext: string): Promise<string>;
-    decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    encrypt(peerPubkey: string, plaintext: string, boundary?: SignerEffectBoundary): Promise<string>;
+    decrypt(peerPubkey: string, ciphertext: string, boundary?: SignerEffectBoundary): Promise<string>;
   };
   nip46?: {
     ping(): Promise<void>;

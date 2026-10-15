@@ -21,6 +21,8 @@ export type {
   LoginMethod,
   LoginPickerMethod,
   SignerCapabilities,
+  SignerEffectBoundary,
+  Nip07DiscoveryBoundary,
   SignetSigner,
   SignetAuthEvent,
   SignetSession,
@@ -40,8 +42,19 @@ import type {
   SignetSession,
   SignetAuthEvent,
   SignetStorage,
+  SignerEffectBoundary,
 } from './types.js';
 import { DEFAULTS } from './types.js';
+import { withProviderEffect } from './effects.js';
+/** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
+ * helpers. It does not advertise guarded modal, restore or carrier startup. */
+export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1 as const;
+/** NIP-07 discovery preflight precedes the caller's native decision. */
+export const HEADLESS_NIP07_DISCOVERY_BOUNDARY = 1 as const;
+/** Exact SDK-local cache metadata identity for strict event adapters. This
+ * symbol is not signature verification or permission to invoke a signer. */
+import { verifiedSymbol } from 'nostr-tools/pure';
+export const SIGNET_VERIFIED_EVENT_SYMBOL: typeof verifiedSymbol = verifiedSymbol;
 import { showLoginModal } from './modal.js';
 import {
   saveSessionToStorage,
@@ -56,6 +69,7 @@ import {
 import {
   hasNip07,
   createNip07Signer,
+  createNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -85,6 +99,7 @@ export { isAndroid } from './amber.js';
 export {
   hasNip07,
   createNip07Signer,
+  createNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -142,6 +157,12 @@ export interface CreateLoginAuthEventOptions {
   challenge?: string;
   /** Origin to bind into the proof. Defaults to `window.location.origin`. */
   origin?: string;
+  /** Opt in to guarded headless authentication: fence challenge entropy and
+   * every signing attempt, require the SDK provider-boundary contract, and
+   * return a detached, verified proof. The caller still owns initial connection,
+   * native pending/session custody, operation lifetime and final adoption.
+   * This option does not protect the modal, restore or redirect paths. */
+  boundary?: SignerEffectBoundary;
 }
 
 export interface LogoutOptions {
@@ -213,6 +234,10 @@ export async function createLoginAuthEvent(
   signer: SignetSigner,
   opts: CreateLoginAuthEventOptions,
 ): Promise<SignetAuthEvent> {
+  const boundary = opts.boundary;
+  if (boundary !== undefined) return createGuardedLoginAuthEvent(signer, {
+    appName: opts.appName, challenge: opts.challenge, origin: opts.origin, boundary,
+  });
   const { appName } = opts;
   if (!appName || appName.length === 0) throw new Error('appName-required');
   if (appName.length > 64) throw new Error('appName-too-long');
@@ -239,6 +264,90 @@ export async function createLoginAuthEvent(
   });
 }
 
+/** Capture only the exact requested proof fields, without provider accessors,
+ * toJSON hooks or the nostr-tools verification cache. This path signs one
+ * fixed three-tag template; accepting a different valid event is not enough. */
+function captureGuardedLoginProof(raw: unknown, template: Required<import('./types.js').EventTemplate>, pubkey: string): SignetAuthEvent {
+  const invalid = (): never => { throw new Error('auth-event-invalid: guarded-proof-template'); };
+  if (!raw || typeof raw !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) invalid();
+  const read = (name: string): unknown => {
+    const field = Object.getOwnPropertyDescriptor(raw, name);
+    if (!field || !Object.prototype.hasOwnProperty.call(field, 'value')) return invalid();
+    return field.value;
+  };
+  const id = read('id'), key = read('pubkey'), sig = read('sig');
+  if (typeof id !== 'string' || !/^[0-9a-f]{64}$/i.test(id) || key !== pubkey ||
+      typeof sig !== 'string' || !/^[0-9a-f]{128}$/i.test(sig) ||
+      read('kind') !== template.kind || read('content') !== template.content || read('created_at') !== template.created_at) invalid();
+  const tags = read('tags');
+  const array = (value: unknown, length: number): unknown[] => {
+    if (!Array.isArray(value)) invalid();
+    if (Object.getOwnPropertyDescriptor(value, 'length')?.value !== length) invalid();
+    return value as unknown[];
+  };
+  const rows = array(tags, 3);
+  const copied = template.tags.map((tag, index) => {
+    const row = Object.getOwnPropertyDescriptor(rows, String(index));
+    if (!row || !Object.prototype.hasOwnProperty.call(row, 'value')) return invalid();
+    const parts = array(row.value, 2);
+    for (let i = 0; i < 2; i++) {
+      const part = Object.getOwnPropertyDescriptor(parts, String(i));
+      if (!part || !Object.prototype.hasOwnProperty.call(part, 'value') || part.value !== tag[i]) invalid();
+    }
+    return Object.freeze([...tag]) as unknown as string[];
+  });
+  return Object.freeze({ id, pubkey: key, sig, kind: 21236, content: '', created_at: template.created_at,
+    tags: Object.freeze(copied) as unknown as string[][] }) as SignetAuthEvent;
+}
+
+async function createGuardedLoginAuthEvent(signer: SignetSigner, opts: CreateLoginAuthEventOptions): Promise<SignetAuthEvent> {
+  // Snapshot inputs and signer identity before any asynchronous decision.
+  const { appName, origin: suppliedOrigin, challenge: suppliedChallenge, boundary } = opts;
+  if (typeof boundary?.start !== 'function') throw new Error('invalid-signer-effect-boundary');
+  const pubkey = signer.pubkey, method = signer.method, sign = signer.signEvent;
+  if (signer.providerEffectBoundary !== 1 || typeof sign !== 'function') throw new Error('signer-effect-boundary-unsupported');
+  if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/.test(pubkey)) throw new Error('invalid-pubkey-from-signer');
+  if (typeof appName !== 'string' || !appName) throw new Error('appName-required');
+  if (appName.length > 64) throw new Error('appName-too-long');
+  const origin = suppliedOrigin ?? (typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+  if (typeof origin !== 'string' || !origin || origin.length > 1024) throw new Error('origin-required-or-too-long');
+  if (suppliedChallenge !== undefined && (typeof suppliedChallenge !== 'string' || !/^[0-9a-f]{64}$/i.test(suppliedChallenge))) {
+    throw new Error('challenge-must-be-64-hex');
+  }
+  const check = () => {
+    if (signer.pubkey !== pubkey || signer.method !== method || signer.signEvent !== sign || signer.providerEffectBoundary !== 1) {
+      throw new Error('login-signer-changed');
+    }
+  };
+  const guarded: SignerEffectBoundary = {
+    async start<T>(provider: () => Promise<T>): Promise<T> {
+      check();
+      const value = await withProviderEffect(boundary, () => { check(); return provider(); });
+      check();
+      return value;
+    },
+  };
+  const challenge = suppliedChallenge ?? await withProviderEffect(guarded, () => Promise.resolve(generateChallenge()));
+  const template = {
+    kind: 21236, created_at: Math.floor(Date.now() / 1000), content: '',
+    tags: [['challenge', challenge.toLowerCase()], ['origin', origin], ['app', appName]],
+  };
+  // Keep a separate expected template: a provider may mutate its argument.
+  let signingStarts = 0;
+  const signingBoundary: SignerEffectBoundary = {
+    start: provider => guarded.start(() => { signingStarts++; return provider(); }),
+  };
+  const authEvent = captureGuardedLoginProof(await sign.call(signer, {
+    ...template, tags: template.tags.map(tag => [...tag]),
+  }, signingBoundary), template, pubkey);
+  if (signingStarts === 0) throw new Error('signer-effect-boundary-not-used');
+  check();
+  const verified = assertValidLoginAuthEvent(authEvent, {
+    expectedChallenge: challenge.toLowerCase(), expectedOrigin: origin, expectedAppName: appName, expectedPubkey: pubkey,
+  });
+  return withProviderEffect(guarded, () => Promise.resolve(verified));
+}
+
 /**
  * Headless helper for custom UIs. Builds the same SignetSession shape returned
  * by `login()` from a signer the caller already obtained.
@@ -247,13 +356,25 @@ export async function createSessionFromSigner(
   signer: SignetSigner,
   opts: CreateLoginAuthEventOptions,
 ): Promise<SignetSession> {
-  const authEvent = await createLoginAuthEvent(signer, opts);
-  return {
-    pubkey: signer.pubkey,
-    method: signer.method,
+  const boundary = opts.boundary;
+  if (boundary === undefined) {
+    const authEvent = await createLoginAuthEvent(signer, { appName: opts.appName, challenge: opts.challenge, origin: opts.origin });
+    return { pubkey: signer.pubkey, method: signer.method, signer, authEvent };
+  }
+  const pubkey = signer.pubkey, method = signer.method, sign = signer.signEvent;
+  const authEvent = await createGuardedLoginAuthEvent(signer, {
+    appName: opts.appName, challenge: opts.challenge, origin: opts.origin, boundary,
+  });
+  if (authEvent.pubkey !== pubkey || signer.pubkey !== pubkey || signer.method !== method || signer.signEvent !== sign || signer.providerEffectBoundary !== 1) {
+    throw new Error('login-signer-changed');
+  }
+  const session = {
+    pubkey,
+    method,
     signer,
     authEvent,
   };
+  return Object.freeze(session);
 }
 
 /**
@@ -586,9 +707,11 @@ if (typeof window !== 'undefined') {
   const existing = (window as unknown as { Signet?: Record<string, unknown> }).Signet;
   const SignetGlobal = existing ?? {};
   Object.assign(SignetGlobal, {
+    SIGNET_VERIFIED_EVENT_SYMBOL,
     login,
     hasNip07,
     createNip07Signer,
+    createNip07SignerWithDiscoveryBoundary,
     createBunkerSigner,
     createBunkerSignerFromNostrConnect,
     buildNostrConnectUri,
@@ -604,6 +727,22 @@ if (typeof window !== 'undefined') {
     logout,
     handleCallback,
     handleRedirectCallback,
+  });
+  // An older additive SDK can later replace these functions without removing
+  // new properties. Never leave a stale positive contract beside old methods.
+  Object.defineProperty(SignetGlobal, 'HEADLESS_NIP07_DISCOVERY_BOUNDARY', {
+    configurable: true, enumerable: true,
+    get: () => SignetGlobal.createNip07SignerWithDiscoveryBoundary === createNip07SignerWithDiscoveryBoundary ? 1 : undefined,
+    set: () => {},
+  });
+  Object.defineProperty(SignetGlobal, 'HEADLESS_PROVIDER_EFFECT_BOUNDARY', {
+    configurable: true, enumerable: true,
+    get: () => SignetGlobal.createNip07Signer === createNip07Signer &&
+      SignetGlobal.createLoginAuthEvent === createLoginAuthEvent &&
+      SignetGlobal.createSessionFromSigner === createSessionFromSigner ? 1 : undefined,
+    // The IIFE footer assigns all ESM exports additively. Its marker write is
+    // not authority; the getter checks the actual current function bindings.
+    set: () => {},
   });
   (window as unknown as { Signet: Record<string, unknown> }).Signet = SignetGlobal;
 }

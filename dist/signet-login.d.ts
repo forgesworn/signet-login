@@ -14,9 +14,18 @@
  * already there (so `signet-verify.iife.js` and `signet-login.iife.js` coexist
  * in either load order on the same page).
  */
-export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
-import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage } from './types.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
+export type { NostrEvent, EventTemplate, LoginMethod, LoginPickerMethod, SignerCapabilities, SignerEffectBoundary, Nip07DiscoveryBoundary, SignetSigner, SignetAuthEvent, SignetSession, NostrConnectStatus, NostrConnectStatusHandler, NostrConnectStatusPhase, NostrConnectStatusType, LoginOptions, RestoreOptions, SignetStorage, } from './types.js';
+import type { SignetSigner, LoginOptions, RestoreOptions, SignetSession, SignetAuthEvent, SignetStorage, SignerEffectBoundary } from './types.js';
+/** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
+ * helpers. It does not advertise guarded modal, restore or carrier startup. */
+export declare const HEADLESS_PROVIDER_EFFECT_BOUNDARY: 1;
+/** NIP-07 discovery preflight precedes the caller's native decision. */
+export declare const HEADLESS_NIP07_DISCOVERY_BOUNDARY: 1;
+/** Exact SDK-local cache metadata identity for strict event adapters. This
+ * symbol is not signature verification or permission to invoke a signer. */
+import { verifiedSymbol } from 'nostr-tools/pure';
+export declare const SIGNET_VERIFIED_EVENT_SYMBOL: typeof verifiedSymbol;
+import { hasNip07, createNip07Signer, createNip07SignerWithDiscoveryBoundary, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner } from './signers.js';
 import { type ConsumeAmberResult } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import type { ConsumeCallbackResult } from './redirect.js';
@@ -24,7 +33,7 @@ export type { CallbackResult, HandleCallbackOptions } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
 export { isAndroid } from './amber.js';
-export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
+export { hasNip07, createNip07Signer, createNip07SignerWithDiscoveryBoundary, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
 export interface HandleRedirectCallbackOptions {
     /**
      * Await the returned `bunker://` handoff before resolving the callback.
@@ -56,6 +65,12 @@ export interface CreateLoginAuthEventOptions {
     challenge?: string;
     /** Origin to bind into the proof. Defaults to `window.location.origin`. */
     origin?: string;
+    /** Opt in to guarded headless authentication: fence challenge entropy and
+     * every signing attempt, require the SDK provider-boundary contract, and
+     * return a detached, verified proof. The caller still owns initial connection,
+     * native pending/session custody, operation lifetime and final adoption.
+     * This option does not protect the modal, restore or redirect paths. */
+    boundary?: SignerEffectBoundary;
 }
 export interface LogoutOptions {
     /** Storage backend to clear. Defaults to localStorage. */

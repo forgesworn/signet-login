@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 import { runNeverStarted } from './consumer-run-state.mjs';
 import { createConsumerTokenResolver } from './consumer-github-auth.mjs';
+import { PUBLIC_PHYSICAL_SMOKE_PATH, createPublicReader, parsePublicEvidence, verifyPublicEvidence } from './consumer-public-evidence.mjs';
+import { verifyReleasePayload } from './consumer-release-payload.mjs';
 
 const dryRun = process.argv.includes('--dry-run');
 const tokenFor = createConsumerTokenResolver(process.env);
@@ -67,6 +69,11 @@ const physicalMobileSmoke = {
 
 function log(message) {
   console.log(`[signet-compat] ${message}`);
+}
+
+function recordTestedCandidate(sha) {
+  if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Cannot record an invalid tested candidate SHA');
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `tested_candidate_sha=${sha}\n`);
 }
 
 function fail(message) {
@@ -218,8 +225,8 @@ async function waitForRun(consumer, run) {
   throw new Error(`${consumer.name}: run timed out after ${timeoutMinutes} minutes: ${current.html_url}`);
 }
 
-async function checkRecentPhysicalMobileSmoke() {
-  const runs = await listRuns(physicalMobileSmoke, {
+async function checkRecentPhysicalMobileSmoke(readPublicJson) {
+  const runs = readPublicJson ? await readPublicJson(PUBLIC_PHYSICAL_SMOKE_PATH) : await listRuns(physicalMobileSmoke, {
     event: 'workflow_dispatch',
     status: 'success',
   });
@@ -275,10 +282,31 @@ async function main() {
     fail('SIGNET_LOGIN_REF or SIGNET_LOGIN_SHA must identify the candidate commit/tag for consumer compatibility.');
   }
 
+  const existingEvidence = process.env.SIGNET_EXISTING_CONSUMER_RUNS;
+  const manifest = existingEvidence ? parsePublicEvidence(existingEvidence, signetLoginPackageVersion) : null;
+  const readPublicJson = manifest ? createPublicReader({ token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
+    privateToken: process.env.SIGNET_GH_TOKEN_THECRYPTODONKEY }) : null;
+
   if (requirePhysicalMobileSmoke) {
-    await checkRecentPhysicalMobileSmoke();
+    await checkRecentPhysicalMobileSmoke(readPublicJson);
   } else {
     log('physical mobile smoke gate disabled; skipping recent-run check.');
+  }
+
+  if (manifest) {
+    const payload = verifyReleasePayload({ candidateSha: manifest.candidateSha, releaseSha: signetLoginSha,
+      archive: process.env.SIGNET_LOGIN_PACKAGE_PATH });
+    const proof = await verifyPublicEvidence(manifest, {
+      expectedVersion: signetLoginPackageVersion,
+      readJson: readPublicJson,
+    });
+    log(`verified ${payload.files.length} identical packed files and SDK CI at ${proof.candidateSha}`);
+    for (const consumer of proof.consumers) {
+      log(`${consumer.repo}: verified ${consumer.kind} run ${consumer.runId}, attempt ${consumer.attempt}, head ${consumer.headSha}`);
+    }
+    recordTestedCandidate(proof.candidateSha);
+    log('all six reviewed completed consumer attempts passed; no workflows dispatched.');
+    return;
   }
 
   const dispatches = [];
@@ -292,6 +320,7 @@ async function main() {
   })));
 
   await Promise.all(runs.map(({ consumer, run }) => waitForRun(consumer, run)));
+  recordTestedCandidate(signetLoginSha);
   log('all consumer compatibility workflows passed.');
 }
 
