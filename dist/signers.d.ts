@@ -78,9 +78,23 @@ interface Nip46SignerClient {
     provisionRendezvous(targetDevicePubkey: string, index: number, nonce: string, expiresAt: number): Promise<string>;
     ping(): Promise<void>;
     switchRelays(): Promise<boolean>;
+    /**
+     * The `bunker://` URI to reconnect with after a successful `switch_relays`
+     * moved this client to new relays, or undefined while the original relays
+     * still stand.
+     */
+    reconnectUri?(originalUri: string): string | undefined;
     logout(): Promise<void>;
     close(): Promise<void>;
 }
+/**
+ * Rewrite a bunker URI's relays, keeping its other parameters. A NIP-05 or
+ * otherwise non-`bunker://` input is rebuilt from the resolved pointer.
+ */
+export declare function bunkerUriWithRelays(originalUri: string, pointer: {
+    pubkey: string;
+    secret?: string | null;
+}, relays: readonly string[]): string;
 /** Wraps a NIP-46 client with our SignetSigner interface. */
 export declare class BunkerSignerImpl implements SignetSigner {
     readonly pubkey: string;
@@ -100,6 +114,13 @@ export declare class BunkerSignerImpl implements SignetSigner {
     bunkerUri: string, 
     /** The 32-byte client secret key used in this session — kept for reconnect. */
     clientSecretKey: Uint8Array);
+    /**
+     * The bunker URI a later restore should reconnect with: `bunkerUri` with
+     * its relays replaced once the signer's `switch_relays` reply moved this
+     * session, otherwise `bunkerUri` itself. `bunkerUri` stays the original so
+     * session bindings that compare it keep holding.
+     */
+    get reconnectBunkerUri(): string;
     signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
     close(): Promise<void>;
 }

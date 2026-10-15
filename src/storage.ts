@@ -168,7 +168,38 @@ function validRequiredSession(values: LoadedSessionValues): boolean {
         !Number.isSafeInteger(session.expiresAt) || session.expiresAt! < 0)) return false;
     if (session.method !== 'bunker') return values.bunkerUri === null && values.bunkerClientSkHex === null;
     if (!validSecret(values.bunkerClientSkHex) || !values.bunkerUri) return false;
-    const uri = new URL(values.bunkerUri);
+    return validBunkerUri(values.bunkerUri);
+  } catch { return false; }
+}
+
+/**
+ * Replace the stored bunker URI with `next`, only while the stored value is
+ * still `expected` (another tab or login may have replaced the session since).
+ * Used when a restored signer's `switch_relays` reply moved it to new relays.
+ * Every other session key is left untouched.
+ */
+export async function replaceStoredBunkerUri(expected: string, next: string, storage?: SignetStorage): Promise<void> {
+  if (expected === next || !validBunkerUri(next)) return;
+  if (storage?.required) {
+    const snapshot = await requiredSnapshot(storage);
+    if (snapshot[STORAGE_KEYS.bunkerUri] !== expected) return;
+    const values: LoadedSessionValues = {
+      pubkey: snapshot[STORAGE_KEYS.pubkey], method: snapshot[STORAGE_KEYS.method],
+      authEventJson: snapshot[STORAGE_KEYS.authEvent], bunkerUri: next,
+      bunkerClientSkHex: snapshot[STORAGE_KEYS.bunkerClientSk], expiresAtRaw: snapshot[STORAGE_KEYS.expiresAt],
+      displayName: snapshot[STORAGE_KEYS.displayName],
+    };
+    if (!validRequiredSession(values)) return;
+    await requiredReplacement(storage, { [STORAGE_KEYS.bunkerUri]: next }, snapshot);
+    return;
+  }
+  if (await safeGetFrom(storage, STORAGE_KEYS.bunkerUri) !== expected) return;
+  await safeSetTo(storage, STORAGE_KEYS.bunkerUri, next);
+}
+
+function validBunkerUri(value: string): boolean {
+  try {
+    const uri = new URL(value);
     return uri.protocol === 'bunker:' && /^[0-9a-f]{64}$/i.test(uri.hostname) &&
       uri.pathname === '' && uri.hash === '' && uri.username === '' && uri.password === '' &&
       uri.searchParams.getAll('relay').length > 0 && uri.searchParams.getAll('relay').every(relay => {

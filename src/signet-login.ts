@@ -67,6 +67,7 @@ import {
   decodeClientSecretKey,
   loadOrCreatePersistentClientSkFromStorage,
   clearPersistentClientSkFromStorage,
+  replaceStoredBunkerUri,
 } from './storage.js';
 import {
   hasNip07,
@@ -480,6 +481,12 @@ export async function restoreSession(opts?: RestoreOptions): Promise<SignetSessi
       await clearSessionFromStorage(opts?.storage);
       return null;
     }
+    // The signer moved this session to other relays: keep them for the next
+    // restore. Advisory, so a failed or conflicting write never fails restore.
+    const reconnectUri = signer.reconnectBunkerUri;
+    if (reconnectUri !== stored.bunkerUri) {
+      await replaceStoredBunkerUri(stored.bunkerUri, reconnectUri, opts?.storage).catch(() => {});
+    }
     return { pubkey: stored.pubkey, method: 'bunker', signer, authEvent };
   }
 
@@ -684,10 +691,13 @@ async function persistSession(session: SignetSession, storage?: SignetStorage): 
     // Cast: in bunker mode, the signer is a BunkerSignerImpl with bunkerUri + clientSecretKey
     const bunkerSigner = session.signer as unknown as {
       bunkerUri?: string;
+      reconnectBunkerUri?: string;
       clientSecretKey?: Uint8Array;
     };
     if (bunkerSigner.bunkerUri && bunkerSigner.clientSecretKey instanceof Uint8Array) {
-      payload.bunkerUri = bunkerSigner.bunkerUri;
+      // Prefer the relays the signer moved this session to (switch_relays),
+      // so the next restore reaches the relay the signer keeps serving.
+      payload.bunkerUri = bunkerSigner.reconnectBunkerUri || bunkerSigner.bunkerUri;
       payload.bunkerClientSkHex = bytesToHexLocal(bunkerSigner.clientSecretKey);
     }
   }
