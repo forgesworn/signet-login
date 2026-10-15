@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 
 import { runNeverStarted } from './consumer-run-state.mjs';
 import { createConsumerTokenResolver } from './consumer-github-auth.mjs';
+import { createPublicReader, parsePublicEvidence, verifyPublicEvidence } from './consumer-public-evidence.mjs';
+import { verifyReleasePayload } from './consumer-release-payload.mjs';
 
 const dryRun = process.argv.includes('--dry-run');
 const tokenFor = createConsumerTokenResolver(process.env);
@@ -67,6 +69,11 @@ const physicalMobileSmoke = {
 
 function log(message) {
   console.log(`[signet-compat] ${message}`);
+}
+
+function recordTestedCandidate(sha) {
+  if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('Cannot record an invalid tested candidate SHA');
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `tested_candidate_sha=${sha}\n`);
 }
 
 function fail(message) {
@@ -281,6 +288,23 @@ async function main() {
     log('physical mobile smoke gate disabled; skipping recent-run check.');
   }
 
+  if (process.env.SIGNET_EXISTING_CONSUMER_RUNS) {
+    const manifest = parsePublicEvidence(process.env.SIGNET_EXISTING_CONSUMER_RUNS, signetLoginPackageVersion);
+    const payload = verifyReleasePayload({ candidateSha: manifest.candidateSha, releaseSha: signetLoginSha,
+      archive: process.env.SIGNET_LOGIN_PACKAGE_PATH });
+    const proof = await verifyPublicEvidence(manifest, {
+      expectedVersion: signetLoginPackageVersion,
+      readJson: createPublicReader({ token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN }),
+    });
+    log(`verified ${payload.files.length} identical packed files and SDK CI at ${proof.candidateSha}`);
+    for (const consumer of proof.consumers) {
+      log(`${consumer.repo}: verified ${consumer.kind} run ${consumer.runId}, attempt ${consumer.attempt}, head ${consumer.headSha}`);
+    }
+    recordTestedCandidate(proof.candidateSha);
+    log('all six reviewed public consumer attempts passed; no workflows dispatched.');
+    return;
+  }
+
   const dispatches = [];
   for (const consumer of consumers) {
     dispatches.push(await dispatchConsumer(consumer));
@@ -292,6 +316,7 @@ async function main() {
   })));
 
   await Promise.all(runs.map(({ consumer, run }) => waitForRun(consumer, run)));
+  recordTestedCandidate(signetLoginSha);
   log('all consumer compatibility workflows passed.');
 }
 
