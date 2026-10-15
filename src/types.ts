@@ -221,6 +221,8 @@ export interface LoginOptions {
   /**
    * Relay URLs for NIP-46 / NostrConnect. Use `relayUrl` separately when the
    * Signet QR/relay delivery path should stay on a different primary relay.
+   * The Signet QR/redirect link also names these (after `relayUrl`, deduplicated,
+   * at most 3 in all) and listens on all of them.
    */
   relayUrls?: string[];
   /**
@@ -300,8 +302,13 @@ export interface PendingRelayAuth {
   origin: string;
   /** App name, for the resumed UI. */
   appName: string;
-  /** The `wss://` relay the request was published to. */
+  /** The primary `wss://` relay the request was published to. */
   relayUrl: string;
+  /**
+   * Every relay the auth link named, primary first (at most 3). Absent on
+   * records written before multi-relay links; treat those as `[relayUrl]`.
+   */
+  relayUrls?: string[];
   /**
    * The ephemeral session private key, hex.
    *

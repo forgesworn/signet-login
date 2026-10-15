@@ -11,7 +11,7 @@ import { isMobile } from './platform.js';
 import { loadOrCreatePersistentClientSkFromStorage, savePendingRelayAuth, loadPendingRelayAuth, clearPendingRelayAuth } from './storage.js';
 import { assertValidLoginAuthEvent } from './verify.js';
 import { remainingSeconds, formatRemaining } from './countdown.js';
-import { waitForAuthResponse } from 'signet-verify';
+import { buildAuthRelayList, waitForAuthResponseOnRelays } from './relay-wait.js';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import QRCode from 'qrcode';
@@ -624,11 +624,18 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     // against, so the consumer's wait and the signer's check measure one clock —
     // and on resume the link and QR rebuild the identical request.
     const issuedAt = reusable ? reusable.issuedAt : Math.floor(Date.now() / 1000);
+    // The relays the link names and the wait listens on, primary first. A resumed
+    // request rebuilds the identical set from its record (a record written before
+    // multi-relay links has only `relayUrl`); a fresh one takes the configured set.
+    const authRelays = reusable
+        ? (reusable.relayUrls?.length ? reusable.relayUrls : [reusable.relayUrl])
+        : buildAuthRelayList(opts.relayUrl, opts.relayUrls);
     const pendingRecord = reusable ?? {
         challenge,
         origin: opts.origin,
         appName: opts.appName,
         relayUrl: opts.relayUrl,
+        relayUrls: authRelays,
         sessionSkHex: bytesToHex(sessionPrivKey),
         issuedAt,
     };
@@ -650,6 +657,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             sessionPrivKey.fill(0);
         }
     }
+    // `relay` repeats once per relay, primary first (an object literal cannot
+    // repeat a key). Builds that read only the first `relay` keep working.
     const params = new URLSearchParams({
         auth: '1',
         challenge,
@@ -657,9 +666,10 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         name: opts.appName,
         callback: opts.redirectCallback ?? `${opts.origin}/`,
         t: String(issuedAt),
-        relay: opts.relayUrl,
-        sessionPubkey,
     });
+    for (const relay of authRelays)
+        params.append('relay', relay);
+    params.append('sessionPubkey', sessionPubkey);
     const authUrl = `${opts.signetAppOrigin}/?${params.toString()}`;
     refs.dialog.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">${sameDevice ? 'Open My Signet' : 'Sign in with Signet'}</h2>
@@ -753,9 +763,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', () => {
             settle(null);
         });
-        const waiting = waitForAuthResponse({
+        const waiting = waitForAuthResponseOnRelays({
             requestId: challenge, // the effective challenge — a resumed one on resume
-            relayUrl: opts.relayUrl,
             sessionPrivKey,
             expectedOrigin: opts.origin,
             // NOT opts.timeout — that is always defaulted to 120s. See resolveOptions's
@@ -763,7 +772,7 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
             timeout: opts.explicitTimeout,
             issuedAt,
             abortSignal: waitAbort.signal,
-        });
+        }, authRelays);
         // The receiver owns this buffer until its abort/completion has joined.
         void waiting.finally(() => sessionPrivKey.fill(0)).catch(() => { });
         waiting.then(rawResult => {

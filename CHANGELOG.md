@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+- the Signet QR/redirect link (`remote-signet`, `local-signet`) now names up to three relays (`relay=` repeated, primary first, deduplicated) and the flow listens on all of them, so one relay the phone cannot reach no longer fails sign-in. Pending records gain an optional `relayUrls`; records without it resume as `[relayUrl]`.
+
 ## 0.18.2 (2026-10-15)
 
 ### Signer custody
