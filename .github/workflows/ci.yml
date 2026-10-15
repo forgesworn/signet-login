@@ -38,6 +38,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Keep CI-produced output available when the distribution guard finds
+      # source drift, so contributors can commit these exact locked builds.
+      - name: Keep built distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: signet-dist-node-${{ matrix.node-version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Verify checked-in distribution
         run: |
           signet_dist_changes=$(git status --porcelain -- dist)
