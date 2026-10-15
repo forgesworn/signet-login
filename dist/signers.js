@@ -5,6 +5,19 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
+var __classPrivateFieldSet = (this && this.__classPrivateFieldSet) || function (receiver, state, value, kind, f) {
+    if (kind === "m") throw new TypeError("Private method is not writable");
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a setter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot write private member to an object whose class did not declare it");
+    return (kind === "a" ? f.call(receiver, value) : f ? f.value = value : state.set(receiver, value)), value;
+};
+var __classPrivateFieldGet = (this && this.__classPrivateFieldGet) || function (receiver, state, kind, f) {
+    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
+    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
+    return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
+};
+var _DeferredBunkerSigner_binding, _DeferredBunkerSigner_refusal, _DeferredBunkerSigner_closed;
+import { withProviderEffect } from './effects.js';
 import { parseBunkerInput } from 'nostr-tools/nip46';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
@@ -21,23 +34,24 @@ export class Nip07Signer {
     constructor(pubkey, provider) {
         this.pubkey = pubkey;
         this.provider = provider;
+        this.providerEffectBoundary = 1;
         this.closed = false;
         this.method = 'nip07';
         this.capabilities = { canSignEvents: true, hasNip44: !!provider.nip44 };
         if (provider.nip04) {
             this.nip04 = {
-                encrypt: async (peer, pt) => { this.assertActive(); return provider.nip04.encrypt(peer, pt); },
-                decrypt: async (peer, ct) => { this.assertActive(); return provider.nip04.decrypt(peer, ct); },
+                encrypt: async (peer, pt, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip04.encrypt(peer, pt); }),
+                decrypt: async (peer, ct, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip04.decrypt(peer, ct); }),
             };
         }
         if (provider.nip44) {
             this.nip44 = {
-                encrypt: async (peer, pt) => { this.assertActive(); return provider.nip44.encrypt(peer, pt); },
-                decrypt: async (peer, ct) => { this.assertActive(); return provider.nip44.decrypt(peer, ct); },
+                encrypt: async (peer, pt, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip44.encrypt(peer, pt); }),
+                decrypt: async (peer, ct, boundary) => withProviderEffect(boundary, () => { this.assertActive(); return provider.nip44.decrypt(peer, ct); }),
             };
         }
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         // NIP-07 requires a complete unsigned event. SignetSigner intentionally
         // accepts lightweight templates, so normalise at the provider boundary
         // for strict extensions such as Ditto (and preserve caller-supplied
@@ -46,12 +60,24 @@ export class Nip07Signer {
             kind: template.kind,
             content: template.content,
             created_at: template.created_at ?? Math.floor(Date.now() / 1000),
-            tags: template.tags ?? [],
+            tags: (template.tags ?? []).map(tag => [...tag]),
         };
-        return retryTransientNip07Sign(() => {
+        let providerFailed = false, providerFailure;
+        return retryTransientNip07Sign(() => withProviderEffect(boundary, () => {
             this.assertActive();
-            return this.provider.signEvent(filled);
-        });
+            try {
+                return this.provider.signEvent({ ...filled, tags: filled.tags.map(tag => [...tag]) }).catch(error => {
+                    providerFailed = true;
+                    providerFailure = error;
+                    throw error;
+                });
+            }
+            catch (error) {
+                providerFailed = true;
+                providerFailure = error;
+                return Promise.reject(error);
+            }
+        }), error => providerFailed && error === providerFailure);
     }
     async close() {
         // Revoke this wrapper, including any queued retry. NIP-07 provides no
@@ -63,12 +89,12 @@ export class Nip07Signer {
             throw new Error('nip07-signer-closed');
     }
 }
-async function retryTransientNip07Sign(sign) {
+async function retryTransientNip07Sign(sign, providerRejected) {
     try {
         return await sign();
     }
     catch (err) {
-        if (!isTransientNip07Error(err))
+        if (!providerRejected(err) || !isTransientNip07Error(err))
             throw err;
         await new Promise(resolve => setTimeout(resolve, 250));
         return sign();
@@ -78,13 +104,68 @@ function isTransientNip07Error(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /Request failed|Receiving end does not exist|Extension context invalidated|message port closed|context invalidated/i.test(msg);
 }
-/** Connects to the page's NIP-07 provider and returns a Nip07Signer. */
-export async function createNip07Signer() {
+/** Connects to the page's NIP-07 provider and returns a Nip07Signer.
+ * An optional boundary fences account discovery, including its result handoff.
+ * It does not authorise later signing or connect any other login method. */
+export async function createNip07Signer(boundary) {
     if (!hasNip07())
         throw new Error('no-nip07-provider');
     const provider = window.nostr;
-    const pubkey = await provider.getPublicKey();
-    if (!/^[0-9a-f]{64}$/i.test(pubkey))
+    if (boundary === undefined) {
+        const pubkey = await provider.getPublicKey();
+        if (!/^[0-9a-f]{64}$/i.test(pubkey))
+            throw new Error('invalid-pubkey-from-nip07');
+        return new Nip07Signer(pubkey.toLowerCase(), provider);
+    }
+    return guardedNip07Discovery(provider, (prepare, effect) => withProviderEffect(boundary, () => { prepare(); return effect(); }));
+}
+/** Restore account discovery through a two-stage native boundary. Provider
+ * references are captured before boundary.start; prepare() revalidates them
+ * before the caller's final synchronous native decision. The effect only
+ * calls captured references. SDK result checks and wrapper construction read
+ * metadata afterwards, so the caller must revalidate custody after this
+ * entire SDK promise settles. */
+export async function createNip07SignerWithDiscoveryBoundary(boundary) {
+    if (!hasNip07())
+        throw new Error('no-nip07-provider');
+    const provider = window.nostr;
+    const version = boundary.discoveryPreflightBoundary, start = boundary.start;
+    if (version !== 1 || typeof start !== 'function')
+        throw new Error('invalid-nip07-discovery-boundary');
+    return guardedNip07Discovery(provider, (prepare, effect) => {
+        let attempted = false, prepared = false, settled = false;
+        const preflight = () => {
+            if (attempted || settled)
+                throw new Error('nip07-discovery-already-prepared-or-settled');
+            attempted = true;
+            prepare();
+            prepared = true;
+        };
+        return withProviderEffect({ start: (once) => Reflect.apply(start, boundary, [preflight, once]) }, () => {
+            if (!prepared || settled)
+                throw new Error('nip07-discovery-not-prepared');
+            return effect();
+        }).finally(() => { settled = true; });
+    });
+}
+async function guardedNip07Discovery(provider, run) {
+    const discovery = provider.getPublicKey;
+    const signing = provider.signEvent;
+    const nip04 = provider.nip04, nip44 = provider.nip44;
+    const encrypt04 = nip04?.encrypt, decrypt04 = nip04?.decrypt;
+    const encrypt44 = nip44?.encrypt, decrypt44 = nip44?.decrypt;
+    const check = () => {
+        if (window.nostr !== provider || typeof discovery !== 'function' ||
+            provider.getPublicKey !== discovery || provider.signEvent !== signing ||
+            provider.nip04 !== nip04 || provider.nip44 !== nip44 ||
+            nip04?.encrypt !== encrypt04 || nip04?.decrypt !== decrypt04 ||
+            nip44?.encrypt !== encrypt44 || nip44?.decrypt !== decrypt44) {
+            throw new Error('nip07-discovery-provider-changed');
+        }
+    };
+    const pubkey = await run(check, () => Reflect.apply(discovery, provider, []));
+    check();
+    if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey))
         throw new Error('invalid-pubkey-from-nip07');
     return new Nip07Signer(pubkey.toLowerCase(), provider);
 }
@@ -99,15 +180,16 @@ export class BunkerSignerImpl {
         this.bunker = bunker;
         this.bunkerUri = bunkerUri;
         this.clientSecretKey = clientSecretKey;
+        this.providerEffectBoundary = 1;
         this.method = 'bunker';
         this.capabilities = { canSignEvents: true, hasNip44: true };
         this.nip04 = {
-            encrypt: (peer, pt) => bunker.nip04Encrypt(peer, pt),
-            decrypt: (peer, ct) => bunker.nip04Decrypt(peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, () => bunker.nip04Encrypt(peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, () => bunker.nip04Decrypt(peer, ct)),
         };
         this.nip44 = {
-            encrypt: (peer, pt) => bunker.nip44Encrypt(peer, pt),
-            decrypt: (peer, ct) => bunker.nip44Decrypt(peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, () => bunker.nip44Encrypt(peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, () => bunker.nip44Decrypt(peer, ct)),
         };
         this.nip46 = {
             ping: () => bunker.ping(),
@@ -124,7 +206,7 @@ export class BunkerSignerImpl {
             },
         };
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         // Build the event for the bunker to sign. SET pubkey to the signer's own key
         // rather than stripping it: some signers (e.g. Signet mobile) sign the event
         // as-given and don't fill pubkey themselves, returning `pubkey:""` — which
@@ -138,9 +220,9 @@ export class BunkerSignerImpl {
             kind: rest.kind,
             content: rest.content,
             created_at: rest.created_at ?? Math.floor(Date.now() / 1000),
-            tags: rest.tags ?? [],
+            tags: (rest.tags ?? []).map(tag => [...tag]),
         };
-        const verified = await this.bunker.signEvent(filled);
+        const verified = await withProviderEffect(boundary, () => this.bunker.signEvent(filled));
         return verified;
     }
     async close() {
@@ -847,25 +929,28 @@ export class LocalSigner {
     constructor(pubkey, privkey) {
         this.pubkey = pubkey;
         this.privkey = privkey;
+        this.providerEffectBoundary = 1;
         this.method = 'nsec';
         this.capabilities = { canSignEvents: true, hasNip44: true };
         this.nip04 = {
-            encrypt: async (peer, pt) => nip04Encrypt(this.privkey, peer, pt),
-            decrypt: async (peer, ct) => nip04Decrypt(this.privkey, peer, ct),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, async () => nip04Encrypt(this.privkey, peer, pt)),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, async () => nip04Decrypt(this.privkey, peer, ct)),
         };
         this.nip44 = {
-            encrypt: async (peer, pt) => nip44Encrypt(pt, getConversationKey(this.privkey, peer)),
-            decrypt: async (peer, ct) => nip44Decrypt(ct, getConversationKey(this.privkey, peer)),
+            encrypt: (peer, pt, boundary) => withProviderEffect(boundary, async () => nip44Encrypt(pt, getConversationKey(this.privkey, peer))),
+            decrypt: (peer, ct, boundary) => withProviderEffect(boundary, async () => nip44Decrypt(ct, getConversationKey(this.privkey, peer))),
         };
     }
-    async signEvent(template) {
+    async signEvent(template, boundary) {
         const filled = {
             kind: template.kind,
             content: template.content,
             created_at: template.created_at ?? Math.floor(Date.now() / 1000),
-            tags: template.tags ?? [],
+            tags: (template.tags ?? []).map(tag => [...tag]),
         };
-        return finalizeEvent(filled, this.privkey);
+        if (boundary === undefined)
+            return finalizeEvent(filled, this.privkey);
+        return withProviderEffect(boundary, async () => finalizeEvent(filled, this.privkey));
     }
     async close() {
         // Best-effort wipe — the engine may already have copies in CoW pages, but
@@ -964,24 +1049,33 @@ export class DeferredBunkerSigner {
         this.upgrade = upgrade;
         this.bunkerUri = bunkerUri;
         this.clientSecretKey = clientSecretKey;
+        this.providerEffectBoundary = 1;
         this.method = 'bunker';
+        _DeferredBunkerSigner_binding.set(this, void 0);
+        _DeferredBunkerSigner_refusal.set(this, void 0);
+        _DeferredBunkerSigner_closed.set(this, false);
+        if (clientSecretKey !== undefined && (!(clientSecretKey instanceof Uint8Array) || clientSecretKey.length !== 32)) {
+            throw new Error('invalid-client-secret-key');
+        }
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_binding, { pubkey, uri: bunkerUri?.trim(), source: clientSecretKey,
+            key: clientSecretKey && Uint8Array.prototype.slice.call(clientSecretKey) }, "f");
         this.capabilities = {
             canSignEvents: optimisticCapabilities,
             hasNip44: optimisticCapabilities,
         };
         void this.upgrade.then(signer => {
-            if (signer) {
+            if (signer && !__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f") && !__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f") && this.matchesBinding(signer)) {
                 this.capabilities.canSignEvents = true;
                 this.capabilities.hasNip44 = true;
             }
         }).catch(() => { });
         this.nip04 = {
-            encrypt: async (peer, pt) => (await this.live()).nip04.encrypt(peer, pt),
-            decrypt: async (peer, ct) => (await this.live()).nip04.decrypt(peer, ct),
+            encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04.encrypt(peer, pt, guarded)); },
+            decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip04.decrypt(peer, ct, guarded)); },
         };
         this.nip44 = {
-            encrypt: async (peer, pt) => (await this.live()).nip44.encrypt(peer, pt),
-            decrypt: async (peer, ct) => (await this.live()).nip44.decrypt(peer, ct),
+            encrypt: async (peer, pt, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44.encrypt(peer, pt, guarded)); },
+            decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44.decrypt(peer, ct, guarded)); },
         };
         this.nip46 = {
             ping: async () => (await this.live()).nip46.ping(),
@@ -990,20 +1084,82 @@ export class DeferredBunkerSigner {
             provisionRendezvous: async (index, nonce, expiresAt) => (await this.live()).nip46.provisionRendezvous(index, nonce, expiresAt),
         };
     }
-    async live() {
+    matchesBinding(signer) {
+        try {
+            const { pubkey, uri, key, source } = __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f");
+            return this.pubkey === pubkey && signer.pubkey === pubkey && this.bunkerUri?.trim() === uri &&
+                (uri === undefined || signer.bunkerUri === uri) && this.clientSecretKey === source &&
+                (!key || source?.length === 32 && signer.clientSecretKey?.length === 32 &&
+                    key.every((byte, index) => source[index] === byte && signer.clientSecretKey[index] === byte)) && !__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f");
+        }
+        catch {
+            return false;
+        }
+    }
+    refuse(signer) {
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+            return;
+        this.capabilities.canSignEvents = false;
+        this.capabilities.hasNip44 = false;
+        __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f").key?.fill(0);
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_refusal, Promise.resolve().then(() => signer.close()).catch(() => { }), "f");
+    }
+    async invokeBound(signer, boundary, invoke) {
+        const guarded = boundary && {
+            start: (provider) => boundary.start(() => {
+                if (__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f"))
+                    throw new Error('deferred-bunker-closed');
+                // Recheck inside the consumer's decision too: its native read may
+                // have yielded since live() checked the upgraded signer.
+                if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f") || !this.matchesBinding(signer)) {
+                    this.refuse(signer);
+                    throw new Error('deferred-bunker-binding-mismatch');
+                }
+                return provider();
+            }),
+        };
+        try {
+            return await invoke(guarded);
+        }
+        finally {
+            if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+                await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+        }
+    }
+    async live(boundary) {
         const signer = await this.upgrade;
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_closed, "f"))
+            throw new Error('deferred-bunker-closed');
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f")) {
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+            throw new Error('deferred-bunker-binding-mismatch');
+        }
         if (!signer) {
             throw new Error('signer-auth-only: the redirect bunker handoff did not connect, so this ' +
                 'session cannot sign. Reconnect the signer or paste a bunker URI to upgrade.');
         }
+        // A substituted upgrade must never receive event data or plaintext, even
+        // if its final signature would later be rejected by the consumer.
+        if (!this.matchesBinding(signer) || boundary !== undefined && signer.providerEffectBoundary !== 1) {
+            this.refuse(signer);
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+            throw new Error('deferred-bunker-binding-mismatch');
+        }
         return signer;
     }
-    async signEvent(template) {
-        return (await this.live()).signEvent(template);
+    async signEvent(template, boundary) {
+        const captured = { ...template, tags: (template.tags ?? []).map(tag => [...tag]) };
+        const signer = await this.live(boundary);
+        return this.invokeBound(signer, boundary, guarded => signer.signEvent(captured, guarded));
     }
     async close() {
+        __classPrivateFieldSet(this, _DeferredBunkerSigner_closed, true, "f");
         const signer = await this.upgrade.catch(() => null);
-        if (signer)
+        if (__classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f"))
+            await __classPrivateFieldGet(this, _DeferredBunkerSigner_refusal, "f");
+        else if (signer)
             await signer.close().catch(() => { });
+        __classPrivateFieldGet(this, _DeferredBunkerSigner_binding, "f").key?.fill(0);
     }
 }
+_DeferredBunkerSigner_binding = new WeakMap(), _DeferredBunkerSigner_refusal = new WeakMap(), _DeferredBunkerSigner_closed = new WeakMap();

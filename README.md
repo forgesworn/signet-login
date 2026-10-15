@@ -170,6 +170,26 @@ await fetch('/api/login', {
 ```
 
 Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
+
+`createNip07SignerWithDiscoveryBoundary` provides a separate, versioned
+NIP-07 discovery contract (`HEADLESS_NIP07_DISCOVERY_BOUNDARY === 1`). Its
+`Nip07DiscoveryBoundary.start(prepare, effect)` first runs `prepare()` outside
+native authority to revalidate captured provider references, then freshly
+validates the caller's native custody and calls `effect()` synchronously
+inside that decision. The effect uses captured references without reading
+provider metadata. Await the provider outside the native callback, and
+revalidate custody after the **entire SDK promise** settles: SDK result
+checks and signer construction also read provider metadata. Each preparation
+and effect is single-use; a started provider is joined even on refusal.
+This contract covers account discovery only. Later signing and encryption
+still require their own `SignerEffectBoundary` decisions.
+
+
+`SIGNET_VERIFIED_EVENT_SYMBOL` exposes the exact cache-symbol identity used by
+this SDK's `nostr-tools` copy. Strict event adapters may recognise this metadata
+when dependencies are installed separately. The marker supplies no verification
+authority: validate the event's exact fields and verify its signature afresh.
+
 The IIFE bundle attaches the same helpers to `window.Signet`.
 
 ### NostrConnect and bunker roles
