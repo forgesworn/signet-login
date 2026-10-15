@@ -38,8 +38,18 @@ for installation token lifetime and revocation behaviour.
 When an App installation is unavailable, an authorised operator can dispatch the
 same six workflows using the existing local CLI credential. Publication can then
 use the release workflow's optional `consumer_runs` JSON input. This path makes
-read-only GitHub API requests using the workflow token; it needs no stored PAT or
-additional App installation. Omitting the input retains the App dispatch path.
+read-only GitHub API requests. The workflow token authenticates only reads of
+signet-login itself; the five public consumers are read anonymously, including
+the configured physical smoke check. Forge Realms is private: the existing
+TheCryptoDonkey App installation must grant **Actions: read** and **Contents:
+read** for its evidence. The reuse job mints a token for **forge-realms only**
+with those read permissions; it neither dispatches nor writes there. The App's
+permission settings must allow Contents read and that installation must accept
+the addition before this path can run. Other installations need no access change
+for reuse. No stored PAT or new decented installation is needed. Public API rate
+limits or unreadable evidence fail the gate; there is no fallback to accepting
+an unverified run or forwarding a different credential. Omitting the input
+retains the App dispatch path.
 Invalid evidence fails the release without falling back to dispatch.
 
 The input has this shape (supply all six repositories from
@@ -85,7 +95,14 @@ Git and Python 3 as well as Node; Ubuntu release runners already provide these.
 The configured physical mobile smoke requirement applies before either release
 path. This mechanism adds no physical-device acceptance claim. The downstream
 Anvil publisher and its OIDC configuration are unchanged, and still depend on
-the compatibility job. Both jobs check out the explicitly requested release tag.
+the compatibility job. Both package checkouts use the explicitly requested release tag. For public reuse,
+the compatibility job separately checks out only the verifier tools at
+`github.workflow_sha`, the immutable commit containing the executing workflow.
+The verifier runs from the tagged package's working directory and receives that
+package's recorded version and commit; it cannot substitute its own package
+version or build. This lets reviewed release-tool repairs run against an unchanged
+release tag. Omitting public evidence retains the original tagged App-dispatch
+checker. The workflow logs the verifier commit separately from the package commit.
 After Anvil's independent build and full tests, its test command also packs the
 current build and checks all package file names and bytes against that tagged
 Git source and the compatibility job's validated candidate commit. It also
