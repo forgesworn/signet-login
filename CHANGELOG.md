@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.1 (2026-10-15)
+
+### Bug Fixes
+
+- persist relays a signer moves the session to (#65) (bunker)
+
+
+
 ## 0.20.0 (2026-10-15)
 
 ### Features
