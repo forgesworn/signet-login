@@ -207,6 +207,32 @@ async function guardedNip07Discovery(provider, run, pinned = false) {
         throw new Error('invalid-pubkey-from-nip07');
     return pinned ? pinnedNip07Signer(pubkey.toLowerCase(), provider, signing, nip04, nip44, encrypt04, decrypt04, encrypt44, decrypt44) : new Nip07Signer(pubkey.toLowerCase(), provider);
 }
+/**
+ * Rewrite a bunker URI's relays, keeping its other parameters. A NIP-05 or
+ * otherwise non-`bunker://` input is rebuilt from the resolved pointer.
+ */
+export function bunkerUriWithRelays(originalUri, pointer, relays) {
+    let parsed;
+    try {
+        parsed = new URL(originalUri.trim());
+    }
+    catch { /* not a URI: a NIP-05 identifier */ }
+    if (parsed?.protocol === 'bunker:' && parsed.hostname.toLowerCase() === pointer.pubkey.toLowerCase()) {
+        const params = new URLSearchParams();
+        for (const relay of relays)
+            params.append('relay', relay);
+        for (const [key, value] of parsed.searchParams)
+            if (key !== 'relay')
+                params.append(key, value);
+        return `bunker://${pointer.pubkey.toLowerCase()}?${params.toString()}`;
+    }
+    const params = new URLSearchParams();
+    for (const relay of relays)
+        params.append('relay', relay);
+    if (pointer.secret)
+        params.set('secret', pointer.secret);
+    return `bunker://${pointer.pubkey.toLowerCase()}?${params.toString()}`;
+}
 /** Wraps a NIP-46 client with our SignetSigner interface. */
 export class BunkerSignerImpl {
     constructor(pubkey, bunker, 
@@ -243,6 +269,20 @@ export class BunkerSignerImpl {
                 return bunker.provisionRendezvous(getPublicKey(this.clientSecretKey), index, base64UrlNoPad(nonce), expiresAt);
             },
         };
+    }
+    /**
+     * The bunker URI a later restore should reconnect with: `bunkerUri` with
+     * its relays replaced once the signer's `switch_relays` reply moved this
+     * session, otherwise `bunkerUri` itself. `bunkerUri` stays the original so
+     * session bindings that compare it keep holding.
+     */
+    get reconnectBunkerUri() {
+        try {
+            return this.bunker.reconnectUri?.(this.bunkerUri) ?? this.bunkerUri;
+        }
+        catch {
+            return this.bunkerUri;
+        }
     }
     async signEvent(template, boundary) {
         // Build the event for the bunker to sign. SET pubkey to the signer's own key
@@ -504,6 +544,8 @@ class RobustBunkerClient {
         this.onStatus = onStatus;
         this.requestTimeoutMs = requestTimeoutMs;
         this.appMetadata = appMetadata;
+        /** Set once a `switch_relays` reply has moved this client to new relays. */
+        this.relaysSwitched = false;
         this.serial = 0;
         this.closed = false;
         this.idPrefix = Math.random().toString(36).slice(2);
@@ -724,6 +766,7 @@ class RobustBunkerClient {
                 return false;
             const previousSub = this.sub;
             this.relays = nextRelays;
+            this.relaysSwitched = true;
             setTimeout(() => previousSub?.close('switch-relays'), 5000);
             this.sub = undefined;
             this.setupSubscription();
@@ -732,6 +775,11 @@ class RobustBunkerClient {
         catch {
             return false;
         }
+    }
+    reconnectUri(originalUri) {
+        if (!this.relaysSwitched)
+            return undefined;
+        return bunkerUriWithRelays(originalUri, this.pointer, this.relays);
     }
     async logout() {
         const response = await this.sendRequest('logout', []);

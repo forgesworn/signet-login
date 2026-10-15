@@ -17,6 +17,13 @@ export interface PersistedSession {
 }
 /** Check the required session contract before login can produce effects. */
 export declare function assertRequiredSessionStorage(storage?: SignetStorage): void;
+/**
+ * Replace the stored bunker URI with `next`, only while the stored value is
+ * still `expected` (another tab or login may have replaced the session since).
+ * Used when a restored signer's `switch_relays` reply moved it to new relays.
+ * Every other session key is left untouched.
+ */
+export declare function replaceStoredBunkerUri(expected: string, next: string, storage?: SignetStorage): Promise<void>;
 /** Save a session. Caller must serialise authEvent to JSON. */
 export declare function saveSession(s: PersistedSession): void;
 /** Async-storage variant of `saveSession`. */
