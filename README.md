@@ -185,6 +185,22 @@ This contract covers account discovery only. Later signing and encryption
 still require their own `SignerEffectBoundary` decisions.
 
 
+`createPinnedNip07SignerWithDiscoveryBoundary` uses that discovery contract
+and returns a frozen `PinnedNip07Signer` (`pinnedProviderCalls === 1`). The
+feature marker is `HEADLESS_NIP07_PINNED_PROVIDER_CALLS === 1`. It captures
+signing and NIP-04/NIP-44 functions and their receivers once during discovery;
+subsequent attempts invoke those references inside their supplied boundary,
+including a transient signing retry. Owned methods, capabilities and crypto
+wrappers are frozen. The legacy factories retain their existing behaviour.
+
+Pinning does not detect a changed provider or account, authorise a prompt,
+verify a returned event, or protect application state. Applications still
+need fresh custody decisions and provider checks around every boundary and
+authenticated result handoff. Discovery still inspects provider metadata
+before preparation and after the provider settles. `close()` revokes queued
+calls and retries; it cannot abort a provider request that has already begun.
+
+
 `SIGNET_VERIFIED_EVENT_SYMBOL` exposes the exact cache-symbol identity used by
 this SDK's `nostr-tools` copy. Strict event adapters may recognise this metadata
 when dependencies are installed separately. The marker supplies no verification

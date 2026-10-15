@@ -51,6 +51,8 @@ import { withProviderEffect } from './effects.js';
 export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1 as const;
 /** NIP-07 discovery preflight precedes the caller's native decision. */
 export const HEADLESS_NIP07_DISCOVERY_BOUNDARY = 1 as const;
+/** Opt-in NIP-07 wrappers capture provider callables and receivers once. */
+export const HEADLESS_NIP07_PINNED_PROVIDER_CALLS = 1 as const;
 /** Exact SDK-local cache metadata identity for strict event adapters. This
  * symbol is not signature verification or permission to invoke a signer. */
 import { verifiedSymbol } from 'nostr-tools/pure';
@@ -70,6 +72,7 @@ import {
   hasNip07,
   createNip07Signer,
   createNip07SignerWithDiscoveryBoundary,
+  createPinnedNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -92,6 +95,7 @@ import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
 import type { ConsumeCallbackResult } from './redirect.js';
 import { assertValidLoginAuthEvent } from './verify.js';
+export type { PinnedNip07Signer } from './signers.js';
 export type { CallbackResult, HandleCallbackOptions } from './callback.js';
 export type { ConsumeCallbackResult } from './redirect.js';
 export type { ConsumeAmberResult } from './amber.js';
@@ -100,6 +104,7 @@ export {
   hasNip07,
   createNip07Signer,
   createNip07SignerWithDiscoveryBoundary,
+  createPinnedNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -712,6 +717,7 @@ if (typeof window !== 'undefined') {
     hasNip07,
     createNip07Signer,
     createNip07SignerWithDiscoveryBoundary,
+    createPinnedNip07SignerWithDiscoveryBoundary,
     createBunkerSigner,
     createBunkerSignerFromNostrConnect,
     buildNostrConnectUri,
@@ -730,6 +736,11 @@ if (typeof window !== 'undefined') {
   });
   // An older additive SDK can later replace these functions without removing
   // new properties. Never leave a stale positive contract beside old methods.
+  Object.defineProperty(SignetGlobal, 'HEADLESS_NIP07_PINNED_PROVIDER_CALLS', {
+    configurable: true, enumerable: true,
+    get: () => SignetGlobal.createPinnedNip07SignerWithDiscoveryBoundary === createPinnedNip07SignerWithDiscoveryBoundary ? 1 : undefined,
+    set: () => {},
+  });
   Object.defineProperty(SignetGlobal, 'HEADLESS_NIP07_DISCOVERY_BOUNDARY', {
     configurable: true, enumerable: true,
     get: () => SignetGlobal.createNip07SignerWithDiscoveryBoundary === createNip07SignerWithDiscoveryBoundary ? 1 : undefined,

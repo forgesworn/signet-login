@@ -40,6 +40,12 @@ export declare class Nip07Signer implements SignetSigner {
     close(): Promise<void>;
     private assertActive;
 }
+/** An immutable SDK wrapper whose provider callables and receivers were
+ * captured during discovery. This says nothing about current custody,
+ * provider/account freshness, event validity or permission to prompt. */
+export interface PinnedNip07Signer extends SignetSigner {
+    readonly pinnedProviderCalls: 1;
+}
 /** Connects to the page's NIP-07 provider and returns a Nip07Signer.
  * An optional boundary fences account discovery, including its result handoff.
  * It does not authorise later signing or connect any other login method. */
@@ -51,6 +57,12 @@ export declare function createNip07Signer(boundary?: SignerEffectBoundary): Prom
  * metadata afterwards, so the caller must revalidate custody after this
  * entire SDK promise settles. */
 export declare function createNip07SignerWithDiscoveryBoundary(boundary: Nip07DiscoveryBoundary): Promise<Nip07Signer>;
+/** Opt in to fixed provider callables as well as guarded discovery. Every
+ * signing/crypto attempt invokes the captured function with its captured
+ * receiver inside the supplied effect boundary. No provider property is
+ * looked up by this wrapper after discovery. Callers must still validate
+ * native custody and provider identity, and authenticate the returned proof. */
+export declare function createPinnedNip07SignerWithDiscoveryBoundary(boundary: Nip07DiscoveryBoundary): Promise<PinnedNip07Signer>;
 interface Nip46SignerClient {
     getPublicKey(): Promise<string>;
     signEvent(event: EventTemplate): Promise<NostrEvent>;

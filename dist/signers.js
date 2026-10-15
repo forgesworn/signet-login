@@ -52,32 +52,7 @@ export class Nip07Signer {
         }
     }
     async signEvent(template, boundary) {
-        // NIP-07 requires a complete unsigned event. SignetSigner intentionally
-        // accepts lightweight templates, so normalise at the provider boundary
-        // for strict extensions such as Ditto (and preserve caller-supplied
-        // values when they are present).
-        const filled = {
-            kind: template.kind,
-            content: template.content,
-            created_at: template.created_at ?? Math.floor(Date.now() / 1000),
-            tags: (template.tags ?? []).map(tag => [...tag]),
-        };
-        let providerFailed = false, providerFailure;
-        return retryTransientNip07Sign(() => withProviderEffect(boundary, () => {
-            this.assertActive();
-            try {
-                return this.provider.signEvent({ ...filled, tags: filled.tags.map(tag => [...tag]) }).catch(error => {
-                    providerFailed = true;
-                    providerFailure = error;
-                    throw error;
-                });
-            }
-            catch (error) {
-                providerFailed = true;
-                providerFailure = error;
-                return Promise.reject(error);
-            }
-        }), error => providerFailed && error === providerFailure);
+        return signNip07Template(template, boundary, () => this.assertActive(), filled => this.provider.signEvent(filled));
     }
     async close() {
         // Revoke this wrapper, including any queued retry. NIP-07 provides no
@@ -88,6 +63,55 @@ export class Nip07Signer {
         if (this.closed)
             throw new Error('nip07-signer-closed');
     }
+}
+/** Keep template normalisation, provider-error classification and retry policy
+ * identical for the legacy and captured-callable wrappers. */
+async function signNip07Template(template, boundary, assertActive, invoke) {
+    const filled = {
+        kind: template.kind,
+        content: template.content,
+        created_at: template.created_at ?? Math.floor(Date.now() / 1000),
+        tags: (template.tags ?? []).map(tag => [...tag]),
+    };
+    let providerFailed = false, providerFailure;
+    return retryTransientNip07Sign(() => withProviderEffect(boundary, () => {
+        assertActive();
+        try {
+            return invoke({ ...filled, tags: filled.tags.map(tag => [...tag]) }).catch(error => {
+                providerFailed = true;
+                providerFailure = error;
+                throw error;
+            });
+        }
+        catch (error) {
+            providerFailed = true;
+            providerFailure = error;
+            return Promise.reject(error);
+        }
+    }), error => providerFailed && error === providerFailure);
+}
+function pinnedNip07Signer(pubkey, provider, signing, nip04, nip44, encrypt04, decrypt04, encrypt44, decrypt44) {
+    if (typeof signing !== 'function' ||
+        (nip04 !== undefined && (typeof encrypt04 !== 'function' || typeof decrypt04 !== 'function')) ||
+        (nip44 !== undefined && (typeof encrypt44 !== 'function' || typeof decrypt44 !== 'function'))) {
+        throw new Error('invalid-nip07-provider-callables');
+    }
+    let closed = false;
+    const assertActive = () => { if (closed)
+        throw new Error('nip07-signer-closed'); };
+    const crypto = (receiver, encrypt, decrypt) => Object.freeze({
+        encrypt: (peer, text, boundary) => withProviderEffect(boundary, () => { assertActive(); return Reflect.apply(encrypt, receiver, [peer, text]); }),
+        decrypt: (peer, text, boundary) => withProviderEffect(boundary, () => { assertActive(); return Reflect.apply(decrypt, receiver, [peer, text]); }),
+    });
+    return Object.freeze({
+        pubkey, method: 'nip07', providerEffectBoundary: 1, pinnedProviderCalls: 1,
+        capabilities: Object.freeze({ canSignEvents: true, hasNip44: nip44 !== undefined }),
+        ...(nip04 === undefined ? {} : { nip04: crypto(nip04, encrypt04, decrypt04) }),
+        ...(nip44 === undefined ? {} : { nip44: crypto(nip44, encrypt44, decrypt44) }),
+        signEvent: (template, boundary) => signNip07Template(template, boundary, assertActive, filled => Reflect.apply(signing, provider, [filled])),
+        // Revokes queued calls/retries; NIP-07 cannot abort an already-started call.
+        close: async () => { closed = true; },
+    });
 }
 async function retryTransientNip07Sign(sign, providerRejected) {
     try {
@@ -129,10 +153,24 @@ export async function createNip07SignerWithDiscoveryBoundary(boundary) {
     if (!hasNip07())
         throw new Error('no-nip07-provider');
     const provider = window.nostr;
+    return guardedNip07Discovery(provider, discoveryBoundaryRunner(boundary));
+}
+/** Opt in to fixed provider callables as well as guarded discovery. Every
+ * signing/crypto attempt invokes the captured function with its captured
+ * receiver inside the supplied effect boundary. No provider property is
+ * looked up by this wrapper after discovery. Callers must still validate
+ * native custody and provider identity, and authenticate the returned proof. */
+export async function createPinnedNip07SignerWithDiscoveryBoundary(boundary) {
+    if (!hasNip07())
+        throw new Error('no-nip07-provider');
+    const provider = window.nostr;
+    return guardedNip07Discovery(provider, discoveryBoundaryRunner(boundary), true);
+}
+function discoveryBoundaryRunner(boundary) {
     const version = boundary.discoveryPreflightBoundary, start = boundary.start;
     if (version !== 1 || typeof start !== 'function')
         throw new Error('invalid-nip07-discovery-boundary');
-    return guardedNip07Discovery(provider, (prepare, effect) => {
+    return (prepare, effect) => {
         let attempted = false, prepared = false, settled = false;
         const preflight = () => {
             if (attempted || settled)
@@ -146,9 +184,9 @@ export async function createNip07SignerWithDiscoveryBoundary(boundary) {
                 throw new Error('nip07-discovery-not-prepared');
             return effect();
         }).finally(() => { settled = true; });
-    });
+    };
 }
-async function guardedNip07Discovery(provider, run) {
+async function guardedNip07Discovery(provider, run, pinned = false) {
     const discovery = provider.getPublicKey;
     const signing = provider.signEvent;
     const nip04 = provider.nip04, nip44 = provider.nip44;
@@ -167,7 +205,7 @@ async function guardedNip07Discovery(provider, run) {
     check();
     if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey))
         throw new Error('invalid-pubkey-from-nip07');
-    return new Nip07Signer(pubkey.toLowerCase(), provider);
+    return pinned ? pinnedNip07Signer(pubkey.toLowerCase(), provider, signing, nip04, nip44, encrypt04, decrypt04, encrypt44, decrypt44) : new Nip07Signer(pubkey.toLowerCase(), provider);
 }
 /** Wraps a NIP-46 client with our SignetSigner interface. */
 export class BunkerSignerImpl {
