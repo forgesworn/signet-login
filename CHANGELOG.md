@@ -13,6 +13,7 @@
 ### Documentation
 
 - README: `SignetStorage` now lists `required`, `compareAndSetItem`, `getItems` and `setItems`; new `handleRedirectCallback` section with its options, result union and `t-required` shape; typed `createBunkerSigner` and `createBunkerSignerFromNostrConnect` options; a table mapping picker methods to `session.method` and `canSignEvents`; and what `mode: 'redirect'` does to the picker.
+- README, `llms.txt` and `AGENTS.md`: the picker reports `session.method: 'bunker'` only after a Signet handoff connects and matches, whereas `handleRedirectCallback` reports it immediately and connects in the background, so consumers should branch on `canSignEvents`.
 - README and `llms.txt`: examples now guard `signEvent` on `capabilities.canSignEvents`, the ESM example no longer uses a top-level `return`, and the signet-verify coexistence snippet uses `<script type="module">`.
 - `llms.txt` and README link `docs/` and the changelog by absolute URL, because the package ships neither.
 

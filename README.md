@@ -139,6 +139,8 @@ interface SignetSession {
 | `amber` | `'amber'`, delivered by `handleRedirectCallback()` on the next page load; `login()` itself navigates away and returns no session | `false` |
 | `nsec` | `'nsec'` (memory only, never persisted) | `true` |
 
+The `local-signet` and `remote-signet` rows describe the picker's relay delivery (`mode: 'relay'`, the default). The picker waits for the `bunker://` handoff to connect, bounded at 8 seconds, before `login()` resolves, so it reports `'bunker'` only once the connect has succeeded and the pubkey matches. Otherwise the session is `'redirect'` and auth-only. `mode: 'redirect'` finishes in `handleRedirectCallback()` instead, which behaves differently: it labels a handoff `'bunker'` and, by default, connects in the background, so there `method` does not say whether signing works. See [`Signet.handleRedirectCallback(opts?)`](#signethandleredirectcallbackopts).
+
 `restoreSession()` can downgrade a stored session to `method: 'redirect'` with an auth-only signer: a stored `nip07` session when the extension is no longer present, and a stored `bunker` session when called with `reconnectBunker: false`.
 
 By default, the picker shows ordinary user-facing methods first and groups `bunker`, `nostrconnect`, and `nsec` behind **Advanced**. Control the surface per app:
@@ -492,12 +494,14 @@ if (result.kind === 'session') {
 }
 ```
 
-What `session` contains depends on what came back. An Amber return gives `method: 'amber'` with an auth-only signer. A Signet return with no `bunker://` handoff gives `method: 'redirect'` with an auth-only signer. A Signet return that includes a `bunker://` handoff gives `method: 'bunker'` (or `'redirect'` if a `required: true` adapter's connect fails), and `waitForBunker` decides when you see it:
+What `session` contains depends on what came back. An Amber return gives `method: 'amber'` with an auth-only signer. A Signet return with no `bunker://` handoff gives `method: 'redirect'` with an auth-only signer. A Signet return that includes a `bunker://` handoff gives `method: 'bunker'` (or `'redirect'` if a `required: true` adapter's connect fails or the bunker's pubkey differs), and `waitForBunker` decides when you see it:
 
-- `false` (default): the call resolves immediately and the connect runs in the background, bounded at 8 seconds. The signer reports `canSignEvents: false` until the connect succeeds, then flips to `true`. If it fails or the bunker's pubkey differs from the authenticated pubkey, the session stays valid for identity only and `canSignEvents` stays `false`.
-- `true`: the call waits for that connect before resolving. Signing-required consumers should set it, then still check `canSignEvents` and reject auth-only sessions.
+- `false` (default): the call resolves immediately with `method: 'bunker'` and the connect runs in the background, bounded at 8 seconds. The signer reports `canSignEvents: false` until the connect succeeds, then flips to `true`. If it fails or the bunker's pubkey differs from the authenticated pubkey, the session keeps `method: 'bunker'`, stays valid for identity only, and `canSignEvents` stays `false`.
+- `true`: the call waits for that connect before resolving. If the connect fails or the pubkey differs, the session still has `method: 'bunker'` and `canSignEvents` is `false`. Signing-required consumers should set it, then still check `canSignEvents` and reject auth-only sessions.
 
-An adapter with `required: true` always waits for the connect, because it has no background session writer.
+Unlike the picker, which reports `'bunker'` only after a matching connect, this function can return `method: 'bunker'` for a session that cannot sign, so branch on `canSignEvents`, not `method`.
+
+An adapter with `required: true` always waits for the connect, because it has no background session writer. If that connect fails or the pubkey differs, you get the auth-only `method: 'redirect'` session.
 
 ### `Signet.handleCallback(opts?)`
 
@@ -554,7 +558,7 @@ if (session.signer.capabilities.canSignEvents) {
 }
 ```
 
-When Signet or a signer app returns a `bunker://` handoff, the SDK upgrades the auth-only proof into a live `BunkerSignerImpl` if the handoff connects and matches the authenticated pubkey.
+When Signet or a signer app returns a `bunker://` handoff, the SDK upgrades the auth-only proof into a live `BunkerSignerImpl` if the handoff connects and matches the authenticated pubkey. The picker waits for that and reports `'bunker'` only on success. `handleRedirectCallback()` reports `'bunker'` for any handoff, by default straight away with a signer that starts auth-only, so check `canSignEvents` there too.
 
 Amber / NIP-55 is currently auth-only in Signet Access. It can prove identity on Android, but it does not leave the web app with a persistent signer or NIP-44 channel. Signing-required consumers should reject Amber/auth-only sessions unless a future Amber flow returns a verified live signer handoff. See the [Amber policy](https://github.com/forgesworn/signet-login/blob/main/docs/amber-policy.md).
 

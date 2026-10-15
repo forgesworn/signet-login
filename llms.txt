@@ -44,7 +44,7 @@ A CDN IIFE build is also available; see the README's Install section.
 - **`SignetSigner`**: the common interface every signer type implements (`signEvent`, optional `nip44`, `capabilities.canSignEvents`).
 - **`nostrconnect://` vs `bunker://`**: two NIP-46 URI directions, the app-initiated pairing URI and the signer-initiated reconnect URI.
 - **Server-side verification**: `signet-login/verify`'s `verifyLogin` checks the schnorr signature, event ID, challenge, and origin before a server trusts a login.
-- **Ephemeral vs live signers**: some flows (redirect/QR/Amber) only prove identity (`canSignEvents: false`); others keep a live signer for ongoing signing.
+- **Ephemeral vs live signers**: some flows (redirect/QR/Amber) only prove identity (`canSignEvents: false`); others keep a live signer for ongoing signing. `method` alone does not say which: the picker reports `'bunker'` only after a Signet handoff connects and matches, but `handleRedirectCallback` reports `'bunker'` for any handoff, by default immediately with the connect in the background (`canSignEvents` stays `false` if that fails), so branch on `canSignEvents`.
 
 ## API Surface
 

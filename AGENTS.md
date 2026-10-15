@@ -62,6 +62,12 @@ and commit `dist/` after any source change.
 - `EphemeralSigner` and Amber/NIP-55 sessions are auth-only
   (`capabilities.canSignEvents === false`); do not treat them as live
   signers.
+- `session.method === 'bunker'` is not proof of a live signer.
+  `handleRedirectCallback` returns it immediately and connects in the
+  background (`waitForBunker` defaults to `false`), so `canSignEvents` starts
+  `false` and stays `false` if the connect fails or the pubkey differs. The
+  picker reports `'bunker'` only after a matching connect. Branch on
+  `canSignEvents`.
 - Server-side verification (`signet-login/verify`) must check
   `expectedChallenge` against a nonce the server itself issued and has not
   accepted before; it keeps no state.
