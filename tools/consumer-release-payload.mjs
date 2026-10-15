@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const RELEASE_ONLY_PATHS = new Set([
-  '.github/workflows/release.yml', 'docs/release-app.md',
+  '.github/workflows/release.yml', 'docs/release-app.md', 'CHANGELOG.md',
   'tools/check-consumer-compatibility.mjs', 'tools/consumer-public-evidence.mjs',
   'tools/consumer-public-contracts.json', 'tools/consumer-release-payload.mjs',
   'tests/consumer-public-evidence.test.ts', 'tests/consumer-release-payload.test.ts',

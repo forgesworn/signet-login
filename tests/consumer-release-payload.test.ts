@@ -56,6 +56,11 @@ describe('candidate package identity at release', () => {
     f.git('add', 'tools/consumer-public-evidence.mjs'); f.git('commit', '-qm', 'Release tooling');
     expect(f.verify().files).toHaveLength(3);
   });
+  it('permits release notes only when the actual package payload stays unchanged', () => {
+    const f = fixture(); writeFileSync(join(f.dir, 'CHANGELOG.md'), '## 0.18.2\nRelease notes\n');
+    f.git('add', 'CHANGELOG.md'); f.git('commit', '-qm', 'Release notes');
+    expect(f.verify().files).toHaveLength(3);
+  });
   for (const defect of ['missing', 'changed', 'extra', 'duplicate', 'traversal', 'symlink']) {
     it(`rejects a ${defect} tarball without extracting it`, () => { const f = fixture(); f.pack(defect); expect(f.verify).toThrow(); });
   }
