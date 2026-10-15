@@ -33,7 +33,7 @@ workflow's existing OIDC trusted publishing configuration.
 See [GitHub's token action](https://github.com/actions/create-github-app-token)
 for installation token lifetime and revocation behaviour.
 
-## Reusing completed public compatibility runs
+## Reusing completed compatibility runs
 
 When an App installation is unavailable, an authorised operator can dispatch the
 same six workflows using the existing local CLI credential. Publication can then
