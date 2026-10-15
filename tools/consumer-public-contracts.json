@@ -1,0 +1,183 @@
+{
+  "sdkCI": {
+    "repo": "forgesworn/signet-login",
+    "workflowPath": ".github/workflows/ci.yml",
+    "workflowBlobSha": "7d6707bb5508840e8bfe0cd0c2bd380a140e9dc9",
+    "jobs": [
+      {
+        "name": "test (22)",
+        "requiredSteps": [
+          "Install dependencies",
+          "Validate consumer compatibility release gate",
+          "Type check",
+          "Run tests",
+          "Build",
+          "Verify checked-in distribution"
+        ]
+      },
+      {
+        "name": "test (24)",
+        "requiredSteps": [
+          "Install dependencies",
+          "Validate consumer compatibility release gate",
+          "Type check",
+          "Run tests",
+          "Build",
+          "Verify checked-in distribution"
+        ]
+      }
+    ],
+    "optionalJobs": []
+  },
+  "consumers": [
+    {
+      "repo": "forgesworn/canary-kit",
+      "kind": "sdk",
+      "workflowPath": ".github/workflows/signet-compatibility.yml",
+      "workflowBlobSha": "bc025d35efc0b44102f09adceb7f821530dc2e3b",
+      "jobs": [
+        {
+          "name": "compatibility",
+          "requiredSteps": [
+            "Check out Signet Login candidate",
+            "Build Signet Login candidate package",
+            "Run npm ci",
+            "Install Signet Login candidate",
+            "Run npm run check:signet-login",
+            "Run npm run check:signet-conformance",
+            "Run npm run lint",
+            "Run npm run typecheck",
+            "Run npm run build",
+            "Run npm run build:app",
+            "Run npx vitest run --coverage",
+            "Run npx playwright install --with-deps chromium webkit",
+            "Run Signet NostrConnect browser regression",
+            "Run Signet WebKit regression",
+            "Run protocol E2E suite"
+          ]
+        }
+      ],
+      "optionalJobs": []
+    },
+    {
+      "repo": "forgesworn/signet-app",
+      "kind": "sdk",
+      "workflowPath": ".github/workflows/signet-compatibility.yml",
+      "workflowBlobSha": "8957945786fdf868610324637248bad4bc2092bf",
+      "jobs": [
+        {
+          "name": "compatibility",
+          "requiredSteps": [
+            "Check out Signet Login candidate",
+            "Route @forgesworn git deps over HTTPS",
+            "Build Signet Login candidate package",
+            "Install dependencies",
+            "Install Canary dependencies",
+            "Install Signet Login candidate in Canary",
+            "Check Canary Signet Login candidate",
+            "Check Signet conformance",
+            "Typecheck",
+            "Test",
+            "Install Playwright browsers",
+            "Browser regression tests",
+            "Mobile WebKit QR/paste regression",
+            "Contact npub entry regression",
+            "External signer reconnect regression",
+            "Cross-app Canary NostrConnect regression",
+            "Build"
+          ]
+        }
+      ],
+      "optionalJobs": []
+    },
+    {
+      "repo": "forgesworn/signet-lite",
+      "kind": "sdk",
+      "workflowPath": ".github/workflows/signet-compatibility.yml",
+      "workflowBlobSha": "6135aff6ae9c811a69bb97bab77b0d0f4160602c",
+      "jobs": [
+        {
+          "name": "compatibility",
+          "requiredSteps": [
+            "Check out Signet Login candidate",
+            "Build Signet Login candidate package",
+            "Install locked dependencies",
+            "Install Signet Login candidate",
+            "Show tested client versions",
+            "NIP-46 compatibility tests (against candidate)"
+          ]
+        }
+      ],
+      "optionalJobs": []
+    },
+    {
+      "repo": "TheCryptoDonkey/pallasite",
+      "kind": "sdk",
+      "workflowPath": ".github/workflows/signet-compatibility.yml",
+      "workflowBlobSha": "9f68a7acf67b3c98cb9449760643b77f2e95c0f5",
+      "jobs": [
+        {
+          "name": "compatibility",
+          "requiredSteps": [
+            "Check out Signet Login candidate",
+            "Run pnpm/action-setup@v6",
+            "Build Signet Login candidate bundle",
+            "Vendor Signet Login candidate bundle",
+            "Install dependencies",
+            "Check Signet Login bundle drift",
+            "Typecheck + build"
+          ]
+        }
+      ],
+      "optionalJobs": []
+    },
+    {
+      "repo": "decented/axenstax",
+      "kind": "sdk",
+      "workflowPath": ".github/workflows/signet-compatibility.yml",
+      "workflowBlobSha": "f7ae7fa0459b323af49852074b14a176eab03c14",
+      "jobs": [
+        {
+          "name": "compatibility",
+          "requiredSteps": [
+            "Check out Signet Login candidate",
+            "Build Signet Login candidate bundle",
+            "Vendor Signet Login candidate bundle",
+            "Rust toolchain (wasm32)",
+            "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+            "Install trunk",
+            "Check Signet Login bundle drift",
+            "Build WASM bundle"
+          ]
+        }
+      ],
+      "optionalJobs": []
+    },
+    {
+      "repo": "TheCryptoDonkey/forge-realms",
+      "kind": "ecosystem",
+      "workflowPath": ".github/workflows/ci.yml",
+      "workflowBlobSha": "e4192504349828116f2d12f055e0b78cf1bfcbf0",
+      "jobs": [
+        {
+          "name": "Test, Build, Smoke",
+          "requiredSteps": [
+            "Check out",
+            "Set up Node",
+            "Install",
+            "Check Signet dependency drift",
+            "Test",
+            "Build",
+            "Runtime smoke",
+            "Signet Treasury smoke",
+            "BTC Prague release smoke",
+            "Mobile command smoke"
+          ]
+        }
+      ],
+      "optionalJobs": [
+        "Runtime Soak"
+      ]
+    }
+  ]
+}

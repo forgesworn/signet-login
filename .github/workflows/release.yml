@@ -9,6 +9,10 @@ on:
         description: Release tag to publish
         type: string
         required: true
+      consumer_runs:
+        description: Optional exact six-consumer public evidence JSON (see docs/release-app.md)
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -19,8 +23,19 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    outputs:
+      tested_candidate_sha: ${{ steps.compatibility.outputs.tested_candidate_sha }}
+      release_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record checked-out release commit
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -34,9 +49,19 @@ jobs:
         run: npm run build
 
       - name: Pack candidate package
-        run: npm pack --pack-destination "$RUNNER_TEMP"
+        id: candidate
+        run: |
+          mkdir -p release/candidates/consumer-compatibility
+          npm pack --pack-destination release/candidates/consumer-compatibility --json > release/candidates/consumer-compatibility/pack.json
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const packs = JSON.parse(readFileSync('release/candidates/consumer-compatibility/pack.json', 'utf8'));
+          if (packs.length !== 1 || !/^[a-z0-9.-]+\.tgz$/.test(packs[0].filename)) throw new Error('Unexpected candidate package');
+          appendFileSync(process.env.GITHUB_OUTPUT, `archive=release/candidates/consumer-compatibility/${packs[0].filename}\n`);
+          NODE
 
       - name: Create ForgeSworn consumer token
+        if: ${{ inputs.consumer_runs == '' }}
         id: forgesworn-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
@@ -47,6 +72,7 @@ jobs:
           permission-actions: write
 
       - name: Create TheCryptoDonkey consumer token
+        if: ${{ inputs.consumer_runs == '' }}
         id: thecryptodonkey-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
@@ -57,6 +83,7 @@ jobs:
           permission-actions: write
 
       - name: Create decented consumer token
+        if: ${{ inputs.consumer_runs == '' }}
         id: decented-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
@@ -67,12 +94,16 @@ jobs:
           permission-actions: write
 
       - name: Check downstream Signet compatibility
+        id: compatibility
         env:
           SIGNET_GH_TOKEN_FORGESWORN: ${{ steps.forgesworn-token.outputs.token }}
           SIGNET_GH_TOKEN_THECRYPTODONKEY: ${{ steps.thecryptodonkey-token.outputs.token }}
           SIGNET_GH_TOKEN_DECENTED: ${{ steps.decented-token.outputs.token }}
           SIGNET_LOGIN_REF: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
-          SIGNET_LOGIN_SHA: ${{ github.sha }}
+          SIGNET_LOGIN_SHA: ${{ steps.source.outputs.sha }}
+          SIGNET_LOGIN_PACKAGE_PATH: ${{ steps.candidate.outputs.archive }}
+          SIGNET_EXISTING_CONSUMER_RUNS: ${{ inputs.consumer_runs }}
+          GH_TOKEN: ${{ github.token }}
           REQUIRE_PHYSICAL_MOBILE_SMOKE: ${{ vars.REQUIRE_PHYSICAL_MOBILE_SMOKE || 'false' }}
         run: node tools/check-consumer-compatibility.mjs
 
@@ -80,4 +111,5 @@ jobs:
     needs: consumer-compatibility
     uses: forgesworn/anvil/.github/workflows/release.yml@v0
     with:
-      tag: ${{ inputs.tag || '' }}
+      tag: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+      test-command: npm test && node tools/consumer-release-payload.mjs --check-current-build ${{ needs.consumer-compatibility.outputs.tested_candidate_sha }} ${{ needs.consumer-compatibility.outputs.release_sha }}
