@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { PUBLIC_CONTRACTS, createPublicReader, parsePublicEvidence, verifyPublicEvidence } from '../tools/consumer-public-evidence.mjs';
+import { PUBLIC_CONTRACTS, PUBLIC_PHYSICAL_SMOKE_PATH, PRIVATE_CONSUMER_REPO, createPublicReader, parsePublicEvidence, verifyPublicEvidence } from '../tools/consumer-public-evidence.mjs';
 
 const candidateSha = 'a'.repeat(40), candidateVersion = '0.18.2', requestId = 'vennel-sdk-0123456789abcdef';
 const started = '2026-10-15T00:00:00Z', completed = '2026-10-15T00:01:00Z';
@@ -115,7 +115,53 @@ describe('public evidence transport', () => {
     await expect(readJson('/repos/decented/axenstax/actions/runs/123')).resolves.toEqual({ ok: true });
     expect(observed.url).toBe('https://api.github.com/repos/decented/axenstax/actions/runs/123');
     expect(observed.options.method).toBe('GET'); expect(observed.options.redirect).toBe('error');
-    expect(observed.options.headers.Authorization).toBe('Bearer test-token');
+    expect(observed.options.headers.Authorization).toBeUndefined();
+  });
+  it('uses the repository token only for SDK evidence, including every read needed by the full cohort', async () => {
+    const f = fixture(), observed: Array<{ path: string; authenticated: boolean }> = [];
+    const readJson = createPublicReader({ token: 'sdk-repository-token', privateToken: 'forge-read-token', fetchImpl: async (url: string, options: any) => {
+      const path = new URL(url).pathname + new URL(url).search;
+      const ownRepo = path.startsWith(`/repos/${PUBLIC_CONTRACTS.sdkCI.repo}/`);
+      const privateRepo = path.startsWith(`/repos/${PRIVATE_CONSUMER_REPO}/`);
+      const authenticated = Boolean(options.headers.Authorization);
+      observed.push({ path, authenticated });
+      // Reproduce a repository-scoped token: it cannot read other repos' Actions.
+      if (options.headers.Authorization === 'Bearer sdk-repository-token' && !ownRepo) return { status: 403, text: async () => 'Resource not accessible by integration' };
+      expect(options.headers.Authorization).toBe(ownRepo ? 'Bearer sdk-repository-token' : privateRepo ? 'Bearer forge-read-token' : undefined);
+      return { status: 200, text: async () => JSON.stringify(await f.readJson(path)) };
+    } });
+    const proof = await verifyPublicEvidence(f.input, { expectedVersion: candidateVersion, readJson });
+    expect(proof.consumers).toHaveLength(6);
+    expect(observed.filter(row => row.authenticated)).toHaveLength(10);
+    expect(observed.filter(row => !row.authenticated)).toHaveLength(30);
+  });
+  it('refuses private evidence without its scoped token, even when an SDK token exists', async () => {
+    const readJson = createPublicReader({ token: 'sdk-repository-token', fetchImpl: async () => { throw Error('Must not fetch'); } });
+    await expect(readJson(`/repos/${PRIVATE_CONSUMER_REPO}/actions/runs/123`)).rejects.toThrow('A scoped read token is required');
+  });
+  it('keeps the exact physical smoke read public and refuses any alternate workflow or query', async () => {
+    const observed: any[] = [];
+    const readJson = createPublicReader({ token: 'sdk-repository-token', fetchImpl: async (url: string, options: any) => {
+      observed.push({ url, options }); return { status: 200, text: async () => '{"workflow_runs":[]}' };
+    } });
+    await expect(readJson(PUBLIC_PHYSICAL_SMOKE_PATH)).resolves.toEqual({ workflow_runs: [] });
+    expect(observed[0].options.headers.Authorization).toBeUndefined();
+    expect(observed[0].options.method).toBe('GET');
+    for (const path of [PUBLIC_PHYSICAL_SMOKE_PATH.replace('signet-app', 'canary-kit'),
+      PUBLIC_PHYSICAL_SMOKE_PATH.replace('status=success', 'status=failure'),
+      PUBLIC_PHYSICAL_SMOKE_PATH.replace('physical-mobile-smoke.yml', 'ci.yml')]) {
+      await expect(readJson(path)).rejects.toThrow('Unsupported public evidence API path');
+    }
+    expect(observed).toHaveLength(1);
+  });
+  it('reports the fixed API path and HTTP status without response bodies, credentials, retries or fallback', async () => {
+    let calls = 0;
+    const path = '/repos/forgesworn/signet-login/actions/runs/123';
+    const readJson = createPublicReader({ token: 'private-token', fetchImpl: async () => {
+      calls++; return { status: 403, text: async () => 'sensitive response body' };
+    } });
+    await expect(readJson(path)).rejects.toThrow(`Public GitHub evidence observation failed: HTTP 403 at ${path}`);
+    expect(calls).toBe(1);
   });
   for (const path of ['https://attacker.invalid/', '//attacker.invalid/', '/repos/attacker/repo/actions/runs/123', '/repos/decented/axenstax/actions/workflows/ci.yml/dispatches', '/repos/decented/axenstax/../secret', '/repos/decented/axenstax/actions/runs/123?token=secret']) {
     it(`refuses unsupported paths without fetching: ${path}`, async () => {

@@ -36,7 +36,23 @@ jobs:
 
       - name: Record checked-out release commit
         id: source
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw new Error('Invalid release version');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+
+      - name: Check out the executing workflow's public evidence verifier
+        if: ${{ inputs.consumer_runs != '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-verifier
+          sparse-checkout: tools
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -73,15 +89,15 @@ jobs:
           permission-actions: write
 
       - name: Create TheCryptoDonkey consumer token
-        if: ${{ inputs.consumer_runs == '' }}
         id: thecryptodonkey-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
         with:
           client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
           owner: TheCryptoDonkey
-          repositories: pallasite,forge-realms
-          permission-actions: write
+          repositories: ${{ inputs.consumer_runs != '' && 'forge-realms' || 'pallasite,forge-realms' }}
+          permission-actions: ${{ inputs.consumer_runs != '' && 'read' || 'write' }}
+          permission-contents: ${{ inputs.consumer_runs != '' && 'read' || '' }}
 
       - name: Create decented consumer token
         if: ${{ inputs.consumer_runs == '' }}
@@ -102,11 +118,18 @@ jobs:
           SIGNET_GH_TOKEN_DECENTED: ${{ steps.decented-token.outputs.token }}
           SIGNET_LOGIN_REF: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
           SIGNET_LOGIN_SHA: ${{ steps.source.outputs.sha }}
+          SIGNET_LOGIN_PACKAGE_VERSION: ${{ steps.source.outputs.version }}
           SIGNET_LOGIN_PACKAGE_PATH: ${{ steps.candidate.outputs.archive }}
           SIGNET_EXISTING_CONSUMER_RUNS: ${{ inputs.consumer_runs }}
           GH_TOKEN: ${{ github.token }}
           REQUIRE_PHYSICAL_MOBILE_SMOKE: ${{ vars.REQUIRE_PHYSICAL_MOBILE_SMOKE || 'false' }}
-        run: node tools/check-consumer-compatibility.mjs
+        run: |
+          if [ -n "$SIGNET_EXISTING_CONSUMER_RUNS" ]; then
+            echo "Public evidence verifier commit: $(git -C .release-verifier rev-parse HEAD)"
+            node .release-verifier/tools/check-consumer-compatibility.mjs
+          else
+            node tools/check-consumer-compatibility.mjs
+          fi
 
   release:
     needs: consumer-compatibility

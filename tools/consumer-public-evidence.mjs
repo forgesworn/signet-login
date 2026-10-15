@@ -109,18 +109,29 @@ export async function verifyPublicEvidence(value, { readJson, expectedVersion })
     requestId: input.requestId, sdkCI: proofs[0], consumers: proofs.slice(1) });
 }
 
-export function createPublicReader({ token, fetchImpl = fetch } = {}) {
+export const PUBLIC_PHYSICAL_SMOKE_PATH = '/repos/forgesworn/signet-app/actions/workflows/physical-mobile-smoke.yml/runs?branch=main&per_page=30&event=workflow_dispatch&status=success';
+
+export const PRIVATE_CONSUMER_REPO = 'TheCryptoDonkey/forge-realms';
+
+export function createPublicReader({ token, privateToken, fetchImpl = fetch } = {}) {
   const repos = [PUBLIC_CONTRACTS.sdkCI, ...PUBLIC_CONTRACTS.consumers].map(contract => contract.repo);
   return async path => {
-    requireThat(typeof path === 'string' && repos.some(repo => path.startsWith(`/repos/${repo}/`))
-      && /^\/repos\/[A-Za-z0-9-]+\/[A-Za-z0-9-]+\/(?:actions\/runs\/[1-9]\d*(?:\/attempts\/[1-9]\d*\/jobs\?per_page=100)?|contents\/\.github\/workflows\/[a-z-]+\.yml\?ref=[a-f0-9]{40}|git\/ref\/heads\/main)$/.test(path),
+    requireThat(typeof path === 'string' && (path === PUBLIC_PHYSICAL_SMOKE_PATH || (repos.some(repo => path.startsWith(`/repos/${repo}/`))
+      && /^\/repos\/[A-Za-z0-9-]+\/[A-Za-z0-9-]+\/(?:actions\/runs\/[1-9]\d*(?:\/attempts\/[1-9]\d*\/jobs\?per_page=100)?|contents\/\.github\/workflows\/[a-z-]+\.yml\?ref=[a-f0-9]{40}|git\/ref\/heads\/main)$/.test(path))),
     'Unsupported public evidence API path');
+    const privateRepo = path.startsWith(`/repos/${PRIVATE_CONSUMER_REPO}/`);
+    requireThat(!privateRepo || (typeof privateToken === 'string' && privateToken.length > 0),
+      'A scoped read token is required for the private Forge Realms evidence');
+    const credential = privateRepo ? privateToken : path.startsWith(`/repos/${PUBLIC_CONTRACTS.sdkCI.repo}/`) ? token : undefined;
     const response = await fetchImpl(`https://api.github.com${path}`, {
       method: 'GET', redirect: 'error', signal: AbortSignal.timeout(30_000),
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        // The workflow token is scoped to this SDK repository. Downstream
+        // public evidence needs no credential. Private Forge Realms evidence uses
+        // its separate, repository-scoped read token and never a fallback.
+        ...(credential ? { Authorization: `Bearer ${credential}` } : {}) },
     });
-    requireThat(response.status === 200, 'Public GitHub evidence observation failed');
+    requireThat(response.status === 200, `Public GitHub evidence observation failed: HTTP ${response.status} at ${path}`);
     const body = await response.text();
     requireThat(body.length <= 2_000_000, 'Public GitHub evidence response is too large');
     try { return JSON.parse(body); } catch { throw new Error('Invalid public GitHub evidence response'); }
