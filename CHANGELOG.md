@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Release verification
+
+- The release gate no longer runs `decented/axenstax`. The release App cannot reach that account, which blocked the App dispatch path from 0.17.4 onwards; the gate now covers the five consumers on forgesworn and TheCryptoDonkey.
+
 ## 0.19.1 (2026-10-15)
 
 First npm publication of the 0.19 line; 0.19.0 was tagged but not published.

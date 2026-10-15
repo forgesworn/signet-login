@@ -132,28 +132,6 @@
       "optionalJobs": []
     },
     {
-      "repo": "decented/axenstax",
-      "kind": "sdk",
-      "workflowPath": ".github/workflows/signet-compatibility.yml",
-      "workflowBlobSha": "f7ae7fa0459b323af49852074b14a176eab03c14",
-      "jobs": [
-        {
-          "name": "compatibility",
-          "requiredSteps": [
-            "Check out Signet Login candidate",
-            "Build Signet Login candidate bundle",
-            "Vendor Signet Login candidate bundle",
-            "Rust toolchain (wasm32)",
-            "Run Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
-            "Install trunk",
-            "Check Signet Login bundle drift",
-            "Build WASM bundle"
-          ]
-        }
-      ],
-      "optionalJobs": []
-    },
-    {
       "repo": "TheCryptoDonkey/forge-realms",
       "kind": "ecosystem",
       "workflowPath": ".github/workflows/ci.yml",

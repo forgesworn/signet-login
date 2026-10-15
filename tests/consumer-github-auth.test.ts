@@ -7,16 +7,14 @@ describe('consumer GitHub credentials', () => {
     const tokenFor = createConsumerTokenResolver({
       SIGNET_GH_TOKEN_FORGESWORN: 'forge-token',
       SIGNET_GH_TOKEN_THECRYPTODONKEY: 'donkey-token',
-      SIGNET_GH_TOKEN_DECENTED: 'decented-token',
     });
     expect(tokenFor('https://api.github.com/repos/forgesworn/signet-app/actions/workflows/signet-compatibility.yml/dispatches')).toBe('forge-token');
     expect(tokenFor('/repos/TheCryptoDonkey/pallasite/actions/runs/123')).toBe('donkey-token');
-    expect(tokenFor('/repos/decented/axenstax/actions/runs/456/jobs')).toBe('decented-token');
   });
 
   it('fails closed when an installation token is missing despite a broad fallback', () => {
     const tokenFor = createConsumerTokenResolver({ SIGNET_GH_TOKEN_FORGESWORN: 'forge-token', GH_TOKEN: 'broad-token' });
-    expect(() => tokenFor('/repos/decented/axenstax/actions/runs/456')).toThrow('SIGNET_GH_TOKEN_DECENTED is required');
+    expect(() => tokenFor('/repos/TheCryptoDonkey/pallasite/actions/runs/456')).toThrow('SIGNET_GH_TOKEN_THECRYPTODONKEY is required');
   });
 
   it('allows the existing operator CLI token when no installation tokens are supplied', () => {
