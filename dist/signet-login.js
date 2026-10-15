@@ -19,19 +19,21 @@ import { withProviderEffect } from './effects.js';
 /** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
  * helpers. It does not advertise guarded modal, restore or carrier startup. */
 export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1;
+/** NIP-07 discovery preflight precedes the caller's native decision. */
+export const HEADLESS_NIP07_DISCOVERY_BOUNDARY = 1;
 /** Exact SDK-local cache metadata identity for strict event adapters. This
  * symbol is not signature verification or permission to invoke a signer. */
 import { verifiedSymbol } from 'nostr-tools/pure';
 export const SIGNET_VERIFIED_EVENT_SYMBOL = verifiedSymbol;
 import { showLoginModal } from './modal.js';
 import { saveSessionToStorage, assertRequiredSessionStorage, loadSessionFromStorage, clearSessionFromStorage, bytesToHexLocal, decodeClientSecretKey, loadOrCreatePersistentClientSkFromStorage, clearPersistentClientSkFromStorage, } from './storage.js';
-import { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
+import { hasNip07, createNip07Signer, createNip07SignerWithDiscoveryBoundary, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, EphemeralSigner, DeferredBunkerSigner, Nip07Signer, BunkerSignerImpl, LocalSigner, } from './signers.js';
 import { consumeAmberCallbackFromStorage } from './amber.js';
 import { handleCallback as handlePopupCallback } from './callback.js';
 import { consumeCallbackFromStorage, startRedirect } from './redirect.js';
 import { assertValidLoginAuthEvent } from './verify.js';
 export { isAndroid } from './amber.js';
-export { hasNip07, createNip07Signer, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
+export { hasNip07, createNip07Signer, createNip07SignerWithDiscoveryBoundary, createBunkerSigner, createBunkerSignerFromNostrConnect, buildNostrConnectUri, buildBunkerUriFromNostrConnectUri, isBunkerUri, isNostrConnectUri, isSupportedPairingUri, createLocalSignerFromNsec, isEncryptedNsec, generateSecretKey, Nip07Signer, BunkerSignerImpl, LocalSigner, };
 /**
  * Cap the redirect-bunker auto-pair handshake. The `bunker://` URI signet-app
  * appends is best-effort and may be unreachable on arrival — most notably when
@@ -590,6 +592,7 @@ if (typeof window !== 'undefined') {
         login,
         hasNip07,
         createNip07Signer,
+        createNip07SignerWithDiscoveryBoundary,
         createBunkerSigner,
         createBunkerSignerFromNostrConnect,
         buildNostrConnectUri,
@@ -608,6 +611,11 @@ if (typeof window !== 'undefined') {
     });
     // An older additive SDK can later replace these functions without removing
     // new properties. Never leave a stale positive contract beside old methods.
+    Object.defineProperty(SignetGlobal, 'HEADLESS_NIP07_DISCOVERY_BOUNDARY', {
+        configurable: true, enumerable: true,
+        get: () => SignetGlobal.createNip07SignerWithDiscoveryBoundary === createNip07SignerWithDiscoveryBoundary ? 1 : undefined,
+        set: () => { },
+    });
     Object.defineProperty(SignetGlobal, 'HEADLESS_PROVIDER_EFFECT_BOUNDARY', {
         configurable: true, enumerable: true,
         get: () => SignetGlobal.createNip07Signer === createNip07Signer &&

@@ -22,6 +22,7 @@ export type {
   LoginPickerMethod,
   SignerCapabilities,
   SignerEffectBoundary,
+  Nip07DiscoveryBoundary,
   SignetSigner,
   SignetAuthEvent,
   SignetSession,
@@ -48,6 +49,8 @@ import { withProviderEffect } from './effects.js';
 /** Versioned SDK contract for guarded NIP-07 discovery and the headless proof
  * helpers. It does not advertise guarded modal, restore or carrier startup. */
 export const HEADLESS_PROVIDER_EFFECT_BOUNDARY = 1 as const;
+/** NIP-07 discovery preflight precedes the caller's native decision. */
+export const HEADLESS_NIP07_DISCOVERY_BOUNDARY = 1 as const;
 /** Exact SDK-local cache metadata identity for strict event adapters. This
  * symbol is not signature verification or permission to invoke a signer. */
 import { verifiedSymbol } from 'nostr-tools/pure';
@@ -66,6 +69,7 @@ import {
 import {
   hasNip07,
   createNip07Signer,
+  createNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -95,6 +99,7 @@ export { isAndroid } from './amber.js';
 export {
   hasNip07,
   createNip07Signer,
+  createNip07SignerWithDiscoveryBoundary,
   createBunkerSigner,
   createBunkerSignerFromNostrConnect,
   buildNostrConnectUri,
@@ -706,6 +711,7 @@ if (typeof window !== 'undefined') {
     login,
     hasNip07,
     createNip07Signer,
+    createNip07SignerWithDiscoveryBoundary,
     createBunkerSigner,
     createBunkerSignerFromNostrConnect,
     buildNostrConnectUri,
@@ -724,6 +730,11 @@ if (typeof window !== 'undefined') {
   });
   // An older additive SDK can later replace these functions without removing
   // new properties. Never leave a stale positive contract beside old methods.
+  Object.defineProperty(SignetGlobal, 'HEADLESS_NIP07_DISCOVERY_BOUNDARY', {
+    configurable: true, enumerable: true,
+    get: () => SignetGlobal.createNip07SignerWithDiscoveryBoundary === createNip07SignerWithDiscoveryBoundary ? 1 : undefined,
+    set: () => {},
+  });
   Object.defineProperty(SignetGlobal, 'HEADLESS_PROVIDER_EFFECT_BOUNDARY', {
     configurable: true, enumerable: true,
     get: () => SignetGlobal.createNip07Signer === createNip07Signer &&

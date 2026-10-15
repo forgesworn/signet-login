@@ -117,6 +117,38 @@ export async function createNip07Signer(boundary) {
             throw new Error('invalid-pubkey-from-nip07');
         return new Nip07Signer(pubkey.toLowerCase(), provider);
     }
+    return guardedNip07Discovery(provider, (prepare, effect) => withProviderEffect(boundary, () => { prepare(); return effect(); }));
+}
+/** Restore account discovery through a two-stage native boundary. Provider
+ * references are captured before boundary.start; prepare() revalidates them
+ * before the caller's final synchronous native decision. The effect only
+ * calls captured references. SDK result checks and wrapper construction read
+ * metadata afterwards, so the caller must revalidate custody after this
+ * entire SDK promise settles. */
+export async function createNip07SignerWithDiscoveryBoundary(boundary) {
+    if (!hasNip07())
+        throw new Error('no-nip07-provider');
+    const provider = window.nostr;
+    const version = boundary.discoveryPreflightBoundary, start = boundary.start;
+    if (version !== 1 || typeof start !== 'function')
+        throw new Error('invalid-nip07-discovery-boundary');
+    return guardedNip07Discovery(provider, (prepare, effect) => {
+        let attempted = false, prepared = false, settled = false;
+        const preflight = () => {
+            if (attempted || settled)
+                throw new Error('nip07-discovery-already-prepared-or-settled');
+            attempted = true;
+            prepare();
+            prepared = true;
+        };
+        return withProviderEffect({ start: (once) => Reflect.apply(start, boundary, [preflight, once]) }, () => {
+            if (!prepared || settled)
+                throw new Error('nip07-discovery-not-prepared');
+            return effect();
+        }).finally(() => { settled = true; });
+    });
+}
+async function guardedNip07Discovery(provider, run) {
     const discovery = provider.getPublicKey;
     const signing = provider.signEvent;
     const nip04 = provider.nip04, nip44 = provider.nip44;
@@ -131,10 +163,7 @@ export async function createNip07Signer(boundary) {
             throw new Error('nip07-discovery-provider-changed');
         }
     };
-    const pubkey = await withProviderEffect(boundary, () => {
-        check();
-        return discovery.call(provider);
-    });
+    const pubkey = await run(check, () => Reflect.apply(discovery, provider, []));
     check();
     if (typeof pubkey !== 'string' || !/^[0-9a-f]{64}$/i.test(pubkey))
         throw new Error('invalid-pubkey-from-nip07');

@@ -5,7 +5,7 @@
  *   BunkerSignerImpl  — wraps nostr-tools BunkerSigner (NIP-46 over relay)
  *   EphemeralSigner   — auth-only fallback when only the redirect signature is available
  */
-import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEvent, SignetSigner, SignerCapabilities, SignerEffectBoundary } from './types.js';
+import type { EventTemplate, NostrConnectStatusHandler, NostrEvent, SignetAuthEvent, SignetSigner, SignerCapabilities, SignerEffectBoundary, Nip07DiscoveryBoundary } from './types.js';
 /** The shape of `window.nostr` exposed by NIP-07 extensions. */
 interface Nip07Provider {
     getPublicKey(): Promise<string>;
@@ -44,6 +44,13 @@ export declare class Nip07Signer implements SignetSigner {
  * An optional boundary fences account discovery, including its result handoff.
  * It does not authorise later signing or connect any other login method. */
 export declare function createNip07Signer(boundary?: SignerEffectBoundary): Promise<Nip07Signer>;
+/** Restore account discovery through a two-stage native boundary. Provider
+ * references are captured before boundary.start; prepare() revalidates them
+ * before the caller's final synchronous native decision. The effect only
+ * calls captured references. SDK result checks and wrapper construction read
+ * metadata afterwards, so the caller must revalidate custody after this
+ * entire SDK promise settles. */
+export declare function createNip07SignerWithDiscoveryBoundary(boundary: Nip07DiscoveryBoundary): Promise<Nip07Signer>;
 interface Nip46SignerClient {
     getPublicKey(): Promise<string>;
     signEvent(event: EventTemplate): Promise<NostrEvent>;
