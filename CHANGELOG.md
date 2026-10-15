@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0 (2026-10-15)
+
+### Features
+
+- carry and listen on up to three relays in the Signet QR/redirect flow (#60)
+
+
+
 ## Unreleased
 
 ### Bug Fixes
