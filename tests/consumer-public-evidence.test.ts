@@ -24,11 +24,11 @@ function fixture() {
 }
 
 describe('public completed consumer evidence', () => {
-  it('requires six real successful attempts and the candidate SDK CI, retaining the ecosystem boundary', async () => {
+  it('requires every real successful attempt and the candidate SDK CI, retaining the ecosystem boundary', async () => {
     const f = fixture();
     const proof = await verifyPublicEvidence(f.input, { readJson: f.readJson, expectedVersion: candidateVersion });
-    expect(proof.candidateSha).toBe(candidateSha); expect(proof.consumers).toHaveLength(6);
-    expect(proof.consumers.filter((run: any) => run.kind === 'sdk')).toHaveLength(5);
+    expect(proof.candidateSha).toBe(candidateSha); expect(proof.consumers).toHaveLength(5);
+    expect(proof.consumers.filter((run: any) => run.kind === 'sdk')).toHaveLength(4);
     expect(proof.consumers.find((run: any) => run.kind === 'ecosystem').repo).toBe('TheCryptoDonkey/forge-realms');
   });
   for (const defect of ['missing-consumer', 'duplicate-consumer', 'extra-consumer', 'wrong-repo', 'bad-attempt', 'bad-sha', 'bad-request', 'extra-field']) {
@@ -112,8 +112,8 @@ describe('public evidence transport', () => {
     const readJson = createPublicReader({ token: 'test-token', fetchImpl: async (url: string, options: any) => {
       observed = { url, options }; return { status: 200, text: async () => '{"ok":true}' };
     } });
-    await expect(readJson('/repos/decented/axenstax/actions/runs/123')).resolves.toEqual({ ok: true });
-    expect(observed.url).toBe('https://api.github.com/repos/decented/axenstax/actions/runs/123');
+    await expect(readJson('/repos/forgesworn/canary-kit/actions/runs/123')).resolves.toEqual({ ok: true });
+    expect(observed.url).toBe('https://api.github.com/repos/forgesworn/canary-kit/actions/runs/123');
     expect(observed.options.method).toBe('GET'); expect(observed.options.redirect).toBe('error');
     expect(observed.options.headers.Authorization).toBeUndefined();
   });
@@ -131,9 +131,9 @@ describe('public evidence transport', () => {
       return { status: 200, text: async () => JSON.stringify(await f.readJson(path)) };
     } });
     const proof = await verifyPublicEvidence(f.input, { expectedVersion: candidateVersion, readJson });
-    expect(proof.consumers).toHaveLength(6);
+    expect(proof.consumers).toHaveLength(5);
     expect(observed.filter(row => row.authenticated)).toHaveLength(10);
-    expect(observed.filter(row => !row.authenticated)).toHaveLength(30);
+    expect(observed.filter(row => !row.authenticated)).toHaveLength(24);
   });
   it('refuses private evidence without its scoped token, even when an SDK token exists', async () => {
     const readJson = createPublicReader({ token: 'sdk-repository-token', fetchImpl: async () => { throw Error('Must not fetch'); } });
@@ -163,14 +163,14 @@ describe('public evidence transport', () => {
     await expect(readJson(path)).rejects.toThrow(`Public GitHub evidence observation failed: HTTP 403 at ${path}`);
     expect(calls).toBe(1);
   });
-  for (const path of ['https://attacker.invalid/', '//attacker.invalid/', '/repos/attacker/repo/actions/runs/123', '/repos/decented/axenstax/actions/workflows/ci.yml/dispatches', '/repos/decented/axenstax/../secret', '/repos/decented/axenstax/actions/runs/123?token=secret']) {
+  for (const path of ['https://attacker.invalid/', '//attacker.invalid/', '/repos/attacker/repo/actions/runs/123', '/repos/forgesworn/canary-kit/actions/workflows/ci.yml/dispatches', '/repos/forgesworn/canary-kit/../secret', '/repos/forgesworn/canary-kit/actions/runs/123?token=secret']) {
     it(`refuses unsupported paths without fetching: ${path}`, async () => {
       const readJson = createPublicReader({ fetchImpl: async () => { throw Error('Must not fetch'); } });
       await expect(readJson(path)).rejects.toThrow('Unsupported public evidence API path');
     });
   }
   it('does not expose error response bodies and rejects malformed or oversized responses', async () => {
-    const path = '/repos/decented/axenstax/actions/runs/123';
+    const path = '/repos/forgesworn/canary-kit/actions/runs/123';
     for (const [status, body] of [[403, 'secret'], [302, 'secret'], [200, 'secret'], [200, 'x'.repeat(2_000_001)]]) {
       const readJson = createPublicReader({ fetchImpl: async () => ({ status, text: async () => body }) });
       await expect(readJson(path)).rejects.toThrow();

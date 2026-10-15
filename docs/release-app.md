@@ -8,9 +8,8 @@ mandatory **Metadata: read** permission on only these repositories:
 | --- | --- |
 | forgesworn | canary-kit, signet-app, signet-lite |
 | TheCryptoDonkey | pallasite, forge-realms |
-| decented | axenstax |
 
-The App must allow installation on any account because the consumers span three
+The App must allow installation on any account because the consumers span two
 owners. It needs no webhook, OAuth user authorisation, Contents write, or Workflows
 write permission. This does not change the visibility of any repository.
 
@@ -19,7 +18,7 @@ Configure `SIGNET_RELEASE_APP_CLIENT_ID` as a repository Actions variable and
 Back up the App metadata and private key in the operator's credential vault.
 Never commit the key or put it in workflow logs.
 
-Each release creates three installation tokens, scoped to the listed repositories
+Each release creates two installation tokens, scoped to the listed repositories
 and Actions permission. The token action masks them and revokes them when the job
 ends. The compatibility checker selects the token for the requested owner; when
 any installation token is present, a missing owner token is an error, even if a
@@ -36,7 +35,7 @@ for installation token lifetime and revocation behaviour.
 ## Reusing completed compatibility runs
 
 When an App installation is unavailable, an authorised operator can dispatch the
-same six workflows using the existing local CLI credential. Publication can then
+same five workflows using the existing local CLI credential. Publication can then
 use the release workflow's optional `consumer_runs` JSON input. This path makes
 read-only GitHub API requests. The workflow token authenticates only reads of
 signet-login itself; the five public consumers are read anonymously, including
@@ -46,13 +45,13 @@ read** for its evidence. The reuse job mints a token for **forge-realms only**
 with those read permissions; it neither dispatches nor writes there. The App's
 permission settings must allow Contents read and that installation must accept
 the addition before this path can run. Other installations need no access change
-for reuse. No stored PAT or new decented installation is needed. Public API rate
+for reuse. No stored PAT is needed. Public API rate
 limits or unreadable evidence fail the gate; there is no fallback to accepting
 an unverified run or forwarding a different credential. Omitting the input
 retains the App dispatch path.
 Invalid evidence fails the release without falling back to dispatch.
 
-The input has this shape (supply all six repositories from
+The input has this shape (supply all five repositories from
 `tools/consumer-public-contracts.json` exactly once):
 
 ```json

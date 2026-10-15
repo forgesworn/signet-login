@@ -1,7 +1,6 @@
 const ownerVariables = {
   forgesworn: 'SIGNET_GH_TOKEN_FORGESWORN',
   thecryptodonkey: 'SIGNET_GH_TOKEN_THECRYPTODONKEY',
-  decented: 'SIGNET_GH_TOKEN_DECENTED',
 };
 
 /** Select an installation token without forwarding it outside GitHub Actions APIs. */

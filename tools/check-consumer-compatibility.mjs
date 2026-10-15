@@ -43,12 +43,6 @@ const consumers = [
     ref: 'main',
   },
   {
-    name: 'Axenstax',
-    repo: 'decented/axenstax',
-    workflow: 'signet-compatibility.yml',
-    ref: 'main',
-  },
-  {
     name: 'Forge Realms',
     repo: 'TheCryptoDonkey/forge-realms',
     workflow: 'ci.yml',
@@ -305,7 +299,7 @@ async function main() {
       log(`${consumer.repo}: verified ${consumer.kind} run ${consumer.runId}, attempt ${consumer.attempt}, head ${consumer.headSha}`);
     }
     recordTestedCandidate(proof.candidateSha);
-    log('all six reviewed completed consumer attempts passed; no workflows dispatched.');
+    log('all reviewed completed consumer attempts passed; no workflows dispatched.');
     return;
   }
 
