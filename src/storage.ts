@@ -521,6 +521,8 @@ function isPendingRelayAuth(value: unknown): value is PendingRelayAuth {
     typeof v.origin === 'string' && v.origin.length > 0 &&
     typeof v.appName === 'string' &&
     typeof v.relayUrl === 'string' && v.relayUrl.length > 0 &&
+    (v.relayUrls === undefined || (Array.isArray(v.relayUrls) && v.relayUrls.length >= 1 && v.relayUrls.length <= 3 &&
+      v.relayUrls.every(r => typeof r === 'string' && r.length > 0))) &&
     typeof v.sessionSkHex === 'string' && /^[0-9a-f]{64}$/i.test(v.sessionSkHex) &&
     typeof v.issuedAt === 'number' && Number.isFinite(v.issuedAt)
   );
