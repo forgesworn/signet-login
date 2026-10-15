@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.0 (2026-10-15)
+
+### Features
+
+- capture NIP-07 provider callables for guarded effects
+
+
+
 ## Unreleased
 
 ### Release verification
