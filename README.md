@@ -41,17 +41,24 @@ The IIFE bundle additively extends `window.Signet` — it coexists with `signet-
     const session = await Signet.login({ appName: 'My Game' });
     if (!session) return;  // user cancelled
 
-    // Sign a Nostr event with the user's chosen signer:
-    const signed = await session.signer.signEvent({
-      kind: 30762,
-      content: '',
-      tags: [
-        ['game', 'my-game'],
-        ['score', '12350'],
-        ['p', session.pubkey],
-      ],
-    });
-    console.log('signed:', signed);
+    // Only some sessions can sign. Signet redirect/QR sessions without a
+    // bunker handoff, and Amber, prove identity but cannot sign events:
+    // their signEvent() rejects with "signer-auth-only: ...".
+    if (session.signer.capabilities.canSignEvents) {
+      // Sign a Nostr event with the user's chosen signer:
+      const signed = await session.signer.signEvent({
+        kind: 30762,
+        content: '',
+        tags: [
+          ['game', 'my-game'],
+          ['score', '12350'],
+          ['p', session.pubkey],
+        ],
+      });
+      console.log('signed:', signed);
+    } else {
+      console.log('signed in as', session.pubkey, '(identity only, no signing)');
+    }
   });
 </script>
 ```
@@ -77,7 +84,7 @@ interface LoginOptions {
   timeout?: number;                             // default 120_000ms; clamped to [5k, 600k]
   signetAppOrigin?: string;                     // default https://mysignet.app
   redirectCallback?: string;                    // for same-device redirect / Amber return
-  mode?: 'relay' | 'redirect';                  // Signet delivery mode
+  mode?: 'relay' | 'redirect';                  // default 'relay'; 'redirect' skips the picker (see below)
   storage?: SignetStorage;                      // default localStorage
   persist?: boolean;                            // default true
 }
@@ -86,6 +93,17 @@ interface SignetStorage {
   getItem(key: string): string | null | Promise<string | null>;
   setItem(key: string, value: string): void | Promise<void>;
   removeItem(key: string): void | Promise<void>;
+
+  // Required custody. With `required: true` all three batch/CAS methods must
+  // be present, otherwise login() and handleRedirectCallback() throw
+  // 'required-storage-atomic-session-unavailable'. See "Custom storage".
+  readonly required?: boolean;
+  compareAndSetItem?(key: string, expected: string | null, value: string | null): boolean | Promise<boolean>;
+  getItems?(keys: readonly string[]): Readonly<Record<string, string | null>> | Promise<Readonly<Record<string, string | null>>>;
+  setItems?(
+    changes: Readonly<Record<string, string | null>>,
+    expected: Readonly<Record<string, string | null>>,
+  ): boolean | Promise<boolean>;
 }
 
 type LoginPickerMethod =
@@ -108,6 +126,20 @@ interface SignetSession {
   displayName?: string;
 }
 ```
+
+`LoginPickerMethod` names a picker entry; `SignetSession.method` names how the user actually authenticated. Several picker entries share a session method, so branch on `session.signer.capabilities.canSignEvents` rather than on `method` when you need to know whether the session can sign:
+
+| Picker method | `session.method` | `canSignEvents` |
+|---|---|---|
+| `nip07` | `'nip07'` | `true` |
+| `local-signet` (alias `redirect`) | `'redirect'`, or `'bunker'` if Signet hands back a `bunker://` URI that connects and matches the authenticated pubkey | `false`, or `true` after a bunker handoff |
+| `remote-signet` (alias `qr`) | `'redirect'`, or `'bunker'` after a matching bunker handoff, as above | `false`, or `true` after a bunker handoff |
+| `bunker` | `'bunker'` | `true` |
+| `nostrconnect` | `'bunker'` (same session shape as a pasted bunker URI) | `true` |
+| `amber` | `'amber'`, delivered by `handleRedirectCallback()` on the next page load; `login()` itself navigates away and returns no session | `false` |
+| `nsec` | `'nsec'` (memory only, never persisted) | `true` |
+
+`restoreSession()` can downgrade a stored session to `method: 'redirect'` with an auth-only signer: a stored `nip07` session when the extension is no longer present, and a stored `bunker` session when called with `reconnectBunker: false`.
 
 By default, the picker shows ordinary user-facing methods first and groups `bunker`, `nostrconnect`, and `nsec` behind **Advanced**. Control the surface per app:
 
@@ -134,7 +166,12 @@ await Signet.login({
 
 `signetAppOrigin` defaults to `https://mysignet.app`. If your integration should launch Signet Lite specifically, pass `signetAppOrigin: 'https://lite.mysignet.app'`.
 
-In `mode: 'redirect'`, the current tab navigates to Signet and the session is consumed later by `Signet.handleRedirectCallback()`. If the user taps Back before approving and the browser restores the original page, `login()` resolves `null` so your UI can leave its loading state.
+`mode` controls how the Sign in with Signet method delivers its result:
+
+- `'relay'` (default): the picker's `local-signet` and `remote-signet` entries both keep the page open and receive the signed proof over a relay. `local-signet` opens Signet on this device; `remote-signet` shows a cross-device QR.
+- `'redirect'`: `login()` skips the picker entirely. The current tab navigates to Signet and the session is consumed later by `Signet.handleRedirectCallback()`. `methods`, `advancedMethods` and `preferredMethod` are ignored, including `preferredMethod: 'local-signet'` and `'nip07'`, as are `relayUrl`, `relayUrls`, `theme` and `timeout`. Only `appName`, `challenge`, `signetAppOrigin`, `redirectCallback` and `storage` are used. It throws outside a browser (`signet-login: redirect mode requires a browser environment`).
+
+The picker never performs a same-tab redirect, so `local-signet` plus `mode: 'redirect'` behaves exactly like `mode: 'redirect'` alone. If the user taps Back before approving and the browser restores the original page, `login()` resolves `null` so your UI can leave its loading state.
 
 `redirect` and `qr` remain supported picker aliases for existing apps, but new integrations should use `local-signet` and `remote-signet`.
 
@@ -170,6 +207,36 @@ await fetch('/api/login', {
 ```
 
 Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
+
+The bunker signer constructors take an inline options object (there is no exported options type). `createBunkerSigner` connects to a signer that published a `bunker://` URI, or a NIP-05 identifier:
+
+```ts
+createBunkerSigner(input: {
+  uri: string;                        // bunker:// URI or NIP-05 identifier
+  clientSecretKey?: Uint8Array;       // 32 bytes; omit for a fresh ephemeral client key
+  onauth?: (url: string) => void;     // accepted by the type but not currently called
+  onStatus?: NostrConnectStatusHandler;
+  appName?: string;                   // display metadata, sent as the third `connect` parameter
+  appUrl?: string;                    // display metadata, as above
+  requestTimeoutMs?: number;          // per-request deadline; default 15_000
+  timeoutMs?: number;                 // bounds the connect handshake; no default (unbounded)
+}): Promise<BunkerSignerImpl>
+```
+
+`createBunkerSignerFromNostrConnect` completes an app-initiated pairing started with `buildNostrConnectUri`:
+
+```ts
+createBunkerSignerFromNostrConnect(input: {
+  uri: string;                        // the nostrconnect:// URI you showed the user
+  clientSecretKey: Uint8Array;        // required; the 32-byte key the URI was built with
+  abortSignal?: AbortSignal;
+  timeoutMs?: number;                 // pairing wait; default 300_000 (5 minutes)
+  onStatus?: NostrConnectStatusHandler;
+  requestTimeoutMs?: number;          // per-request deadline; default 15_000
+}): Promise<BunkerSignerImpl>
+```
+
+Guardian approvals that need longer than the default 15-second NIP-46 response deadline should raise `requestTimeoutMs`. It changes the connected signer's request deadlines only; `timeoutMs` still controls the separate handshake or pairing wait, and an omitted `requestTimeoutMs` keeps the 15-second behaviour. A non-positive or non-finite value throws `invalid-request-timeout`. When `timeoutMs` expires on `createBunkerSigner`, the half-open signer is closed and the call rejects with `bunker-connect-timeout`. `appName` and `appUrl` exist only on `createBunkerSigner`: omitting both preserves the two-parameter `connect` handshake, and display metadata does not confer signing permission. For the app-initiated flow, pass `appName` and `appUrl` to `buildNostrConnectUri` instead.
 
 `createNip07SignerWithDiscoveryBoundary` provides a separate, versioned
 NIP-07 discovery contract (`HEADLESS_NIP07_DISCOVERY_BOUNDARY === 1`). Its
@@ -343,9 +410,11 @@ and `setItems(changes, expected)` for atomic session replacement/deletion.
 `true` only after commit, or `false` on a definite mismatch. An expired snapshot
 cannot clear a newer session. Every requested
 key must appear in a snapshot with a string or `null`; `null` in a replacement
-removes a key. Missing batch methods reject before login effects; `persist: false` is rejected
-with required custody. The memory-only `nsec` route is hidden, and explicitly
-selecting it rejects before private-key entry. The SDK never simulates atomicity
+removes a key. Missing batch or CAS methods reject before login effects with
+`required-storage-atomic-session-unavailable`; `persist: false` is rejected with
+`required-storage-session-persistence-required`. The memory-only `nsec` route is
+hidden, and explicitly selecting it rejects with
+`required-storage-nsec-is-memory-only` before private-key entry. The SDK never simulates atomicity
 with sequential key writes. Stored auth proofs are integrity-checked; this is
 not fresh server authentication or an independent authority/absence proof.
 
@@ -356,7 +425,7 @@ a definite outcome; rejecting it must stop the consumer's effects. This option
 does not encrypt data or provide rollback resistance. Adapters without
 `required: true` retain the existing best-effort persistence behaviour.
 
-For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp — without it the SDK cannot rebuild the signed event and **cannot verify the signature**, so the returned `pubkey` would be unverified. **`handleRedirectCallback` rejects those callbacks by default** (`reason: 't-required'`). Only opt into accepting them if you control the signet-app deployment and knowingly accept an unverified pubkey:
+For the same-tab redirect callback, current Signet deployments return the signed event timestamp and the SDK verifies the returned auth proof before accepting it. Older deployments may omit that timestamp. Without it the SDK cannot rebuild the signed event and **cannot verify the signature**, so the returned `pubkey` would be unverified. **`handleRedirectCallback` refuses those callbacks by default**, returning `{ kind: 'invalid', reason: 't-required' }` rather than throwing. Only opt into accepting them if you control the signet-app deployment and knowingly accept an unverified pubkey:
 
 ```js
 await Signet.handleRedirectCallback({
@@ -365,7 +434,7 @@ await Signet.handleRedirectCallback({
 });
 ```
 
-> **Breaking change (v0.14.0):** prior versions accepted timestamp-less redirect callbacks by default. This is now secure-by-default — such callbacks are rejected unless you explicitly opt in as shown above.
+> **Breaking change (v0.14.0):** prior versions accepted timestamp-less redirect callbacks by default. This is now secure-by-default: such callbacks are rejected unless you explicitly opt in as shown above. See the [changelog](https://github.com/forgesworn/signet-login/blob/main/CHANGELOG.md).
 
 This adapter is deliberately not called "Stash". `@forgesworn/stash` is the separate encrypted cloud-save vault for app data; Signet Access storage is local session/reconnect state needed before a signer is available.
 
@@ -390,9 +459,49 @@ By default, logout keeps the persistent NIP-46 client key so a previously approv
 await Signet.logout(session, { clearPersistentClientKey: true });
 ```
 
+### `Signet.handleRedirectCallback(opts?)`
+
+Call once on app boot, before `restoreSession()`, to consume a same-tab return from `login({ mode: 'redirect' })` or from Amber. It checks the URL against the pending state saved when the redirect started, persists the session, and strips the auth params from the URL.
+
+```ts
+interface HandleRedirectCallbackOptions {
+  storage?: SignetStorage;                      // must match the adapter passed to login()
+  allowLegacyRedirectWithoutTimestamp?: boolean; // default false; see "Custom storage"
+  waitForBunker?: boolean;                      // default false; see below
+}
+
+function handleRedirectCallback(
+  opts?: HandleRedirectCallbackOptions,
+): Promise<
+  | { kind: 'session'; session: SignetSession }
+  | { kind: 'denied' }                          // the user rejected the request
+  | { kind: 'no-callback' }                     // no auth params on this URL, the usual case
+  | { kind: 'invalid'; reason: string }
+>;
+```
+
+The result is a tagged union (`ConsumeCallbackResult | ConsumeAmberResult`, both exported as types). Failed validation is returned, not thrown, and pending state is cleared either way. A callback without the signed timestamp comes back as `{ kind: 'invalid', reason: 't-required' }` unless `allowLegacyRedirectWithoutTimestamp` is `true`. Other `reason` values include `no-pending-state`, `origin-mismatch`, `pending-stale`, `pubkey-malformed`, `signature-malformed`, `eventId-malformed`, `t-malformed`, the Amber-only `no-event-param`, `event-malformed`, `event-not-object`, `event-shape-invalid` and `challenge-mismatch`, and the verifier's error codes such as `invalid-signature`. Rejections come from storage, for example `required-storage-atomic-session-unavailable` when a `required: true` adapter lacks the batch methods. A second call on the same page returns `no-callback`.
+
+```js
+const result = await Signet.handleRedirectCallback({ storage });
+if (result.kind === 'session') {
+  const { session } = result;
+  if (session.signer.capabilities.canSignEvents) enableSigning();
+} else if (result.kind === 'invalid') {
+  console.warn('redirect sign-in failed:', result.reason);
+}
+```
+
+What `session` contains depends on what came back. An Amber return gives `method: 'amber'` with an auth-only signer. A Signet return with no `bunker://` handoff gives `method: 'redirect'` with an auth-only signer. A Signet return that includes a `bunker://` handoff gives `method: 'bunker'` (or `'redirect'` if a `required: true` adapter's connect fails), and `waitForBunker` decides when you see it:
+
+- `false` (default): the call resolves immediately and the connect runs in the background, bounded at 8 seconds. The signer reports `canSignEvents: false` until the connect succeeds, then flips to `true`. If it fails or the bunker's pubkey differs from the authenticated pubkey, the session stays valid for identity only and `canSignEvents` stays `false`.
+- `true`: the call waits for that connect before resolving. Signing-required consumers should set it, then still check `canSignEvents` and reject auth-only sessions.
+
+An adapter with `required: true` always waits for the connect, because it has no background session writer.
+
 ### `Signet.handleCallback(opts?)`
 
-Run on your callback page when using the same-device redirect flow. Parses URL params and posts them to `window.opener` (if popup-opened), then closes the popup.
+Run on your callback page when using the popup flow. Parses URL params and posts them to `window.opener` (if popup-opened), then closes the popup.
 
 **Pass `targetOrigin`.** These params identify the signed-in user, and on the redirect-bunker handoff they include a live `bunker://...?secret=...` NIP-46 credential — a working signer, not just an identity assertion. Post them to your app's origin and nowhere else:
 
@@ -447,7 +556,7 @@ if (session.signer.capabilities.canSignEvents) {
 
 When Signet or a signer app returns a `bunker://` handoff, the SDK upgrades the auth-only proof into a live `BunkerSignerImpl` if the handoff connects and matches the authenticated pubkey.
 
-Amber / NIP-55 is currently auth-only in Signet Access. It can prove identity on Android, but it does not leave the web app with a persistent signer or NIP-44 channel. Signing-required consumers should reject Amber/auth-only sessions unless a future Amber flow returns a verified live signer handoff. See `docs/amber-policy.md`.
+Amber / NIP-55 is currently auth-only in Signet Access. It can prove identity on Android, but it does not leave the web app with a persistent signer or NIP-44 channel. Signing-required consumers should reject Amber/auth-only sessions unless a future Amber flow returns a verified live signer handoff. See the [Amber policy](https://github.com/forgesworn/signet-login/blob/main/docs/amber-policy.md).
 
 ## Server-side verification
 
@@ -524,7 +633,8 @@ Both SDKs attach to `window.Signet` additively — load order doesn't matter:
 <script src=".../signet-verify.iife.js"></script>
 <script src=".../signet-login.iife.js"></script>
 
-<script>
+<!-- type="module" because the example uses top-level await -->
+<script type="module">
   // age verification
   const ageResult = await Signet.verifyAge('18+');
   // login
@@ -629,5 +739,3 @@ MIT
 - [signet-verify](https://github.com/forgesworn/signet-verify) — age verification + cross-device auth primitives
 - [bark](https://github.com/forgesworn/bark) — NIP-07 browser extension that signs via NIP-46 to Heartwood
 - [Heartwood](https://github.com/forgesworn/heartwood) — self-hosted signing appliance
-
-For guardian approvals that need longer than the default 15-second NIP-46 response deadline, pass `requestTimeoutMs` to `createBunkerSigner` or `createBunkerSignerFromNostrConnect`. This changes the connected signer's request deadlines; `timeoutMs` still controls the separate pairing/handshake wait. Omitted request deadlines retain the existing 15-second behaviour. `createBunkerSigner` also accepts optional `appName` and `appUrl`, sent as JSON in the third `connect` parameter; omitting both preserves the two-parameter handshake. Display metadata does not confer signing permission.

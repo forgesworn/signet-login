@@ -24,13 +24,16 @@ npm install signet-login
 import { login } from 'signet-login';
 
 const session = await login({ appName: 'My Game' });
-if (!session) return; // user cancelled
 
-const signed = await session.signer.signEvent({
-  kind: 30762,
-  content: '',
-  tags: [['p', session.pubkey]],
-});
+// null means the user cancelled. Redirect/QR sessions without a bunker
+// handoff, and Amber, are auth-only: signEvent() rejects for them.
+if (session?.signer.capabilities.canSignEvents) {
+  const signed = await session.signer.signEvent({
+    kind: 30762,
+    content: '',
+    tags: [['p', session.pubkey]],
+  });
+}
 ```
 
 A CDN IIFE build is also available; see the README's Install section.
@@ -55,6 +58,6 @@ A CDN IIFE build is also available; see the README's Install section.
 ## Optional
 
 - Full API and options reference: README.md
-- Amber/NIP-55 policy: docs/amber-policy.md
-- Release process: docs/release-app.md
-- Changelog: CHANGELOG.md
+- Amber/NIP-55 policy: https://github.com/forgesworn/signet-login/blob/main/docs/amber-policy.md
+- Release process: https://github.com/forgesworn/signet-login/blob/main/docs/release-app.md
+- Changelog: https://github.com/forgesworn/signet-login/blob/main/CHANGELOG.md
