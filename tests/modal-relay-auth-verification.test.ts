@@ -190,7 +190,10 @@ describe('relay login path verifies the auth event locally', () => {
 
   it('refuses a proof with a tampered signature', async () => {
     const authEvent = makeAuthEvent({ challenge: CHALLENGE, origin: window.location.origin });
-    const forged = { ...authEvent, sig: authEvent.sig.replace(/^.{2}/, '00') };
+    // Replacing a random signature's first byte with 00 can leave it valid.
+    // Always change one hex digit while preserving the signature's shape.
+    const forged = { ...authEvent, sig: (authEvent.sig[0] === '0' ? '1' : '0') + authEvent.sig.slice(1) };
+    expect(forged.sig).not.toBe(authEvent.sig);
     vi.mocked(waitForAuthResponse).mockResolvedValue({
       pubkey: forged.pubkey,
       authEvent: forged,
