@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
     outputs:
       tested_candidate_sha: ${{ steps.compatibility.outputs.tested_candidate_sha }}
       release_sha: ${{ steps.source.outputs.sha }}
