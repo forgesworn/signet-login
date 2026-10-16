@@ -662,6 +662,8 @@ class RobustBunkerClient implements Nip46SignerClient {
     reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
     method: string;
+    /** Set once the signer has sent an auth_url challenge for this request. */
+    authUrl?: string;
   }>();
 
   constructor(
@@ -670,6 +672,7 @@ class RobustBunkerClient implements Nip46SignerClient {
     private readonly onStatus?: NostrConnectStatusHandler,
     private readonly requestTimeoutMs = NIP46_REQUEST_TIMEOUT_MS,
     private readonly appMetadata?: { name?: string; url?: string },
+    private readonly onauth?: (url: string) => void,
   ) {
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) throw new Error('invalid-request-timeout');
     this.clientPubkey = getPublicKey(clientSecretKey);
@@ -739,6 +742,10 @@ class RobustBunkerClient implements Nip46SignerClient {
       if (!response.id) return;
       const listener = this.listeners.get(response.id);
       if (!listener) return;
+      if (response.result === 'auth_url') {
+        this.handleAuthChallenge(response.id, listener, response.error);
+        return;
+      }
       clearTimeout(listener.timer);
       this.listeners.delete(response.id);
       this.emit({
@@ -763,6 +770,54 @@ class RobustBunkerClient implements Nip46SignerClient {
       }
     } catch {
       // Ignore unrelated/malformed events.
+    }
+  }
+
+  /**
+   * NIP-46 auth challenge: the signer replies `result: "auth_url"` with a page
+   * for the user in `error`, then answers the same request id once the user
+   * approves. Keep the request open for the pairing window instead of
+   * rejecting, and hand the URL to `onauth` once. Without a handler nobody can
+   * show the page, so fail now with a clear error rather than wait.
+   */
+  private handleAuthChallenge(
+    id: string,
+    listener: { reject: (err: Error) => void; timer: ReturnType<typeof setTimeout>; method: string; authUrl?: string },
+    rawUrl: string | undefined,
+  ): void {
+    const fail = (message: string): void => {
+      clearTimeout(listener.timer);
+      this.listeners.delete(id);
+      const err = new Error(message);
+      this.emit({ type: 'error', phase: 'response', method: listener.method, requestId: id, message, error: err });
+      listener.reject(err);
+    };
+    let url: URL;
+    try {
+      url = new URL(rawUrl ?? '');
+    } catch {
+      fail('nip46-auth-url-invalid');
+      return;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      fail('nip46-auth-url-invalid');
+      return;
+    }
+    if (!this.onauth) {
+      fail('nip46-auth-required');
+      return;
+    }
+    if (listener.authUrl) return;
+    listener.authUrl = url.href;
+    clearTimeout(listener.timer);
+    listener.timer = setTimeout(() => {
+      fail(`nip46-${listener.method}-auth-timeout`);
+    }, NIP46_PAIRING_WAIT_MS);
+    this.emit({ type: 'auth-url', phase: 'response', method: listener.method, requestId: id, authUrl: url.href });
+    try {
+      this.onauth(url.href);
+    } catch {
+      // The caller's display hook failed; the request stays open for the reply.
     }
   }
 
@@ -938,6 +993,8 @@ export async function createBunkerSignerFromNostrConnect(input: {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   onStatus?: NostrConnectStatusHandler;
+  /** Show a NIP-46 auth challenge page (`auth_url`); without it such requests fail with `nip46-auth-required`. */
+  onauth?: (url: string) => void;
   /** Per-request response deadline; defaults to 15 seconds. */
   requestTimeoutMs?: number;
 }): Promise<BunkerSignerImpl> {
@@ -958,7 +1015,7 @@ export async function createBunkerSignerFromNostrConnect(input: {
     pubkey: signerPubkey,
     relays,
     secret,
-  }, onStatus, input.requestTimeoutMs);
+  }, onStatus, input.requestTimeoutMs, undefined, input.onauth);
   let pubkey: string;
   try {
     pubkey = await bunker.getPublicKey();
@@ -1105,6 +1162,11 @@ async function bestEffortSwitchRelays(
 export async function createBunkerSigner(input: {
   uri: string;
   clientSecretKey?: Uint8Array;
+  /**
+   * Show a NIP-46 auth challenge page (`auth_url`). The request then waits up
+   * to five minutes for the signer's real reply. Without it, a signer that
+   * answers with `auth_url` fails the request with `nip46-auth-required`.
+   */
   onauth?: (url: string) => void;
   onStatus?: NostrConnectStatusHandler;
   /** Optional display metadata sent as the third NIP-46 connect parameter. */
@@ -1132,7 +1194,7 @@ export async function createBunkerSigner(input: {
   const sk = input.clientSecretKey ?? generateSecretKey();
   if (sk.length !== 32) throw new Error('invalid-client-secret-key');
 
-  const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl });
+  const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl }, input.onauth);
   const handshake = (async (): Promise<string> => {
     await bunker.connect();
     return bunker.getPublicKey();

@@ -215,6 +215,26 @@ function buttonStyle(dark, primary = false) {
     const fg = dark ? '#e0e0e0' : '#1a1a2e';
     return `background:transparent;color:${fg};border:1px solid ${border};padding:12px 16px;border-radius:8px;cursor:pointer;font-size:0.95rem;width:100%;margin-bottom:8px;text-align:left;display:flex;align-items:center;gap:12px;`;
 }
+/**
+ * NIP-46 auth challenge from a pasted bunker: try a new tab, and always leave a
+ * link in the status line, since a tab opened after an async step is usually
+ * blocked. Built with DOM nodes; the URL has already been checked as http(s).
+ */
+function showAuthChallenge(status, url) {
+    try {
+        window.open(url, '_blank', 'noopener,noreferrer');
+    }
+    catch { /* blocked */ }
+    if (!status)
+        return;
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'open the approval page';
+    status.replaceChildren('Your signer needs approval: ', link, '. Waiting…');
+    status.style.color = '';
+}
 function canUseCameraQrScanner() {
     return typeof navigator !== 'undefined'
         && !!navigator.mediaDevices
@@ -1060,6 +1080,7 @@ async function runBunkerFlow(refs, opts, aborted) {
             try {
                 const signer = await createBunkerSigner({ uri, clientSecretKey: sk,
                     ...(opts.storage?.required ? { timeoutMs: opts.timeout } : {}),
+                    onauth: url => showAuthChallenge(status, url),
                 });
                 active = false;
                 if (cancelled) {
@@ -1105,6 +1126,8 @@ function nostrConnectStatusText(status) {
             return status.phase === 'pairing'
                 ? 'Approval received. Preparing signer...'
                 : `Signer responded${status.method ? ` to ${status.method}` : ''}.`;
+        case 'auth-url':
+            return 'Your signer needs approval in another window. Waiting...';
         case 'timeout':
             return status.message ? `Timed out: ${status.message}` : 'Timed out waiting for signer.';
         case 'error':
@@ -1236,6 +1259,7 @@ async function runNostrConnectFlow(refs, opts, aborted) {
             abortSignal: ac.signal,
             timeoutMs: opts.timeout,
             onStatus: handleStatus,
+            onauth: url => showAuthChallenge(status, url),
         })
             .then(async (signer) => {
             active = false;

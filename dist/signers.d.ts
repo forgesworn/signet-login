@@ -143,6 +143,8 @@ export declare function createBunkerSignerFromNostrConnect(input: {
     abortSignal?: AbortSignal;
     timeoutMs?: number;
     onStatus?: NostrConnectStatusHandler;
+    /** Show a NIP-46 auth challenge page (`auth_url`); without it such requests fail with `nip46-auth-required`. */
+    onauth?: (url: string) => void;
     /** Per-request response deadline; defaults to 15 seconds. */
     requestTimeoutMs?: number;
 }): Promise<BunkerSignerImpl>;
@@ -182,6 +184,11 @@ export declare function isSupportedPairingUri(value: string): boolean;
 export declare function createBunkerSigner(input: {
     uri: string;
     clientSecretKey?: Uint8Array;
+    /**
+     * Show a NIP-46 auth challenge page (`auth_url`). The request then waits up
+     * to five minutes for the signer's real reply. Without it, a signer that
+     * answers with `auth_url` fails the request with `nip46-auth-required`.
+     */
     onauth?: (url: string) => void;
     onStatus?: NostrConnectStatusHandler;
     /** Optional display metadata sent as the third NIP-46 connect parameter. */

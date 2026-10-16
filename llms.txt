@@ -51,6 +51,7 @@ A CDN IIFE build is also available; see the README's Install section.
 - `login(options)`, `restoreSession(opts?)`, `logout(session?, opts?)`, `handleCallback(opts?)`, `handleRedirectCallback(options?)`
 - `createLoginAuthEvent(...)`, `createSessionFromSigner(signer, options)`
 - Headless signer constructors: `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `createLocalSignerFromNsec`
+- NIP-46 auth challenges: pass `onauth(url)` to `createBunkerSigner` or `createBunkerSignerFromNostrConnect` to show the approval page when a signer replies `auth_url`; the request then waits up to five minutes. Without it the request fails with `nip46-auth-required`.
 - URI helpers: `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`
 - `signet-login/verify`: `verifyLogin(authEvent, options)` for server-side verification
 - IIFE builds attach the same exports to `window.Signet`

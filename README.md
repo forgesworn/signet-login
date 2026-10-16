@@ -216,7 +216,7 @@ The bunker signer constructors take an inline options object (there is no export
 createBunkerSigner(input: {
   uri: string;                        // bunker:// URI or NIP-05 identifier
   clientSecretKey?: Uint8Array;       // 32 bytes; omit for a fresh ephemeral client key
-  onauth?: (url: string) => void;     // accepted by the type but not currently called
+  onauth?: (url: string) => void;     // show a NIP-46 auth challenge page; see below
   onStatus?: NostrConnectStatusHandler;
   appName?: string;                   // display metadata, sent as the third `connect` parameter
   appUrl?: string;                    // display metadata, as above
@@ -234,9 +234,12 @@ createBunkerSignerFromNostrConnect(input: {
   abortSignal?: AbortSignal;
   timeoutMs?: number;                 // pairing wait; default 300_000 (5 minutes)
   onStatus?: NostrConnectStatusHandler;
+  onauth?: (url: string) => void;     // show a NIP-46 auth challenge page; see below
   requestTimeoutMs?: number;          // per-request deadline; default 15_000
 }): Promise<BunkerSignerImpl>
 ```
+
+Some signers answer a request with a NIP-46 auth challenge (`result: "auth_url"`) and a page the user must open to approve it. The SDK calls `onauth` once per request with that URL (only `http:` and `https:` URLs are accepted), emits an `auth-url` status with `authUrl`, and keeps the request open for up to five minutes for the signer's real reply (a `timeoutMs` on `createBunkerSigner` still bounds the whole connect handshake). Open the page from `onauth`, for example with `window.open(url, '_blank', 'noopener')`, or show it as a link, since a tab opened after an async step is often blocked. The picker does both. Without `onauth` the request fails at once with `nip46-auth-required`; a bad URL fails with `nip46-auth-url-invalid`, and an approval that never comes fails with `nip46-<method>-auth-timeout`.
 
 Guardian approvals that need longer than the default 15-second NIP-46 response deadline should raise `requestTimeoutMs`. It changes the connected signer's request deadlines only; `timeoutMs` still controls the separate handshake or pairing wait, and an omitted `requestTimeoutMs` keeps the 15-second behaviour. A non-positive or non-finite value throws `invalid-request-timeout`. When `timeoutMs` expires on `createBunkerSigner`, the half-open signer is closed and the call rejects with `bunker-connect-timeout`. `appName` and `appUrl` exist only on `createBunkerSigner`: omitting both preserves the two-parameter `connect` handshake, and display metadata does not confer signing permission. For the app-initiated flow, pass `appName` and `appUrl` to `buildNostrConnectUri` instead.
 
