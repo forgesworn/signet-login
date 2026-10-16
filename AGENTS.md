@@ -42,7 +42,10 @@ and commit `dist/` after any source change.
 
 - British English in prose and comments.
 - No third-party runtime dependencies beyond `@noble/curves`,
-  `@noble/hashes`, `nostr-tools`, `qrcode`, and `jsqr`.
+  `@noble/hashes`, `nostr-tools`, `qrcode`, `jsqr`, and `signet-verify`
+  (imported at runtime for the freshness window, default relay and
+  cross-device auth wait).
+  `@types/qrcode` is also under `dependencies`, but only for typings.
 - `dist/` is committed; always rebuild it alongside a source change.
 - Public API changes need a matching entry in `src/signet-login.ts`'s
   exports and, where relevant, the `./verify` subpath.
@@ -52,12 +55,19 @@ and commit `dist/` after any source change.
 - `nostrconnect://` and `bunker://` are different NIP-46 URI directions
   (app-initiated pairing vs signer-initiated reconnect); do not conflate
   them.
-- `handleRedirectCallback` rejects legacy callbacks without a timestamp by
-  default (`allowLegacyRedirectWithoutTimestamp` opts out of signature
+- `handleRedirectCallback` refuses legacy callbacks without a timestamp by
+  default, returning `{ kind: 'invalid', reason: 't-required' }` rather than
+  throwing (`allowLegacyRedirectWithoutTimestamp` opts out of signature
   verification); do not change that default.
 - `EphemeralSigner` and Amber/NIP-55 sessions are auth-only
   (`capabilities.canSignEvents === false`); do not treat them as live
   signers.
+- `session.method === 'bunker'` is not proof of a live signer.
+  `handleRedirectCallback` returns it immediately and connects in the
+  background (`waitForBunker` defaults to `false`), so `canSignEvents` starts
+  `false` and stays `false` if the connect fails or the pubkey differs. The
+  picker reports `'bunker'` only after a matching connect. Branch on
+  `canSignEvents`.
 - Server-side verification (`signet-login/verify`) must check
   `expectedChallenge` against a nonce the server itself issued and has not
   accepted before; it keeps no state.
