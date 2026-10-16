@@ -191,7 +191,7 @@ export declare function createBunkerSigner(input: {
      */
     onauth?: (url: string) => void;
     onStatus?: NostrConnectStatusHandler;
-    /** Optional display metadata sent as the third NIP-46 connect parameter. */
+    /** Optional display metadata sent as the fourth NIP-46 connect parameter, after empty perms. */
     appName?: string;
     appUrl?: string;
     /** Per-request response deadline; defaults to 15 seconds, independent of timeoutMs. */

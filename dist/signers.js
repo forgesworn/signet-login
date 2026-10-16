@@ -760,8 +760,10 @@ class RobustBunkerClient {
     }
     async connect() {
         const params = [this.pointer.pubkey, this.pointer.secret ?? ''];
+        // NIP-46: [remote-signer-pubkey, secret, requested_perms, client_metadata]. Metadata
+        // goes fourth with no perms requested; the third slot is not for metadata.
         if (this.appMetadata?.name || this.appMetadata?.url)
-            params.push(JSON.stringify(this.appMetadata));
+            params.push('', JSON.stringify(this.appMetadata));
         await this.sendRequest('connect', params);
     }
     async getPublicKey() {

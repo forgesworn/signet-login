@@ -218,7 +218,7 @@ createBunkerSigner(input: {
   clientSecretKey?: Uint8Array;       // 32 bytes; omit for a fresh ephemeral client key
   onauth?: (url: string) => void;     // show a NIP-46 auth challenge page; see below
   onStatus?: NostrConnectStatusHandler;
-  appName?: string;                   // display metadata, sent as the third `connect` parameter
+  appName?: string;                   // display metadata, sent as the fourth `connect` parameter
   appUrl?: string;                    // display metadata, as above
   requestTimeoutMs?: number;          // per-request deadline; default 15_000
   timeoutMs?: number;                 // bounds the connect handshake; no default (unbounded)
