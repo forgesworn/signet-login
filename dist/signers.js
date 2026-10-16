@@ -538,12 +538,13 @@ async function waitForNostrConnectApproval(input) {
     });
 }
 class RobustBunkerClient {
-    constructor(clientSecretKey, pointer, onStatus, requestTimeoutMs = NIP46_REQUEST_TIMEOUT_MS, appMetadata) {
+    constructor(clientSecretKey, pointer, onStatus, requestTimeoutMs = NIP46_REQUEST_TIMEOUT_MS, appMetadata, onauth) {
         this.clientSecretKey = clientSecretKey;
         this.pointer = pointer;
         this.onStatus = onStatus;
         this.requestTimeoutMs = requestTimeoutMs;
         this.appMetadata = appMetadata;
+        this.onauth = onauth;
         /** Set once a `switch_relays` reply has moved this client to new relays. */
         this.relaysSwitched = false;
         this.serial = 0;
@@ -624,6 +625,10 @@ class RobustBunkerClient {
             const listener = this.listeners.get(response.id);
             if (!listener)
                 return;
+            if (response.result === 'auth_url') {
+                this.handleAuthChallenge(response.id, listener, response.error);
+                return;
+            }
             clearTimeout(listener.timer);
             this.listeners.delete(response.id);
             this.emit({
@@ -650,6 +655,52 @@ class RobustBunkerClient {
         }
         catch {
             // Ignore unrelated/malformed events.
+        }
+    }
+    /**
+     * NIP-46 auth challenge: the signer replies `result: "auth_url"` with a page
+     * for the user in `error`, then answers the same request id once the user
+     * approves. Keep the request open for the pairing window instead of
+     * rejecting, and hand the URL to `onauth` once. Without a handler nobody can
+     * show the page, so fail now with a clear error rather than wait.
+     */
+    handleAuthChallenge(id, listener, rawUrl) {
+        const fail = (message) => {
+            clearTimeout(listener.timer);
+            this.listeners.delete(id);
+            const err = new Error(message);
+            this.emit({ type: 'error', phase: 'response', method: listener.method, requestId: id, message, error: err });
+            listener.reject(err);
+        };
+        let url;
+        try {
+            url = new URL(rawUrl ?? '');
+        }
+        catch {
+            fail('nip46-auth-url-invalid');
+            return;
+        }
+        if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+            fail('nip46-auth-url-invalid');
+            return;
+        }
+        if (!this.onauth) {
+            fail('nip46-auth-required');
+            return;
+        }
+        if (listener.authUrl)
+            return;
+        listener.authUrl = url.href;
+        clearTimeout(listener.timer);
+        listener.timer = setTimeout(() => {
+            fail(`nip46-${listener.method}-auth-timeout`);
+        }, NIP46_PAIRING_WAIT_MS);
+        this.emit({ type: 'auth-url', phase: 'response', method: listener.method, requestId: id, authUrl: url.href });
+        try {
+            this.onauth(url.href);
+        }
+        catch {
+            // The caller's display hook failed; the request stays open for the reply.
         }
     }
     async sendRequest(method, params) {
@@ -829,7 +880,7 @@ export async function createBunkerSignerFromNostrConnect(input) {
         pubkey: signerPubkey,
         relays,
         secret,
-    }, onStatus, input.requestTimeoutMs);
+    }, onStatus, input.requestTimeoutMs, undefined, input.onauth);
     let pubkey;
     try {
         pubkey = await bunker.getPublicKey();
@@ -976,7 +1027,7 @@ export async function createBunkerSigner(input) {
     const sk = input.clientSecretKey ?? generateSecretKey();
     if (sk.length !== 32)
         throw new Error('invalid-client-secret-key');
-    const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl });
+    const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl }, input.onauth);
     const handshake = (async () => {
         await bunker.connect();
         return bunker.getPublicKey();

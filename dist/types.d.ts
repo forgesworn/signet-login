@@ -98,7 +98,7 @@ export interface SignetSession {
     /** Optional display name the user shared at approval (sanitised). */
     displayName?: string;
 }
-export type NostrConnectStatusType = 'uri-created' | 'relay-connecting' | 'relay-connected' | 'signer-seen' | 'request-sent' | 'response-received' | 'timeout' | 'error';
+export type NostrConnectStatusType = 'uri-created' | 'relay-connecting' | 'relay-connected' | 'signer-seen' | 'request-sent' | 'response-received' | 'auth-url' | 'timeout' | 'error';
 export type NostrConnectStatusPhase = 'pairing' | 'relay' | 'subscription' | 'request' | 'publish' | 'response' | 'abort';
 export interface NostrConnectStatus {
     type: NostrConnectStatusType;
@@ -111,6 +111,8 @@ export interface NostrConnectStatus {
     method?: string;
     requestId?: string;
     timeoutMs?: number;
+    /** For `auth-url`: the page the signer asked the user to open. */
+    authUrl?: string;
     phase?: NostrConnectStatusPhase;
     message?: string;
     error?: unknown;

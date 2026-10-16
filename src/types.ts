@@ -121,6 +121,7 @@ export type NostrConnectStatusType =
   | 'signer-seen'
   | 'request-sent'
   | 'response-received'
+  | 'auth-url'
   | 'timeout'
   | 'error';
 
@@ -144,6 +145,8 @@ export interface NostrConnectStatus {
   method?: string;
   requestId?: string;
   timeoutMs?: number;
+  /** For `auth-url`: the page the signer asked the user to open. */
+  authUrl?: string;
   phase?: NostrConnectStatusPhase;
   message?: string;
   error?: unknown;

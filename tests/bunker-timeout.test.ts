@@ -16,6 +16,12 @@ const h = vi.hoisted(() => ({
   publishedMethods: [] as string[],
   publishedParams: [] as unknown[][],
   signingDelayMs: 0,
+  /** Method answered first with a NIP-46 auth_url challenge. */
+  authFor: undefined as string | undefined,
+  authUrl: 'https://signer.example/approve?id=1',
+  authRepeats: 1,
+  /** Delay before the real reply after the challenge; undefined never approves. */
+  authApproveMs: undefined as number | undefined,
 }));
 
 vi.mock('nostr-tools/nip46', () => ({
@@ -50,12 +56,18 @@ vi.mock('nostr-tools/pool', async () => {
               const result = request.method === 'get_public_key' ? h.signerPubkey
                 : request.method === 'switch_relays' ? 'null'
                 : request.method === 'sign_event' ? JSON.stringify(finalizeEvent(JSON.parse(request.params[0] as string), signerSecretKey)) : 'ack';
-              const response = finalizeEvent({
+              const reply = (body: Record<string, unknown>) => finalizeEvent({
                 kind: NostrConnect,
                 tags: [['p', event.pubkey]],
-                content: encrypt(JSON.stringify({ id: request.id, result }), conversationKey),
+                content: encrypt(JSON.stringify({ id: request.id, ...body }), conversationKey),
                 created_at: Math.floor(Date.now() / 1000),
               }, signerSecretKey);
+              const response = reply({ result });
+              if (request.method === h.authFor) {
+                for (let i = 0; i < h.authRepeats; i++) h.handlers?.onevent?.(reply({ result: 'auth_url', error: h.authUrl }));
+                if (h.authApproveMs !== undefined) setTimeout(() => h.handlers?.onevent?.(response), h.authApproveMs);
+                return;
+              }
               if (request.method === 'sign_event' && h.signingDelayMs) setTimeout(() => h.handlers?.onevent?.(response), h.signingDelayMs);
               else h.handlers?.onevent?.(response);
             });
@@ -174,5 +186,63 @@ describe('bunker request deadlines and metadata', () => {
 
   it.each([0, -1, NaN, Infinity])('rejects an invalid request deadline %s', async value => {
     await expect(createBunkerSigner({ uri: URI, requestTimeoutMs: value })).rejects.toThrow('invalid-request-timeout');
+  });
+});
+
+describe('NIP-46 auth_url challenges', () => {
+  beforeEach(() => {
+    h.mode = 'respond'; h.publishedMethods = []; h.publishedParams = []; h.signingDelayMs = 0;
+    h.authFor = undefined; h.authUrl = 'https://signer.example/approve?id=1'; h.authRepeats = 1; h.authApproveMs = undefined;
+  });
+  afterEach(() => { vi.useRealTimers(); h.authFor = undefined; });
+
+  it('hands the URL to onauth and resolves when the signer answers after approval', async () => {
+    const onauth = vi.fn();
+    const signer = await createBunkerSigner({ uri: URI, onauth });
+    vi.useFakeTimers();
+    h.authFor = 'sign_event'; h.authApproveMs = 60_000;
+    const pending = signer.signEvent({ kind: 1, tags: [], content: 'after approval' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onauth).toHaveBeenCalledWith('https://signer.example/approve?id=1');
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(await pending).toMatchObject({ pubkey: h.signerPubkey, content: 'after approval' });
+    await signer.close();
+  });
+
+  it('calls onauth once when the signer repeats the challenge', async () => {
+    const onauth = vi.fn();
+    const signer = await createBunkerSigner({ uri: URI, onauth });
+    h.authFor = 'sign_event'; h.authRepeats = 3; h.authApproveMs = 10;
+    await signer.signEvent({ kind: 1, tags: [], content: '' });
+    expect(onauth).toHaveBeenCalledTimes(1);
+    await signer.close();
+  });
+
+  it('fails with nip46-auth-required, not the URL, when there is no onauth', async () => {
+    h.authFor = 'connect';
+    await expect(createBunkerSigner({ uri: URI })).rejects.toThrow(/^nip46-auth-required$/);
+  });
+
+  it('refuses a non-http auth URL without calling onauth', async () => {
+    const onauth = vi.fn();
+    h.authFor = 'connect'; h.authUrl = 'javascript:alert(1)'; h.authApproveMs = 10;
+    await expect(createBunkerSigner({ uri: URI, onauth })).rejects.toThrow('nip46-auth-url-invalid');
+    expect(onauth).not.toHaveBeenCalled();
+  });
+
+  it('gives up after the five-minute approval window', async () => {
+    const onauth = vi.fn();
+    const signer = await createBunkerSigner({ uri: URI, onauth });
+    vi.useFakeTimers();
+    h.authFor = 'sign_event';
+    const pending = signer.signEvent({ kind: 1, tags: [], content: '' });
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    const rejection = expect(pending).rejects.toThrow('nip46-sign_event-auth-timeout');
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await rejection;
+    await signer.close();
   });
 });
