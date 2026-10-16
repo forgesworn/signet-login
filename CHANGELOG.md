@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.3 (2026-10-16)
+
+### Bug Fixes
+
+- support NIP-46 auth_url challenges through onauth (#67)
+
+
+
 ## 0.20.2 (2026-10-16)
 
 ### Bug Fixes
