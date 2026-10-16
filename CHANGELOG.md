@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.2 (2026-10-16)
+
+### Bug Fixes
+
+- correct the published docs against the source (#66) (docs)
+
+
+
 ## 0.20.1 (2026-10-15)
 
 ### Bug Fixes
