@@ -145,10 +145,11 @@ describe('bunker request deadlines and metadata', () => {
     await signer.close();
   });
 
-  it('sends optional name and URL in the connect metadata', async () => {
+  it('sends optional name and URL as the fourth connect param, after empty perms', async () => {
     const signer = await createBunkerSigner({ uri: URI, appName: 'Kindependence', appUrl: 'https://kindependence.example' });
     const params = h.publishedParams[h.publishedMethods.indexOf('connect')];
-    expect(JSON.parse(params[2] as string)).toEqual({ name: 'Kindependence', url: 'https://kindependence.example' });
+    expect(params[2]).toBe('');
+    expect(JSON.parse(params[3] as string)).toEqual({ name: 'Kindependence', url: 'https://kindependence.example' });
     await signer.close();
   });
 
