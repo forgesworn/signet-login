@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.4 (2026-10-18)
+
+### Bug Fixes
+
+- send connect metadata as the fourth NIP-46 parameter (#68)
+
+
+
 ## 0.20.3 (2026-10-16)
 
 ### Bug Fixes
