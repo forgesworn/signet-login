@@ -883,7 +883,9 @@ class RobustBunkerClient implements Nip46SignerClient {
 
   async connect(): Promise<void> {
     const params = [this.pointer.pubkey, this.pointer.secret ?? ''];
-    if (this.appMetadata?.name || this.appMetadata?.url) params.push(JSON.stringify(this.appMetadata));
+    // NIP-46: [remote-signer-pubkey, secret, requested_perms, client_metadata]. Metadata
+    // goes fourth with no perms requested; the third slot is not for metadata.
+    if (this.appMetadata?.name || this.appMetadata?.url) params.push('', JSON.stringify(this.appMetadata));
     await this.sendRequest('connect', params);
   }
 
@@ -1169,7 +1171,7 @@ export async function createBunkerSigner(input: {
    */
   onauth?: (url: string) => void;
   onStatus?: NostrConnectStatusHandler;
-  /** Optional display metadata sent as the third NIP-46 connect parameter. */
+  /** Optional display metadata sent as the fourth NIP-46 connect parameter, after empty perms. */
   appName?: string;
   appUrl?: string;
   /** Per-request response deadline; defaults to 15 seconds, independent of timeoutMs. */
