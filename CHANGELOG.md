@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.21.0 (2026-10-20)
+
+### Features
+
+- guard explicit NIP-46 decrypt request publication (#72)
+- fence explicit NIP46 decrypt request publication
+
+
+
 ## 0.20.4 (2026-10-18)
 
 ### Bug Fixes
