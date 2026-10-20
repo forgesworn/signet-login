@@ -247,3 +247,68 @@ describe('NIP-46 auth_url challenges', () => {
     await signer.close();
   });
 });
+
+// This uses the actual SDK request/listener/publication composition with a
+// declared synthetic pool and socket. The loopback spec is separate.
+describe('guarded decrypt response and auth-URL lifetime', () => {
+  class RequestSocket {
+    static sockets: RequestSocket[] = [];
+    onopen?: () => void;
+    onerror?: () => void;
+    onclose?: () => void;
+    onmessage?: (message: { data: string }) => void;
+    frames: string[] = [];
+    closes = 0;
+    constructor(_url: string) { RequestSocket.sockets.push(this); queueMicrotask(() => this.onopen?.()); }
+    send(frame: string) {
+      this.frames.push(frame);
+      const event = JSON.parse(frame)[1] as { id: string };
+      queueMicrotask(() => this.onmessage?.({ data: JSON.stringify(['OK', event.id, true, '']) }));
+    }
+    close() { this.closes++; }
+  }
+  beforeEach(() => { h.mode = 'respond'; h.authFor = undefined; h.signingDelayMs = 0; h.publishedMethods = []; RequestSocket.sockets = []; });
+  async function reply(result: string, error?: string) {
+    const { decrypt, encrypt, getConversationKey } = await import('nostr-tools/nip44');
+    const { finalizeEvent } = await import('nostr-tools/pure');
+    const secret = new Uint8Array(32); secret[31] = 1;
+    const event = JSON.parse(RequestSocket.sockets[0].frames[0])[1] as { pubkey: string; content: string };
+    const key = getConversationKey(secret, event.pubkey), request = JSON.parse(decrypt(event.content, key)) as { id: string; method: string };
+    expect(request.method).toBe('nip44_decrypt');
+    h.handlers?.onevent?.(finalizeEvent({ kind: 24133, created_at: Math.floor(Date.now() / 1000), tags: [['p', event.pubkey]],
+      content: encrypt(JSON.stringify({ id: request.id, result, ...(error ? { error } : {}) }), key) }, secret));
+  }
+  for (const change of ['before-auth', 'during-auth-status', 'before-plaintext'] as const) it(`does not forward a stale response after ${change}`, async () => {
+    let live = true;
+    const onauth = vi.fn(), signer = await createBunkerSigner({ uri: URI, requestTimeoutMs: 1000, onauth,
+      onStatus: status => { if (change === 'during-auth-status' && status.type === 'auth-url' || change === 'before-plaintext' && status.type === 'response-received' && status.method === 'nip44_decrypt') live = false; } });
+    try {
+      const pending = signer.nip46!.decryptNip44Guarded!(h.signerPubkey, 'Synthetic encrypted message', {
+        websocketImplementation: RequestSocket as unknown as typeof WebSocket, current: () => live,
+        async start<T>(provider: () => Promise<T>) { if (!live) throw Error('Stale'); return provider(); },
+      });
+      const refused = expect(pending).rejects.toThrow('no-longer-current');
+      await vi.waitFor(() => expect(RequestSocket.sockets[0]?.frames).toHaveLength(1));
+      if (change === 'before-auth') live = false;
+      if (change === 'before-plaintext') await reply('Do not return stale plaintext');
+      else await reply('auth_url', 'https://signer.example/guarded-approval');
+      await refused; expect(onauth).not.toHaveBeenCalled();
+      expect(h.publishedMethods).not.toContain('nip44_decrypt');
+    } finally { await signer.close(); }
+  });
+  it('cancels a pending response after publication ACK without waiting for its full timeout or retrying', async () => {
+    let live = true;
+    const signer = await createBunkerSigner({ uri: URI, requestTimeoutMs: 300000 });
+    try {
+      const pending = signer.nip46!.decryptNip44Guarded!(h.signerPubkey, 'Synthetic encrypted message', {
+        websocketImplementation: RequestSocket as unknown as typeof WebSocket, current: () => live,
+        async start<T>(provider: () => Promise<T>) { return provider(); },
+      });
+      const refused = expect(pending).rejects.toThrow('no-longer-current');
+      await vi.waitFor(() => expect(RequestSocket.sockets[0]?.closes).toBeGreaterThan(0));
+      live = false; await refused;
+      expect(RequestSocket.sockets).toHaveLength(1); expect(RequestSocket.sockets[0].frames).toHaveLength(1);
+      expect(h.publishedMethods).not.toContain('nip44_decrypt');
+    } finally { await signer.close(); }
+  });
+});

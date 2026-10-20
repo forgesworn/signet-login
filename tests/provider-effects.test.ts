@@ -187,3 +187,40 @@ describe('exact SDK verification-cache metadata',()=>{
     await signer.close()
   })
 })
+
+
+describe('explicit NIP46 decrypt boundary and deferred binding', () => {
+  const Carrier = class {} as unknown as typeof WebSocket;
+  function guardedBackend() {
+    return Object.assign(backend(), { decryptNip44Guarded: vi.fn(async (_peer: string, _ciphertext: string, current: () => boolean, _carrier: typeof WebSocket) => {
+      if (!current()) throw Error('Wire revoked'); return 'guarded remote text';
+    }) });
+  }
+  it('does not advertise guarded decryption on a backend that only supports the old provider boundary', async () => {
+    const raw = backend(), signer = new BunkerSignerImpl(person, raw, 'bunker://example', new Uint8Array(32).fill(4));
+    expect(signer.providerEffectBoundary).toBe(1); expect(signer.nip46!.decryptNip44Guarded).toBeUndefined();
+    await signer.close();
+  });
+  for (const change of ['view', 'key', 'carrier'] as const) it(`refuses a deferred guarded decrypt after ${change} changes while connecting`, async () => {
+    const raw = guardedBackend(), upgrade = gate<BunkerSignerImpl | null>(), { scope, state } = boundary(), key = new Uint8Array(32).fill(4);
+    const deferred = new DeferredBunkerSigner(person, {} as SignetAuthEvent, upgrade.promise, 'bunker://example', key);
+    const permission = { ...scope, current: () => state.live, websocketImplementation: Carrier };
+    const pending = deferred.nip46!.decryptNip44Guarded!(person, 'encrypted input', permission), refused = expect(pending).rejects.toThrow();
+    const connected = new BunkerSignerImpl(person, raw, 'bunker://example', new Uint8Array(key));
+    if (change === 'view') state.live = false;
+    else if (change === 'key') key[0] = 9;
+    else permission.websocketImplementation = class {} as unknown as typeof WebSocket;
+    upgrade.release(connected); await refused;
+    expect(raw.decryptNip44Guarded).not.toHaveBeenCalled(); expect(raw.nip44Decrypt).not.toHaveBeenCalled(); await deferred.close();
+  });
+  it('keeps the originating deferred binding in every actual wire decision after provider start', async () => {
+    const raw = guardedBackend(), { scope, state } = boundary(), key = new Uint8Array(32).fill(4), provider = gate<void>();
+    let entered!: () => void; const reached = new Promise<void>(resolve => { entered = resolve; });
+    raw.decryptNip44Guarded.mockImplementation(async (_peer, _ciphertext, current) => { entered(); await provider.promise; if (!current()) throw Error('Wire revoked'); return 'guarded remote text'; });
+    const deferred = new DeferredBunkerSigner(person, {} as SignetAuthEvent, Promise.resolve(new BunkerSignerImpl(person, raw, 'bunker://example', new Uint8Array(key))), 'bunker://example', key);
+    const pending = deferred.nip46!.decryptNip44Guarded!(person, 'encrypted input', { ...scope, current: () => state.live, websocketImplementation: Carrier });
+    const refused = expect(pending).rejects.toThrow('Wire revoked');
+    await reached; key[0] = 9; provider.release(); await refused;
+    expect(raw.nip44Decrypt).not.toHaveBeenCalled(); await deferred.close();
+  });
+});

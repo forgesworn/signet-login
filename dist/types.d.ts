@@ -41,6 +41,14 @@ export interface SignerEffectBoundary {
      * handoff checks. No provider key or connection is exposed by this hook. */
     start<T>(provider: () => Promise<T>): Promise<T>;
 }
+/** A single explicit NIP-44 decrypt RPC. current() must synchronously
+ * recheck its originating account/view/permission at every EVENT write.
+ * Initial login, shared subscription frames and other methods are excluded. */
+export interface Nip46DecryptBoundary extends SignerEffectBoundary {
+    /** Explicit route-owned constructor; never infer a clearnet fallback. */
+    readonly websocketImplementation: typeof WebSocket;
+    current(): boolean;
+}
 /** Separate contract for guarded NIP-07 account discovery. */
 export interface Nip07DiscoveryBoundary {
     readonly discoveryPreflightBoundary: 1;
@@ -68,6 +76,10 @@ export interface SignetSigner {
         decrypt(peerPubkey: string, ciphertext: string, boundary?: SignerEffectBoundary): Promise<string>;
     };
     nip46?: {
+        /** Optional receive-only transport boundary. No account-signing or
+         * message-encryption authority is exposed, and it never falls back to an
+         * unguarded backend. Already-sent RPCs cannot be retracted. */
+        decryptNip44Guarded?(peerPubkey: string, ciphertext: string, boundary: Nip46DecryptBoundary): Promise<string>;
         ping(): Promise<void>;
         switchRelays(): Promise<boolean>;
         logout(): Promise<void>;
