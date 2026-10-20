@@ -15,9 +15,11 @@ import type {
   SignetSigner,
   SignerCapabilities,
   SignerEffectBoundary,
+  Nip46DecryptBoundary,
   Nip07DiscoveryBoundary,
 } from './types.js';
 import { withProviderEffect } from './effects.js';
+import { publishNip46DecryptRequest } from './nip46-request-publication.js';
 import { parseBunkerInput, type BunkerPointer } from 'nostr-tools/nip46';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { NostrConnect } from 'nostr-tools/kinds';
@@ -260,6 +262,7 @@ interface Nip46SignerClient {
   nip04Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
   nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
   nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+  decryptNip44Guarded?(peerPubkey: string, ciphertext: string, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<string>;
   /**
    * Purpose-specific extension for Heartwood's Vennel rendezvous provision
    * operation. Keeping it here rather than exposing sendRequest prevents a
@@ -324,7 +327,13 @@ export class BunkerSignerImpl implements SignetSigner {
       encrypt: (peer, pt, boundary) => withProviderEffect(boundary, () => bunker.nip44Encrypt(peer, pt)),
       decrypt: (peer, ct, boundary) => withProviderEffect(boundary, () => bunker.nip44Decrypt(peer, ct)),
     };
+    const guardedDecrypt = bunker.decryptNip44Guarded;
     this.nip46 = {
+      ...(typeof guardedDecrypt === 'function' ? { decryptNip44Guarded: (peer: string, ciphertext: string, boundary: Nip46DecryptBoundary) => {
+        const carrier = boundary.websocketImplementation;
+        return withProviderEffect(boundary, () => guardedDecrypt.call(bunker, peer, ciphertext,
+          () => boundary.websocketImplementation === carrier && boundary.current(), carrier));
+      } } : {}),
       ping: () => bunker.ping(),
       switchRelays: () => bunker.switchRelays(),
       logout: () => bunker.logout(),
@@ -664,6 +673,7 @@ class RobustBunkerClient implements Nip46SignerClient {
     method: string;
     /** Set once the signer has sent an auth_url challenge for this request. */
     authUrl?: string;
+    current?: () => boolean;
   }>();
 
   constructor(
@@ -742,6 +752,10 @@ class RobustBunkerClient implements Nip46SignerClient {
       if (!response.id) return;
       const listener = this.listeners.get(response.id);
       if (!listener) return;
+      if (listener.current && !listener.current()) {
+        clearTimeout(listener.timer); this.listeners.delete(response.id);
+        listener.reject(new Error('nip46-decrypt-no-longer-current')); return;
+      }
       if (response.result === 'auth_url') {
         this.handleAuthChallenge(response.id, listener, response.error);
         return;
@@ -766,7 +780,8 @@ class RobustBunkerClient implements Nip46SignerClient {
         });
         listener.reject(err);
       } else {
-        listener.resolve(response.result ?? '');
+        if (listener.current && !listener.current()) listener.reject(new Error('nip46-decrypt-no-longer-current'));
+        else listener.resolve(response.result ?? '');
       }
     } catch {
       // Ignore unrelated/malformed events.
@@ -782,7 +797,7 @@ class RobustBunkerClient implements Nip46SignerClient {
    */
   private handleAuthChallenge(
     id: string,
-    listener: { reject: (err: Error) => void; timer: ReturnType<typeof setTimeout>; method: string; authUrl?: string },
+    listener: { reject: (err: Error) => void; timer: ReturnType<typeof setTimeout>; method: string; authUrl?: string; current?: () => boolean },
     rawUrl: string | undefined,
   ): void {
     const fail = (message: string): void => {
@@ -792,6 +807,7 @@ class RobustBunkerClient implements Nip46SignerClient {
       this.emit({ type: 'error', phase: 'response', method: listener.method, requestId: id, message, error: err });
       listener.reject(err);
     };
+    if (listener.current && !listener.current()) { fail('nip46-decrypt-no-longer-current'); return; }
     let url: URL;
     try {
       url = new URL(rawUrl ?? '');
@@ -813,7 +829,9 @@ class RobustBunkerClient implements Nip46SignerClient {
     listener.timer = setTimeout(() => {
       fail(`nip46-${listener.method}-auth-timeout`);
     }, NIP46_PAIRING_WAIT_MS);
+    if (listener.current && !listener.current()) { fail('nip46-decrypt-no-longer-current'); return; }
     this.emit({ type: 'auth-url', phase: 'response', method: listener.method, requestId: id, authUrl: url.href });
+    if (listener.current && !listener.current()) { fail('nip46-decrypt-no-longer-current'); return; }
     try {
       this.onauth(url.href);
     } catch {
@@ -821,7 +839,9 @@ class RobustBunkerClient implements Nip46SignerClient {
     }
   }
 
-  private async sendRequest(method: string, params: unknown[]): Promise<string> {
+  private async sendRequest(method: string, params: unknown[], current?: () => boolean, websocketImplementation?: typeof WebSocket): Promise<string> {
+    if (current && !current()) throw new Error('nip46-decrypt-no-longer-current');
+    const requestRelays = current ? [...this.relays] : undefined;
     if (this.closed) throw new Error('this signer is not open anymore, create a new one');
     this.setupSubscription();
     const id = `${this.idPrefix}-${++this.serial}`;
@@ -836,6 +856,8 @@ class RobustBunkerClient implements Nip46SignerClient {
       created_at: Math.floor(Date.now() / 1000),
     }, this.clientSecretKey) as NostrEvent;
 
+    let finished = false;
+    const authority = () => { try { return !finished && !this.closed && current?.() === true; } catch { return false; } };
     const response = new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.listeners.delete(id);
@@ -851,8 +873,15 @@ class RobustBunkerClient implements Nip46SignerClient {
         });
         reject(err);
       }, this.requestTimeoutMs);
-      this.listeners.set(id, { resolve, reject, timer, method });
+      this.listeners.set(id, { resolve, reject, timer, method, ...(current ? { current: authority } : {}) });
     });
+    const cancelPoll = current && setInterval(() => {
+      if (authority()) return;
+      const listener = this.listeners.get(id);
+      if (!listener) return;
+      clearTimeout(listener.timer); this.listeners.delete(id);
+      listener.reject(new Error('nip46-decrypt-no-longer-current'));
+    }, 25);
     this.emit({
       type: 'request-sent',
       phase: 'request',
@@ -860,7 +889,12 @@ class RobustBunkerClient implements Nip46SignerClient {
       requestId: id,
     });
 
-    void this.publishRequest(event)
+    const permitted = () => this.listeners.has(id) && authority();
+    // The guarded receive path cannot reach the retrying shared publisher.
+    // All old methods retain their original publication/retry behaviour.
+    const publication = (current
+      ? publishNip46DecryptRequest(event, requestRelays!, permitted, this.requestTimeoutMs, websocketImplementation!)
+      : this.publishRequest(event))
       .catch(() => {
         const listener = this.listeners.get(id);
         if (!listener) return;
@@ -878,7 +912,18 @@ class RobustBunkerClient implements Nip46SignerClient {
         listener.reject(err);
       });
 
-    return response;
+    if (!current) return response;
+    try {
+      const result = await response;
+      if (!authority()) throw new Error('nip46-decrypt-no-longer-current');
+      return result;
+    } finally {
+      // Listener removal on response/refusal/timeout/close revokes the wire
+      // guard synchronously. Join the owned carrier's bounded settlement.
+      finished = true;
+      if (cancelPoll !== undefined) clearInterval(cancelPoll);
+      await publication;
+    }
   }
 
   async connect(): Promise<void> {
@@ -918,6 +963,10 @@ class RobustBunkerClient implements Nip46SignerClient {
 
   async nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string> {
     return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext]);
+  }
+
+  async decryptNip44Guarded(peerPubkey: string, ciphertext: string, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<string> {
+    return this.sendRequest('nip44_decrypt', [peerPubkey, ciphertext], current, websocketImplementation);
   }
 
   async provisionRendezvous(targetDevicePubkey: string, index: number, nonce: string, expiresAt: number): Promise<string> {
@@ -1392,6 +1441,19 @@ export class DeferredBunkerSigner implements SignetSigner {
       decrypt: async (peer, ct, boundary) => { const signer = await this.live(boundary); return this.invokeBound(signer, boundary, guarded => signer.nip44!.decrypt(peer, ct, guarded)); },
     };
     this.nip46 = {
+      decryptNip44Guarded: async (peer, ciphertext, boundary) => {
+        const carrier = boundary.websocketImplementation;
+        if (!boundary.current()) throw new Error('nip46-decrypt-no-longer-current');
+        const signer = await this.live(boundary);
+        const crypt = signer.nip46, decrypt = crypt?.decryptNip44Guarded;
+        if (!decrypt) throw new Error('nip46-guarded-decrypt-unavailable');
+        const current = () => !this.#closed && !this.#refusal && this.matchesBinding(signer) && boundary.websocketImplementation === carrier && boundary.current();
+        if (!current()) throw new Error('nip46-decrypt-no-longer-current');
+        return this.invokeBound(signer, boundary, guarded => {
+          if (!guarded) throw new Error('nip46-guarded-decrypt-unavailable');
+          return decrypt.call(crypt, peer, ciphertext, { ...guarded, current, websocketImplementation: carrier });
+        });
+      },
       ping: async () => (await this.live()).nip46!.ping(),
       switchRelays: async () => (await this.live()).nip46!.switchRelays(),
       logout: async () => (await this.live()).nip46!.logout(),

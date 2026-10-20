@@ -22,6 +22,7 @@ export type {
   LoginPickerMethod,
   SignerCapabilities,
   SignerEffectBoundary,
+  Nip46DecryptBoundary,
   Nip07DiscoveryBoundary,
   SignetSigner,
   SignetAuthEvent,
