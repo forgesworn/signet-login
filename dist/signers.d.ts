@@ -70,6 +70,7 @@ interface Nip46SignerClient {
     nip04Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
     nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
     nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
+    decryptNip44Guarded?(peerPubkey: string, ciphertext: string, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<string>;
     /**
      * Purpose-specific extension for Heartwood's Vennel rendezvous provision
      * operation. Keeping it here rather than exposing sendRequest prevents a

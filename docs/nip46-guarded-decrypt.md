@@ -1,9 +1,11 @@
 # Guarded NIP-46 decrypt request publication
 
-**Unbuilt, unexecuted SDK source only.** The committed distribution and package
-version are unchanged. This must be rebuilt, typechecked, tested and qualified
-through the normal release/consumer gates before npm publication or KithMoot
-adoption. No protected browser, external signer or device acceptance is claimed.
+**Built and tested locally; unreleased.** A locked install on Node 24.15.0
+passed the compatibility dry run, TypeScript check, all 614 tests in 35 files,
+and the normal distribution build. The generated distribution is committed;
+the package version is unchanged. Candidate CI, normal release/consumer gates
+and actual KithMoot adoption remain required. No protected browser, external
+signer or physical-device acceptance is claimed.
 
 The existing `providerEffectBoundary === 1` gates a backend call. It explicitly
 does not guard NIP-46 transport-internal frames or retries. A client must not use
@@ -55,8 +57,9 @@ wrong acknowledgements and timer cleanup. Actual SDK composition source covers
 late auth-URL/plaintext refusal, cancellation after ACK, deferred account/key/route
 changes and unsupported backends. A separate real loopback relay/signer source
 case decrypts actual NIP-44 through the explicit route and inspects the exact
-signed RPC. These tests have not run; synthetic lifecycle checks are not real
-transport or external signer acceptance.
+signed RPC. These cases passed in the local full-suite execution above.
+Synthetic lifecycle checks remain distinct from the real local WebSocket case;
+neither establishes independent external signer or supported-device acceptance.
 
 The frozen Vennel compatibility qualifiers, selected KithMoot source and all
 existing dispatch allowances remain unchanged. KithMoot still implements only
