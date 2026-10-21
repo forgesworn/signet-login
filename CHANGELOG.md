@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.1 (2026-10-21)
+
+### Bug Fixes
+
+- take the new default relay from signet-verify 0.7.4 (#73)
+
+
+
 ## 0.21.0 (2026-10-20)
 
 ### Features
