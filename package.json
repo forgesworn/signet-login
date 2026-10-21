@@ -43,7 +43,7 @@
     "jsqr": "^1.4.0",
     "nostr-tools": "^2.25.2",
     "qrcode": "^1.5.4",
-    "signet-verify": "^0.7.1"
+    "signet-verify": "^0.7.4"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",

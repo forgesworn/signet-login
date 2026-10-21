@@ -593,8 +593,10 @@ describe('the relay the cross-device sign-in uses', () => {
     // The default was relay.damus.io. It accepts the signer's gift wrap, then
     // refuses kind-1059 reads to an unauthenticated client — and its AUTH is
     // misconfigured, so no client can fetch one. Every cross-device sign-in on
-    // the default failed, silently. nos.lol serves them without AUTH, and the
-    // Signet app replies on whichever relay the request names.
+    // the default failed, silently. nos.lol, the next default, stopped
+    // answering in October 2026. relay.primal.net (signet-verify 0.7.4's
+    // DEFAULT_RELAY_URL) serves them without AUTH, and the Signet app replies
+    // on whichever relay the request names.
     const pending = login({
       appName: 'Pallasite',
       challenge: CHALLENGE,
@@ -605,7 +607,7 @@ describe('the relay the cross-device sign-in uses', () => {
     await settleMicrotasks();
 
     try {
-      expect(lastWaitCall().relayUrl).toBe('wss://nos.lol');
+      expect(lastWaitCall().relayUrl).toBe('wss://relay.primal.net');
     } finally {
       await cancelAndDrain(pending);
     }

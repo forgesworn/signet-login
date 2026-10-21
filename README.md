@@ -76,7 +76,7 @@ interface LoginOptions {
   preferredMethod?: LoginPickerMethod;          // skip the picker
   methods?: LoginPickerMethod[];                // picker methods, in order
   advancedMethods?: LoginPickerMethod[];        // grouped behind Advanced; [] = flat list
-  relayUrl?: string;                            // default wss://nos.lol
+  relayUrl?: string;                            // default wss://relay.primal.net
   relayUrls?: string[];                         // repeated relay= params for NostrConnect; also carried (up to 3, relayUrl first) by the Signet QR/redirect link
   nostrConnectPerms?: string[];                 // default sign_event + NIP-44
   onNostrConnectStatus?: NostrConnectStatusHandler;
