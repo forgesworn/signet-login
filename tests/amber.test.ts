@@ -35,15 +35,16 @@ describe('isAndroid', () => {
 });
 
 describe('buildAmberSignerUrl', () => {
-  it('produces a nostrsigner: URL with base64-encoded event', () => {
+  it('produces a NIP-55 web URL: URL-encoded event JSON, compressionType none', () => {
     const url = buildAmberSignerUrl({
       appName: 'Test',
       challenge: 'a'.repeat(64),
       origin: 'https://example.com',
     });
-    expect(url).toMatch(/^nostrsigner:[A-Za-z0-9+/=]+\?/);
+    expect(url).toMatch(/^nostrsigner:%7B[^?]+\?/);
     expect(url).toContain('type=sign_event');
-    expect(url).toContain('compressionType=base64');
+    expect(url).toContain('compressionType=none');
+    expect(url).not.toContain('compressionType=base64');
     expect(url).toContain('returnType=event');
     expect(url).toContain('callbackUrl=');
   });
@@ -55,9 +56,8 @@ describe('buildAmberSignerUrl', () => {
       challenge,
       origin: 'https://pallasite.app',
     });
-    const eventB64 = url.replace(/^nostrsigner:/, '').split('?')[0]!;
-    const json = atob(eventB64);
-    const event = JSON.parse(json);
+    const encoded = url.replace(/^nostrsigner:/, '').split('?')[0]!;
+    const event = JSON.parse(decodeURIComponent(encoded));
     expect(event.kind).toBe(21236);
     expect(event.content).toBe('');
     expect(event.tags).toContainEqual(['challenge', challenge]);
@@ -224,6 +224,25 @@ describe('consumeAmberCallback', () => {
       expect(result.session.pubkey).toBe(event.pubkey);
       expect(result.session.signer.capabilities.canSignEvents).toBe(false);
     }
+  });
+
+  it('builds a session from a plain JSON reply (compressionType none, as Cambium sends)', () => {
+    const pendingChallenge = 'b'.repeat(64);
+    const event = makeAuthEvent({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+    });
+    savePendingRedirect({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+      createdAt: Date.now(),
+    });
+    window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(JSON.stringify(event)));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    if (result.kind === 'session') expect(result.session.pubkey).toBe(event.pubkey);
   });
 
   it('strips amber params from the URL after consume', () => {

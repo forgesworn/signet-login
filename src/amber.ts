@@ -76,27 +76,23 @@ function buildAuthEventTemplate(opts: AmberStartOptions): {
 }
 
 /**
- * Build the `nostrsigner:` URL that Android dispatches to Amber. The auth
- * event is base64-encoded in the path, params control return shape + the
- * callback URL the browser navigates back to.
+ * Build the `nostrsigner:` URL that Android dispatches to a NIP-55 signer
+ * (Amber, Cambium, My Signet). NIP-55's web form: the event JSON, URL-encoded,
+ * in the path, and `compressionType` none or gzip for the reply. The earlier
+ * `compressionType=base64` with a base64 path is not in NIP-55, so strict
+ * signers (Cambium) refused it as an invalid request.
  */
 export function buildAmberSignerUrl(opts: AmberStartOptions): string {
   const template = buildAuthEventTemplate(opts);
   const json = JSON.stringify(template);
-  // btoa handles ASCII; the JSON above is pure ASCII (hex challenge, origin
-  // URL, app name passes through if ASCII) so plain btoa is correct here.
-  // For non-ASCII appName we'd need TextEncoder + base64 of bytes.
-  const eventB64 = typeof btoa === 'function'
-    ? btoa(json)
-    : Buffer.from(json, 'utf-8').toString('base64');
   const callback = opts.redirectCallback ?? `${opts.origin}/?signet_amber=1`;
   const params = new URLSearchParams({
     type: 'sign_event',
-    compressionType: 'base64',
+    compressionType: 'none',
     returnType: 'event',
     callbackUrl: callback,
   });
-  return `nostrsigner:${eventB64}?${params.toString()}`;
+  return `nostrsigner:${encodeURIComponent(json)}?${params.toString()}`;
 }
 
 /**
@@ -182,18 +178,16 @@ function consumeAmberCallbackWithPending(
     return finalize({ kind: 'invalid', reason: 'no-event-param' });
   }
 
-  // Amber returns the signed event JSON, base64-encoded by default. Try
-  // base64 first; fall back to plain JSON if the consumer overrode the
-  // compressionType param.
+  // With compressionType=none signers return the signed event as JSON. Older
+  // requests asked for base64 and some signers still answer that way, so a
+  // reply that is not JSON is tried as base64 before it is refused.
   let parsed: unknown;
   try {
-    let json: string;
-    try {
+    let json = eventRaw.trim();
+    if (!json.startsWith('{')) {
       json = typeof atob === 'function'
-        ? atob(eventRaw)
-        : Buffer.from(eventRaw, 'base64').toString('utf-8');
-    } catch {
-      json = eventRaw;
+        ? atob(json)
+        : Buffer.from(json, 'base64').toString('utf-8');
     }
     parsed = JSON.parse(json);
   } catch {
