@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.2 (2026-10-30)
+
+### Bug Fixes
+
+- send NIP-55 web sign-in requests in the standard form (#75)
+
+
+
 ## 0.21.1 (2026-10-21)
 
 ### Bug Fixes
