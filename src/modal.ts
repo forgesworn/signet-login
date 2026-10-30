@@ -395,7 +395,7 @@ async function startCameraQrScanner(input: {
 // option is reworded to "Use another device" (see resolveMethodMeta).
 const METHOD_META: Record<LoginPickerMethod, { icon: string; title: string; hint: string }> = {
   nip07: { icon: '🌐', title: 'Browser extension', hint: 'bark, Alby, nos2x' },
-  amber: { icon: '🤖', title: 'Sign in with Amber', hint: 'Android signer (NIP-55)' },
+  amber: { icon: '🤖', title: 'Android signer app', hint: 'Cambium, Amber or any NIP-55 signer' },
   'local-signet': { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },
   'remote-signet': { icon: '📱', title: 'Use your phone', hint: 'Scan with Signet' },
   redirect: { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },

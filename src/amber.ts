@@ -2,10 +2,11 @@
  * Amber (NIP-55) sign-in flow.
  *
  * NIP-55 is Android-only: web pages open `nostrsigner:` URLs which the
- * Android intent system routes to Amber (or any compatible signer). The
- * page navigates away during sign-in; Amber signs the event and redirects
- * the browser back to the app's callback URL with the signed event encoded
- * in a `event=` parameter.
+ * Android intent system routes to a signer app (Amber, Cambium, My Signet).
+ * The page navigates away during sign-in; the signer signs the event and
+ * reopens the app's callback URL with the percent-encoded signed event
+ * appended to it, so the callback ends in `event=` and the answer arrives
+ * as that parameter.
  *
  * v1 scope: sign-in only. Each kind-21236 auth event takes one round-trip
  * through Amber. Subsequent event signing during the session is not
@@ -47,7 +48,11 @@ export interface AmberStartOptions {
   appName: string;
   challenge: string;
   origin: string;
-  /** Optional override for the callback URL. Defaults to current page origin. */
+  /**
+   * The page the signer reopens with its answer. Defaults to the origin's root.
+   * The result parameters are added here; a fragment is dropped, because the
+   * signer appends its result to the very end of the URL.
+   */
   redirectCallback?: string;
   storage?: SignetStorage;
 }
@@ -82,10 +87,24 @@ function buildAuthEventTemplate(opts: AmberStartOptions): {
  * `compressionType=base64` with a base64 path is not in NIP-55, so strict
  * signers (Cambium) refused it as an invalid request.
  */
+/**
+ * The callback a NIP-55 signer answers to. Signers append the percent-encoded
+ * result to the end of the URL (NIP-55's example ends in `?event=`; Amber does
+ * `callBackUrl + Uri.encode(value)`, Cambium `callback + percentEncode(value)`),
+ * so the URL must end in `event=` for `consumeAmberCallback` to find the event.
+ * The former `?signet_amber=1` callback made the event the tail of that flag's
+ * value, and no signer's answer ever signed anyone in.
+ */
+export function amberCallbackUrl(page: string): string {
+  const hash = page.indexOf('#');
+  const base = (hash >= 0 ? page.slice(0, hash) : page).replace(/[?&]+$/, '');
+  return `${base}${base.includes('?') ? '&' : '?'}signet_amber=1&event=`;
+}
+
 export function buildAmberSignerUrl(opts: AmberStartOptions): string {
   const template = buildAuthEventTemplate(opts);
   const json = JSON.stringify(template);
-  const callback = opts.redirectCallback ?? `${opts.origin}/?signet_amber=1`;
+  const callback = amberCallbackUrl(opts.redirectCallback ?? `${opts.origin}/`);
   const params = new URLSearchParams({
     type: 'sign_event',
     compressionType: 'none',

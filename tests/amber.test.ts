@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
+  amberCallbackUrl,
   buildAmberSignerUrl,
   consumeAmberCallback,
   isAndroid,
@@ -65,14 +66,31 @@ describe('buildAmberSignerUrl', () => {
     expect(event.tags).toContainEqual(['app', 'Pallasite']);
   });
 
-  it('honours redirectCallback override', () => {
+  it('honours redirectCallback override and still ends the callback in event=', () => {
     const url = buildAmberSignerUrl({
       appName: 'Test',
       challenge: 'a'.repeat(64),
       origin: 'https://example.com',
       redirectCallback: 'https://example.com/auth/return',
     });
-    expect(url).toContain('callbackUrl=https%3A%2F%2Fexample.com%2Fauth%2Freturn');
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl');
+    expect(callback).toBe('https://example.com/auth/return?signet_amber=1&event=');
+  });
+
+  // NIP-55 signers append the percent-encoded result to the end of the callback
+  // URL (Amber: `callBackUrl + Uri.encode(value)`; Cambium's result builder does
+  // the same), so the callback has to end in `event=` or the answer is never
+  // the `event` parameter the consumer reads.
+  it('defaults the callback to the origin root ending in event=', () => {
+    const url = buildAmberSignerUrl({ appName: 'Test', challenge: 'a'.repeat(64), origin: 'https://example.com' });
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl');
+    expect(callback).toBe('https://example.com/?signet_amber=1&event=');
+  });
+
+  it('joins the result parameters to a page with a query and drops a fragment', () => {
+    expect(amberCallbackUrl('https://example.com/browse?next=%2Fstudio')).toBe('https://example.com/browse?next=%2Fstudio&signet_amber=1&event=');
+    expect(amberCallbackUrl('https://example.com/invite#token')).toBe('https://example.com/invite?signet_amber=1&event=');
+    expect(amberCallbackUrl('https://example.com/?')).toBe('https://example.com/?signet_amber=1&event=');
   });
 });
 
@@ -80,6 +98,24 @@ describe('consumeAmberCallback', () => {
   beforeEach(() => {
     clearPendingRedirect();
     window.history.replaceState({}, '', '/');
+  });
+
+  it('accepts the answer a signer gives: the percent-encoded event appended to the built callback', () => {
+    const challenge = 'a'.repeat(64);
+    const url = buildAmberSignerUrl({ appName: 'Test', challenge, origin: window.location.origin, redirectCallback: `${window.location.origin}/browse?next=%2Fstudio` });
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl')!;
+    const signed = makeAuthEvent({ challenge, origin: window.location.origin, appName: 'Test' });
+    savePendingRedirect({ challenge, origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    const answer = new URL(callback + encodeURIComponent(JSON.stringify(signed)));
+    window.history.replaceState({}, '', answer.pathname + answer.search);
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    if (result.kind === 'session') {
+      expect(result.session.method).toBe('amber');
+      expect(result.session.pubkey).toBe(signed.pubkey);
+      expect(result.session.authEvent.id).toBe(signed.id);
+    }
+    expect(window.location.pathname + window.location.search).toBe('/browse?next=%2Fstudio');
   });
 
   it('returns no-callback when URL has no amber params', () => {
