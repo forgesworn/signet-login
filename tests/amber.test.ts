@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
+  amberCallbackUrl,
   buildAmberSignerUrl,
   consumeAmberCallback,
   isAndroid,
@@ -35,15 +36,16 @@ describe('isAndroid', () => {
 });
 
 describe('buildAmberSignerUrl', () => {
-  it('produces a nostrsigner: URL with base64-encoded event', () => {
+  it('produces a NIP-55 web URL: URL-encoded event JSON, compressionType none', () => {
     const url = buildAmberSignerUrl({
       appName: 'Test',
       challenge: 'a'.repeat(64),
       origin: 'https://example.com',
     });
-    expect(url).toMatch(/^nostrsigner:[A-Za-z0-9+/=]+\?/);
+    expect(url).toMatch(/^nostrsigner:%7B[^?]+\?/);
     expect(url).toContain('type=sign_event');
-    expect(url).toContain('compressionType=base64');
+    expect(url).toContain('compressionType=none');
+    expect(url).not.toContain('compressionType=base64');
     expect(url).toContain('returnType=event');
     expect(url).toContain('callbackUrl=');
   });
@@ -55,9 +57,8 @@ describe('buildAmberSignerUrl', () => {
       challenge,
       origin: 'https://pallasite.app',
     });
-    const eventB64 = url.replace(/^nostrsigner:/, '').split('?')[0]!;
-    const json = atob(eventB64);
-    const event = JSON.parse(json);
+    const encoded = url.replace(/^nostrsigner:/, '').split('?')[0]!;
+    const event = JSON.parse(decodeURIComponent(encoded));
     expect(event.kind).toBe(21236);
     expect(event.content).toBe('');
     expect(event.tags).toContainEqual(['challenge', challenge]);
@@ -65,14 +66,31 @@ describe('buildAmberSignerUrl', () => {
     expect(event.tags).toContainEqual(['app', 'Pallasite']);
   });
 
-  it('honours redirectCallback override', () => {
+  it('honours redirectCallback override and still ends the callback in event=', () => {
     const url = buildAmberSignerUrl({
       appName: 'Test',
       challenge: 'a'.repeat(64),
       origin: 'https://example.com',
       redirectCallback: 'https://example.com/auth/return',
     });
-    expect(url).toContain('callbackUrl=https%3A%2F%2Fexample.com%2Fauth%2Freturn');
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl');
+    expect(callback).toBe('https://example.com/auth/return?signet_amber=1&event=');
+  });
+
+  // NIP-55 signers append the percent-encoded result to the end of the callback
+  // URL (Amber: `callBackUrl + Uri.encode(value)`; Cambium's result builder does
+  // the same), so the callback has to end in `event=` or the answer is never
+  // the `event` parameter the consumer reads.
+  it('defaults the callback to the origin root ending in event=', () => {
+    const url = buildAmberSignerUrl({ appName: 'Test', challenge: 'a'.repeat(64), origin: 'https://example.com' });
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl');
+    expect(callback).toBe('https://example.com/?signet_amber=1&event=');
+  });
+
+  it('joins the result parameters to a page with a query and drops a fragment', () => {
+    expect(amberCallbackUrl('https://example.com/browse?next=%2Fstudio')).toBe('https://example.com/browse?next=%2Fstudio&signet_amber=1&event=');
+    expect(amberCallbackUrl('https://example.com/invite#token')).toBe('https://example.com/invite?signet_amber=1&event=');
+    expect(amberCallbackUrl('https://example.com/?')).toBe('https://example.com/?signet_amber=1&event=');
   });
 });
 
@@ -82,9 +100,46 @@ describe('consumeAmberCallback', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('accepts the answer a signer gives: the percent-encoded event appended to the built callback', () => {
+    const challenge = 'a'.repeat(64);
+    const url = buildAmberSignerUrl({ appName: 'Test', challenge, origin: window.location.origin, redirectCallback: `${window.location.origin}/browse?next=%2Fstudio` });
+    const callback = new URL(url.replace(/^nostrsigner:[^?]*\?/, 'https://x/?')).searchParams.get('callbackUrl')!;
+    const signed = makeAuthEvent({ challenge, origin: window.location.origin, appName: 'Test' });
+    savePendingRedirect({ challenge, origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    const answer = new URL(callback + encodeURIComponent(JSON.stringify(signed)));
+    window.history.replaceState({}, '', answer.pathname + answer.search);
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    if (result.kind === 'session') {
+      expect(result.session.method).toBe('amber');
+      expect(result.session.pubkey).toBe(signed.pubkey);
+      expect(result.session.authEvent.id).toBe(signed.id);
+    }
+    expect(window.location.pathname + window.location.search).toBe('/browse?next=%2Fstudio');
+  });
+
   it('returns no-callback when URL has no amber params', () => {
     const result = consumeAmberCallback();
     expect(result.kind).toBe('no-callback');
+  });
+
+  // Pages use `event` for themselves (a live stage is /live?event=<id>), so a
+  // bare `event=` is not an answer and must be left alone.
+  it("leaves a page's own event parameter alone when the SDK flag is absent", () => {
+    savePendingRedirect({ challenge: 'a'.repeat(64), origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    window.history.replaceState({}, '', '/live?event=gig-1');
+    expect(consumeAmberCallback().kind).toBe('no-callback');
+    expect(window.location.pathname + window.location.search).toBe('/live?event=gig-1');
+  });
+
+  it("reads the event the signer appended last and keeps the page's own", () => {
+    const challenge = 'a'.repeat(64);
+    const signed = makeAuthEvent({ challenge, origin: window.location.origin, appName: 'Test' });
+    savePendingRedirect({ challenge, origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    window.history.replaceState({}, '', '/live?event=gig-1&mode=venue&signet_amber=1&event=' + encodeURIComponent(JSON.stringify(signed)));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    expect(window.location.pathname + window.location.search).toBe('/live?event=gig-1&mode=venue');
   });
 
   it('returns invalid:no-pending-state when the event arrives without prior pending', () => {
@@ -224,6 +279,25 @@ describe('consumeAmberCallback', () => {
       expect(result.session.pubkey).toBe(event.pubkey);
       expect(result.session.signer.capabilities.canSignEvents).toBe(false);
     }
+  });
+
+  it('builds a session from a plain JSON reply (compressionType none, as Cambium sends)', () => {
+    const pendingChallenge = 'b'.repeat(64);
+    const event = makeAuthEvent({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+    });
+    savePendingRedirect({
+      challenge: pendingChallenge,
+      origin: window.location.origin,
+      appName: 'Test',
+      createdAt: Date.now(),
+    });
+    window.history.replaceState({}, '', '/?signet_amber=1&event=' + encodeURIComponent(JSON.stringify(event)));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    if (result.kind === 'session') expect(result.session.pubkey).toBe(event.pubkey);
   });
 
   it('strips amber params from the URL after consume', () => {

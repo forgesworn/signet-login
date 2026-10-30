@@ -2,10 +2,11 @@
  * Amber (NIP-55) sign-in flow.
  *
  * NIP-55 is Android-only: web pages open `nostrsigner:` URLs which the
- * Android intent system routes to Amber (or any compatible signer). The
- * page navigates away during sign-in; Amber signs the event and redirects
- * the browser back to the app's callback URL with the signed event encoded
- * in a `event=` parameter.
+ * Android intent system routes to a signer app (Amber, Cambium, My Signet).
+ * The page navigates away during sign-in; the signer signs the event and
+ * reopens the app's callback URL with the percent-encoded signed event
+ * appended to it, so the callback ends in `event=` and the answer arrives
+ * as that parameter.
  *
  * v1 scope: sign-in only. Each kind-21236 auth event takes one round-trip
  * through Amber. Subsequent event signing during the session is not
@@ -47,7 +48,11 @@ export interface AmberStartOptions {
   appName: string;
   challenge: string;
   origin: string;
-  /** Optional override for the callback URL. Defaults to current page origin. */
+  /**
+   * The page the signer reopens with its answer. Defaults to the origin's root.
+   * The result parameters are added here; a fragment is dropped, because the
+   * signer appends its result to the very end of the URL.
+   */
   redirectCallback?: string;
   storage?: SignetStorage;
 }
@@ -76,27 +81,37 @@ function buildAuthEventTemplate(opts: AmberStartOptions): {
 }
 
 /**
- * Build the `nostrsigner:` URL that Android dispatches to Amber. The auth
- * event is base64-encoded in the path, params control return shape + the
- * callback URL the browser navigates back to.
+ * Build the `nostrsigner:` URL that Android dispatches to a NIP-55 signer
+ * (Amber, Cambium, My Signet). NIP-55's web form: the event JSON, URL-encoded,
+ * in the path, and `compressionType` none or gzip for the reply. The earlier
+ * `compressionType=base64` with a base64 path is not in NIP-55, so strict
+ * signers (Cambium) refused it as an invalid request.
  */
+/**
+ * The callback a NIP-55 signer answers to. Signers append the percent-encoded
+ * result to the end of the URL (NIP-55's example ends in `?event=`; Amber does
+ * `callBackUrl + Uri.encode(value)`, Cambium `callback + percentEncode(value)`),
+ * so the URL must end in `event=` for `consumeAmberCallback` to find the event.
+ * The former `?signet_amber=1` callback made the event the tail of that flag's
+ * value, and no signer's answer ever signed anyone in.
+ */
+export function amberCallbackUrl(page: string): string {
+  const hash = page.indexOf('#');
+  const base = (hash >= 0 ? page.slice(0, hash) : page).replace(/[?&]+$/, '');
+  return `${base}${base.includes('?') ? '&' : '?'}signet_amber=1&event=`;
+}
+
 export function buildAmberSignerUrl(opts: AmberStartOptions): string {
   const template = buildAuthEventTemplate(opts);
   const json = JSON.stringify(template);
-  // btoa handles ASCII; the JSON above is pure ASCII (hex challenge, origin
-  // URL, app name passes through if ASCII) so plain btoa is correct here.
-  // For non-ASCII appName we'd need TextEncoder + base64 of bytes.
-  const eventB64 = typeof btoa === 'function'
-    ? btoa(json)
-    : Buffer.from(json, 'utf-8').toString('base64');
-  const callback = opts.redirectCallback ?? `${opts.origin}/?signet_amber=1`;
+  const callback = amberCallbackUrl(opts.redirectCallback ?? `${opts.origin}/`);
   const params = new URLSearchParams({
     type: 'sign_event',
-    compressionType: 'base64',
+    compressionType: 'none',
     returnType: 'event',
     callbackUrl: callback,
   });
-  return `nostrsigner:${eventB64}?${params.toString()}`;
+  return `nostrsigner:${encodeURIComponent(json)}?${params.toString()}`;
 }
 
 /**
@@ -123,14 +138,14 @@ export async function startAmberSignIn(opts: AmberStartOptions): Promise<never> 
 function cleanupAmberCallbackUrl(): void {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  let touched = false;
-  for (const key of ['event', 'signet_amber', 'error']) {
-    if (url.searchParams.has(key)) {
-      url.searchParams.delete(key);
-      touched = true;
-    }
-  }
-  if (!touched) return;
+  // The answer is the flag, an error and the event value the signer appended
+  // last. A page may carry an `event` parameter of its own (a stage link);
+  // that one stays, and the rest keep their order.
+  const entries = [...url.searchParams.entries()];
+  const answer = entries.map(([key]) => key).lastIndexOf('event');
+  const kept = entries.filter(([key], index) => key !== 'signet_amber' && key !== 'error' && index !== answer);
+  if (kept.length === entries.length) return;
+  url.search = new URLSearchParams(kept).toString();
   const newHref = url.pathname + (url.search ? url.search : '') + url.hash;
   try {
     window.history.replaceState(window.history.state, document.title, newHref);
@@ -148,10 +163,12 @@ export type ConsumeAmberResult =
 type ConsumeAmberFinalizer = <T extends ConsumeAmberResult>(result: T) => T | Promise<T>;
 
 /**
- * Consume an Amber callback. Detects `?event=<base64-or-json>` (or the
- * `signet_amber=1` flag) on the URL and reconstructs a session. Idempotent:
- * a second call after a successful consume returns 'no-callback' because
- * the params have been stripped.
+ * Consume a signer's callback. Detects the `signet_amber=1` flag the SDK put
+ * on the callback URL and reconstructs a session from the `event=` value the
+ * signer appended after it. A bare `event=` is never an answer: pages use
+ * that name for their own purposes (a stage link), and reading it would strip
+ * it. Idempotent: a second call after a successful consume returns
+ * 'no-callback' because the answer has been stripped.
  */
 function consumeAmberCallbackWithPending(
   pending: PendingRedirect | null,
@@ -160,8 +177,7 @@ function consumeAmberCallbackWithPending(
   if (typeof window === 'undefined') return { kind: 'no-callback' };
 
   const params = new URLSearchParams(window.location.search);
-  const flagged = params.has('signet_amber') || params.has('event');
-  if (!flagged) return { kind: 'no-callback' };
+  if (!params.has('signet_amber')) return { kind: 'no-callback' };
 
   if (params.get('error') === 'denied') {
     return finalize({ kind: 'denied' });
@@ -177,23 +193,23 @@ function consumeAmberCallbackWithPending(
     return finalize({ kind: 'invalid', reason: 'pending-stale' });
   }
 
-  const eventRaw = params.get('event');
+  // The signer appends its answer to the end of the callback, so it is the
+  // last `event` value; an earlier one belongs to the page.
+  const eventRaw = params.getAll('event').pop();
   if (!eventRaw) {
     return finalize({ kind: 'invalid', reason: 'no-event-param' });
   }
 
-  // Amber returns the signed event JSON, base64-encoded by default. Try
-  // base64 first; fall back to plain JSON if the consumer overrode the
-  // compressionType param.
+  // With compressionType=none signers return the signed event as JSON. Older
+  // requests asked for base64 and some signers still answer that way, so a
+  // reply that is not JSON is tried as base64 before it is refused.
   let parsed: unknown;
   try {
-    let json: string;
-    try {
+    let json = eventRaw.trim();
+    if (!json.startsWith('{')) {
       json = typeof atob === 'function'
-        ? atob(eventRaw)
-        : Buffer.from(eventRaw, 'base64').toString('utf-8');
-    } catch {
-      json = eventRaw;
+        ? atob(json)
+        : Buffer.from(json, 'base64').toString('utf-8');
     }
     parsed = JSON.parse(json);
   } catch {
