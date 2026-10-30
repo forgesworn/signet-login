@@ -138,14 +138,14 @@ export async function startAmberSignIn(opts: AmberStartOptions): Promise<never> 
 function cleanupAmberCallbackUrl(): void {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
-  let touched = false;
-  for (const key of ['event', 'signet_amber', 'error']) {
-    if (url.searchParams.has(key)) {
-      url.searchParams.delete(key);
-      touched = true;
-    }
-  }
-  if (!touched) return;
+  // The answer is the flag, an error and the event value the signer appended
+  // last. A page may carry an `event` parameter of its own (a stage link);
+  // that one stays, and the rest keep their order.
+  const entries = [...url.searchParams.entries()];
+  const answer = entries.map(([key]) => key).lastIndexOf('event');
+  const kept = entries.filter(([key], index) => key !== 'signet_amber' && key !== 'error' && index !== answer);
+  if (kept.length === entries.length) return;
+  url.search = new URLSearchParams(kept).toString();
   const newHref = url.pathname + (url.search ? url.search : '') + url.hash;
   try {
     window.history.replaceState(window.history.state, document.title, newHref);
@@ -163,10 +163,12 @@ export type ConsumeAmberResult =
 type ConsumeAmberFinalizer = <T extends ConsumeAmberResult>(result: T) => T | Promise<T>;
 
 /**
- * Consume an Amber callback. Detects `?event=<base64-or-json>` (or the
- * `signet_amber=1` flag) on the URL and reconstructs a session. Idempotent:
- * a second call after a successful consume returns 'no-callback' because
- * the params have been stripped.
+ * Consume a signer's callback. Detects the `signet_amber=1` flag the SDK put
+ * on the callback URL and reconstructs a session from the `event=` value the
+ * signer appended after it. A bare `event=` is never an answer: pages use
+ * that name for their own purposes (a stage link), and reading it would strip
+ * it. Idempotent: a second call after a successful consume returns
+ * 'no-callback' because the answer has been stripped.
  */
 function consumeAmberCallbackWithPending(
   pending: PendingRedirect | null,
@@ -175,8 +177,7 @@ function consumeAmberCallbackWithPending(
   if (typeof window === 'undefined') return { kind: 'no-callback' };
 
   const params = new URLSearchParams(window.location.search);
-  const flagged = params.has('signet_amber') || params.has('event');
-  if (!flagged) return { kind: 'no-callback' };
+  if (!params.has('signet_amber')) return { kind: 'no-callback' };
 
   if (params.get('error') === 'denied') {
     return finalize({ kind: 'denied' });
@@ -192,7 +193,9 @@ function consumeAmberCallbackWithPending(
     return finalize({ kind: 'invalid', reason: 'pending-stale' });
   }
 
-  const eventRaw = params.get('event');
+  // The signer appends its answer to the end of the callback, so it is the
+  // last `event` value; an earlier one belongs to the page.
+  const eventRaw = params.getAll('event').pop();
   if (!eventRaw) {
     return finalize({ kind: 'invalid', reason: 'no-event-param' });
   }

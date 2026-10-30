@@ -123,6 +123,25 @@ describe('consumeAmberCallback', () => {
     expect(result.kind).toBe('no-callback');
   });
 
+  // Pages use `event` for themselves (a live stage is /live?event=<id>), so a
+  // bare `event=` is not an answer and must be left alone.
+  it("leaves a page's own event parameter alone when the SDK flag is absent", () => {
+    savePendingRedirect({ challenge: 'a'.repeat(64), origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    window.history.replaceState({}, '', '/live?event=gig-1');
+    expect(consumeAmberCallback().kind).toBe('no-callback');
+    expect(window.location.pathname + window.location.search).toBe('/live?event=gig-1');
+  });
+
+  it("reads the event the signer appended last and keeps the page's own", () => {
+    const challenge = 'a'.repeat(64);
+    const signed = makeAuthEvent({ challenge, origin: window.location.origin, appName: 'Test' });
+    savePendingRedirect({ challenge, origin: window.location.origin, appName: 'Test', createdAt: Date.now() });
+    window.history.replaceState({}, '', '/live?event=gig-1&mode=venue&signet_amber=1&event=' + encodeURIComponent(JSON.stringify(signed)));
+    const result = consumeAmberCallback();
+    expect(result.kind).toBe('session');
+    expect(window.location.pathname + window.location.search).toBe('/live?event=gig-1&mode=venue');
+  });
+
   it('returns invalid:no-pending-state when the event arrives without prior pending', () => {
     window.history.replaceState({}, '', '/?signet_amber=1&event=abc');
     const result = consumeAmberCallback();
