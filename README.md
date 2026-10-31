@@ -12,7 +12,7 @@ Published as `signet-login`.
 - **Connect a Nostr signer** via app-initiated NIP-46 / NostrConnect
 - **Paste or scan bunker URI** for Heartwood, nsecBunker, Amber, or compatible signers
 - **Android signer app** (Cambium, Amber or any NIP-55 signer): the page hands off and the signer's answer comes back by URL
-- **Paste private key** as an in-memory, advanced fallback only: an `nsec`, or a NIP-49 password-protected `ncryptsec` decrypted in the browser
+- **Paste private key** as an in-memory, advanced fallback only: an `nsec`, or a NIP-49 password-protected `ncryptsec` decrypted in the browser, with a show/hide toggle on the password field
 
 Returns a unified `SignetSigner` plus a signed kind-21236 auth proof your server can verify before granting privileges.
 
@@ -67,7 +67,7 @@ The IIFE bundle additively extends `window.Signet` — it coexists with `signet-
 
 ### `Signet.login(options)`
 
-Show the picker, return a `SignetSession` on success or `null` on cancel/timeout.
+Show the picker, return a `SignetSession` on success or `null` on cancel/timeout. On a method's screen, **Back** returns to the picker and **Cancel** ends the whole login with `null`; Escape and the OS back gesture prefer Back when a screen has one.
 
 ```ts
 interface LoginOptions {

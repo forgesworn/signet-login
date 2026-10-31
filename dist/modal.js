@@ -1309,6 +1309,13 @@ async function runNsecFlow(refs, opts) {
           <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="signet-login-password-slash" d="m3 3 18 18"/></svg>
         </button>
       </div>
+      <style>
+        .signet-login-password-control{display:flex;align-items:flex-start;gap:8px}
+        .signet-login-password-control input{flex:1;min-width:0}
+        .signet-login-password-control button{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;padding:6px;margin-bottom:12px;background:transparent;color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;cursor:pointer}
+        .signet-login-password-slash{display:none}
+        [data-action="toggle-password"][aria-pressed="true"] .signet-login-password-slash{display:block}
+      </style>
     </div>
     <p id="signet-login-nsec-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
