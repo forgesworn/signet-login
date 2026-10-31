@@ -70,6 +70,11 @@ function buildModalShell(theme) {
         .filter((b) => {
         if (b.disabled || !b.isConnected)
             return false;
+        // A button inside a hidden row (the encrypted-key password reveal
+        // before a ncryptsec is pasted) is not on screen either; its own
+        // computed display does not say so.
+        if (b.closest('[hidden]'))
+            return false;
         const css = window.getComputedStyle(b);
         return css.display !== 'none' && css.visibility !== 'hidden';
     });
