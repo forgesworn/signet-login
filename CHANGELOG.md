@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.0 (2026-10-31)
+
+### Features
+
+- end the login on Cancel and add a password reveal to the paste-a-key screen (#76)
+
+
+
 ## 0.21.2 (2026-10-30)
 
 ### Bug Fixes
