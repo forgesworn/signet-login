@@ -1303,7 +1303,12 @@ async function runNsecFlow(refs, opts) {
     <textarea id="signet-login-nsec-input" placeholder="nsec1… or ncryptsec1…" rows="2" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="${fieldStyle}resize:vertical;-webkit-text-security:disc;text-security:disc;"></textarea>
     <div id="signet-login-nsec-password-row" hidden>
       <label for="signet-login-nsec-password" style="display:block;margin:0 0 6px;color:${muted};font-size:0.8rem;">Password for this encrypted key</label>
-      <input id="signet-login-nsec-password" type="password" autocomplete="current-password" placeholder="Password" style="${fieldStyle}" />
+      <div class="signet-login-password-control">
+        <input id="signet-login-nsec-password" type="password" autocomplete="current-password" placeholder="Password" style="${fieldStyle}" />
+        <button type="button" data-action="toggle-password" aria-controls="signet-login-nsec-password" aria-label="Show password" aria-pressed="false" title="Show password">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="signet-login-password-slash" d="m3 3 18 18"/></svg>
+        </button>
+      </div>
     </div>
     <p id="signet-login-nsec-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
@@ -1324,11 +1329,24 @@ async function runNsecFlow(refs, opts) {
         const password = refs.dialog.querySelector('#signet-login-nsec-password');
         const status = refs.dialog.querySelector('#signet-login-nsec-status');
         const connectBtn = refs.dialog.querySelector('[data-action="connect"]');
+        const passwordToggle = refs.dialog.querySelector('[data-action="toggle-password"]');
+        // Revealing only changes the existing input's type, so the typed value
+        // stays put; the field returns to hidden whenever it leaves view or is wiped.
+        const setPasswordVisible = (visible) => {
+            if (password)
+                password.type = visible ? 'text' : 'password';
+            const label = visible ? 'Hide password' : 'Show password';
+            passwordToggle?.setAttribute('aria-label', label);
+            passwordToggle?.setAttribute('aria-pressed', String(visible));
+            passwordToggle?.setAttribute('title', label);
+        };
+        passwordToggle?.addEventListener('click', () => setPasswordVisible(password?.type === 'password'));
         const wipe = () => {
             if (input)
                 input.value = '';
             if (password)
                 password.value = '';
+            setPasswordVisible(false);
         };
         // The password field only appears once the pasted key turns out to be
         // an ncryptsec, so the plain-nsec path stays exactly as short as before.
@@ -1336,6 +1354,8 @@ async function runNsecFlow(refs, opts) {
             const encrypted = isEncryptedNsec(input?.value ?? '');
             if (passwordRow)
                 passwordRow.hidden = !encrypted;
+            if (!encrypted)
+                setPasswordVisible(false);
             if (status)
                 status.textContent = '';
         };
@@ -1490,9 +1510,22 @@ async function runLoginModal(opts) {
     // the caller's UI is left stuck behind a dead modal. Racing every
     // flow await against this lets the modal exit cleanly.
     let userAborted = false;
+    let abort;
     const aborted = new Promise((resolve) => {
+        abort = resolve;
         refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
     });
+    // Cancel ends the whole login; Back alone returns to the picker. Captured
+    // before the screen's own click handlers, which still run and clean up
+    // their work, while every flow await settles through `aborted`.
+    const cancelClick = (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest('[data-action="cancel"],[data-choice="cancel"]')) {
+            userAborted = true;
+            abort(null);
+        }
+    };
+    refs.dialog.addEventListener('click', cancelClick, true);
     try {
         while (true) {
             const choice = resolved.preferredMethod
@@ -1744,6 +1777,7 @@ async function runLoginModal(opts) {
         }
     }
     finally {
+        refs.dialog.removeEventListener('click', cancelClick, true);
         tearDown(refs);
     }
 }
