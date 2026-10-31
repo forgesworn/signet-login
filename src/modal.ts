@@ -115,6 +115,10 @@ function buildModalShell(theme: 'light' | 'dark' | 'auto'): ModalRefs {
     Array.from(dialog.querySelectorAll<HTMLButtonElement>('button'))
       .filter((b) => {
         if (b.disabled || !b.isConnected) return false;
+        // A button inside a hidden row (the encrypted-key password reveal
+        // before a ncryptsec is pasted) is not on screen either; its own
+        // computed display does not say so.
+        if (b.closest('[hidden]')) return false;
         const css = window.getComputedStyle(b);
         return css.display !== 'none' && css.visibility !== 'hidden';
       });
@@ -1355,7 +1359,19 @@ async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Loca
     <textarea id="signet-login-nsec-input" placeholder="nsec1… or ncryptsec1…" rows="2" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" style="${fieldStyle}resize:vertical;-webkit-text-security:disc;text-security:disc;"></textarea>
     <div id="signet-login-nsec-password-row" hidden>
       <label for="signet-login-nsec-password" style="display:block;margin:0 0 6px;color:${muted};font-size:0.8rem;">Password for this encrypted key</label>
-      <input id="signet-login-nsec-password" type="password" autocomplete="current-password" placeholder="Password" style="${fieldStyle}" />
+      <div class="signet-login-password-control">
+        <input id="signet-login-nsec-password" type="password" autocomplete="current-password" placeholder="Password" style="${fieldStyle}" />
+        <button type="button" data-action="toggle-password" aria-controls="signet-login-nsec-password" aria-label="Show password" aria-pressed="false" title="Show password">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="signet-login-password-slash" d="m3 3 18 18"/></svg>
+        </button>
+      </div>
+      <style>
+        .signet-login-password-control{display:flex;align-items:flex-start;gap:8px}
+        .signet-login-password-control input{flex:1;min-width:0}
+        .signet-login-password-control button{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;padding:6px;margin-bottom:12px;background:transparent;color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;cursor:pointer}
+        .signet-login-password-slash{display:none}
+        [data-action="toggle-password"][aria-pressed="true"] .signet-login-password-slash{display:block}
+      </style>
     </div>
     <p id="signet-login-nsec-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;min-height:1.2em;"></p>
     <div style="display:flex;gap:8px;justify-content:space-between;">
@@ -1378,9 +1394,22 @@ async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Loca
     const status = refs.dialog.querySelector<HTMLElement>('#signet-login-nsec-status');
     const connectBtn = refs.dialog.querySelector<HTMLButtonElement>('[data-action="connect"]');
 
+    const passwordToggle = refs.dialog.querySelector<HTMLButtonElement>('[data-action="toggle-password"]');
+    // Revealing only changes the existing input's type, so the typed value
+    // stays put; the field returns to hidden whenever it leaves view or is wiped.
+    const setPasswordVisible = (visible: boolean): void => {
+      if (password) password.type = visible ? 'text' : 'password';
+      const label = visible ? 'Hide password' : 'Show password';
+      passwordToggle?.setAttribute('aria-label', label);
+      passwordToggle?.setAttribute('aria-pressed', String(visible));
+      passwordToggle?.setAttribute('title', label);
+    };
+    passwordToggle?.addEventListener('click', () => setPasswordVisible(password?.type === 'password'));
+
     const wipe = (): void => {
       if (input) input.value = '';
       if (password) password.value = '';
+      setPasswordVisible(false);
     };
 
     // The password field only appears once the pasted key turns out to be
@@ -1388,6 +1417,7 @@ async function runNsecFlow(refs: ModalRefs, opts: ResolvedOptions): Promise<Loca
     const syncPasswordRow = (): void => {
       const encrypted = isEncryptedNsec(input?.value ?? '');
       if (passwordRow) passwordRow.hidden = !encrypted;
+      if (!encrypted) setPasswordVisible(false);
       if (status) status.textContent = '';
     };
     input?.addEventListener('input', syncPasswordRow);
@@ -1566,9 +1596,22 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
   // the caller's UI is left stuck behind a dead modal. Racing every
   // flow await against this lets the modal exit cleanly.
   let userAborted = false;
+  let abort!: (value: null) => void;
   const aborted = new Promise<null>((resolve) => {
+    abort = resolve;
     refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
   });
+  // Cancel ends the whole login; Back alone returns to the picker. Captured
+  // before the screen's own click handlers, which still run and clean up
+  // their work, while every flow await settles through `aborted`.
+  const cancelClick = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-action="cancel"],[data-choice="cancel"]')) {
+      userAborted = true;
+      abort(null);
+    }
+  };
+  refs.dialog.addEventListener('click', cancelClick, true);
 
   try {
     while (true) {
@@ -1774,6 +1817,7 @@ async function runLoginModal(opts: LoginOptions): Promise<SignetSession | null> 
       // Unknown choice — restart picker
     }
   } finally {
+    refs.dialog.removeEventListener('click', cancelClick, true);
     tearDown(refs);
   }
 }
