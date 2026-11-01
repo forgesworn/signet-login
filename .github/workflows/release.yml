@@ -54,7 +54,7 @@ jobs:
           sparse-checkout: tools
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           cache: npm
@@ -80,7 +80,7 @@ jobs:
       - name: Create ForgeSworn consumer token
         if: ${{ inputs.consumer_runs == '' }}
         id: forgesworn-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3
         with:
           client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
@@ -90,7 +90,7 @@ jobs:
 
       - name: Create TheCryptoDonkey consumer token
         id: thecryptodonkey-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3
         with:
           client-id: ${{ vars.SIGNET_RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.SIGNET_RELEASE_APP_PRIVATE_KEY }}
