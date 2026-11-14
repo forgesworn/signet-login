@@ -14,7 +14,7 @@ import { remainingSeconds, formatRemaining } from './countdown.js';
 import { buildAuthRelayList, waitForAuthResponseOnRelays } from './relay-wait.js';
 import { schnorr } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import QRCode from 'qrcode';
+import { drawCanvas, encode } from '@forgesworn/qr';
 import jsQR from 'jsqr';
 const QR_BUNKER_CONNECT_TIMEOUT_MS = 8000;
 // "Another device" (remote-signet) sits above "this device" (local-signet) on
@@ -33,9 +33,19 @@ function generateChallenge() {
     crypto.getRandomValues(bytes);
     return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
+/** Draws `text` as a QR code on `canvas`; returns false when it cannot (too long, no 2D context). */
+function renderQr(canvas, text, options) {
+    try {
+        drawCanvas(canvas, encode(text, { ecc: options.ecc }), options);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 function keepQrCanvasResponsive(canvas, sizePx = LARGE_QR_SIZE_PX) {
-    // qrcode mutates canvas.style.width/height after rendering. Reset height so
-    // max-width scaling on narrow phones preserves the square QR aspect ratio.
+    // Pin the CSS width and reset height so max-width scaling on narrow phones
+    // preserves the square QR aspect ratio.
     canvas.style.width = `${sizePx}px`;
     canvas.style.height = 'auto';
     canvas.style.maxWidth = '100%';
@@ -717,15 +727,16 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
     // enough to scan at this size.
     const qrCanvas = refs.dialog.querySelector('#signet-login-qr');
     if (qrCanvas) {
-        void QRCode.toCanvas(qrCanvas, authUrl, {
+        // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
+        // leaves the canvas blank; the visible link below still gets the user across.
+        if (renderQr(qrCanvas, authUrl, {
             width: LARGE_QR_SIZE_PX,
             margin: 1,
-            errorCorrectionLevel: 'H',
-            color: { dark: '#0a0418', light: '#ffffff' },
-        }).then(() => { keepQrCanvasResponsive(qrCanvas); }).catch(() => {
-            // Encoding failure (URL too long for QR L-Q levels, canvas inaccessible)
-            // — the visible link below the canvas still gets the user across.
-        });
+            ecc: 'H',
+            dark: '#0a0418',
+            light: '#ffffff',
+        }))
+            keepQrCanvasResponsive(qrCanvas);
     }
     return new Promise((resolve, reject) => {
         let settled = false;
@@ -1184,10 +1195,12 @@ async function runNostrConnectFlow(refs, opts, aborted) {
   `;
     const qrCanvas = refs.dialog.querySelector('#signet-login-nc-qr');
     if (qrCanvas) {
-        void QRCode.toCanvas(qrCanvas, uri, {
-            width: LARGE_QR_SIZE_PX, margin: 2, errorCorrectionLevel: 'L',
-            color: { dark: '#0a0418', light: '#ffffff' },
-        }).then(() => { keepQrCanvasResponsive(qrCanvas); }).catch(() => { });
+        // On failure the link/copy fallback below still works.
+        if (renderQr(qrCanvas, uri, {
+            width: LARGE_QR_SIZE_PX, margin: 2, ecc: 'L',
+            dark: '#0a0418', light: '#ffffff',
+        }))
+            keepQrCanvasResponsive(qrCanvas);
     }
     const status = refs.dialog.querySelector('#signet-login-nc-status');
     const uriText = refs.dialog.querySelector('#signet-login-nc-uri');

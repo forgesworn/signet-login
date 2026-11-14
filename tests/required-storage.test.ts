@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('signet-verify', async original => ({ ...(await original<typeof import('signet-verify')>()), waitForAuthResponse: vi.fn() }));
 vi.mock('../src/signers.js', async original=>({...await original<typeof import('../src/signers.js')>(),createBunkerSigner:vi.fn(),createBunkerSignerFromNostrConnect:vi.fn()}));
-vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn(async () => {}) } }));
 import { createBunkerSigner, createBunkerSignerFromNostrConnect, Nip07Signer } from '../src/signers.js';
 import { bytesToHexLocal, loadOrCreatePersistentClientSkFromStorage, clearPendingRelayAuth, clearPersistentClientSkFromStorage } from '../src/storage.js';
 import { waitForAuthResponse } from 'signet-verify';
@@ -46,6 +45,7 @@ beforeEach(() => {
   vi.mocked(createBunkerSigner).mockReset(); vi.mocked(createBunkerSignerFromNostrConnect).mockReset();
   vi.mocked(waitForAuthResponse).mockReset().mockImplementation(() => new Promise(() => {}));
   vi.spyOn(window, 'open').mockReturnValue(null);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null); // jsdom has no canvas
 });
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML=''; delete window.nostr; });
 describe('atomic required sessions', () => {

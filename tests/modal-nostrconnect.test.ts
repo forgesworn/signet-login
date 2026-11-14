@@ -8,17 +8,8 @@ vi.mock('../src/signers.js', async (importOriginal) => {
   };
 });
 
-vi.mock('qrcode', () => ({
-  default: {
-    toCanvas: vi.fn((canvas: HTMLCanvasElement) => {
-      canvas.style.width = '360px';
-      canvas.style.height = '360px';
-      return Promise.resolve(canvas);
-    }),
-  },
-}));
-
-import QRCode from 'qrcode';
+import jsQR from 'jsqr';
+import { encode } from '@forgesworn/qr';
 import { login } from '../src/signet-login.js';
 import { createBunkerSignerFromNostrConnect } from '../src/signers.js';
 
@@ -33,6 +24,32 @@ function installDialogPolyfill(): void {
       this.removeAttribute('open');
     };
   }
+}
+
+/** A recording 2D context: jsdom has no canvas, so capture the fillRect calls and rasterise them. */
+function stubCanvas(): { rects: Array<{ x: number; y: number; w: number; h: number; fill: string }> } {
+  const rects: Array<{ x: number; y: number; w: number; h: number; fill: string }> = [];
+  const context = {
+    fillStyle: '',
+    fillRect(x: number, y: number, w: number, h: number) { rects.push({ x, y, w, h, fill: this.fillStyle }); },
+  };
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  return { rects };
+}
+
+function rasterise(rects: ReturnType<typeof stubCanvas>['rects'], side: number): Uint8ClampedArray {
+  const pixels = new Uint8ClampedArray(side * side * 4);
+  for (const r of rects) {
+    const value = r.fill === '#ffffff' ? 255 : 0;
+    for (let y = r.y; y < r.y + r.h; y++) {
+      for (let x = r.x; x < r.x + r.w; x++) {
+        const i = (y * side + x) * 4;
+        pixels[i] = pixels[i + 1] = pixels[i + 2] = value;
+        pixels[i + 3] = 255;
+      }
+    }
+  }
+  return pixels;
 }
 
 async function settleMicrotasks(): Promise<void> {
@@ -51,8 +68,11 @@ async function waitForElement<T extends Element>(selector: string): Promise<T> {
 }
 
 describe('NostrConnect modal flow', () => {
+  let canvas: ReturnType<typeof stubCanvas>;
+
   beforeEach(() => {
     installDialogPolyfill();
+    canvas = stubCanvas();
     localStorage.clear();
     document.body.innerHTML = '';
     delete (window as unknown as { nostr?: unknown }).nostr;
@@ -101,11 +121,17 @@ describe('NostrConnect modal flow', () => {
       uri: uriText.value,
       abortSignal: expect.any(AbortSignal),
     }));
-    expect(QRCode.toCanvas).toHaveBeenCalledWith(qr, uriText.value, expect.objectContaining({
-      width: 360,
-      margin: 2,
-      errorCorrectionLevel: 'L',
-    }));
+    // The QR is our own encoder's output: error correction L, two-module quiet zone,
+    // light background, and a real decoder reads the same URI back from the pixels.
+    const expected = encode(uriText.value, { ecc: 'L' });
+    const side = expected.size + 4;
+    const [background, firstDark] = [canvas.rects[0], canvas.rects[1]];
+    expect(background).toEqual({ x: 0, y: 0, w: 360, h: 360, fill: '#ffffff' });
+    expect(firstDark.fill).toBe('#0a0418');
+    expect(firstDark.x).toBe(Math.round((2 * 360) / side));
+    expect(firstDark.y).toBe(Math.round((2 * 360) / side));
+    const decoded = jsQR(rasterise(canvas.rects, 360), 360, 360);
+    expect(decoded?.data).toBe(uriText.value);
 
     document.querySelector<HTMLButtonElement>('[data-action="copy"]')?.click();
     await settleMicrotasks();
