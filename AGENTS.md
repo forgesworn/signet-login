@@ -42,10 +42,10 @@ and commit `dist/` after any source change.
 
 - British English in prose and comments.
 - No third-party runtime dependencies beyond `@noble/curves`,
-  `@noble/hashes`, `nostr-tools`, `qrcode`, `jsqr`, and `signet-verify`
+  `@noble/hashes`, `nostr-tools`, `@forgesworn/qr` (QR encoder), `jsqr`, and
+  `signet-verify`
   (imported at runtime for the freshness window, default relay and
   cross-device auth wait).
-  `@types/qrcode` is also under `dependencies`, but only for typings.
 - `dist/` is committed; always rebuild it alongside a source change.
 - Public API changes need a matching entry in `src/signet-login.ts`'s
   exports and, where relevant, the `./verify` subpath.
