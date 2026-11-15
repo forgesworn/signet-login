@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.1 (2026-11-15)
+
+### Bug Fixes
+
+- use QR 0.2.0 for pairing codes (#85)
+
+
+
 ## 0.23.0 (2026-11-14)
 
 ### Features
