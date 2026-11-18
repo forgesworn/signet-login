@@ -23,6 +23,7 @@ export type {
   SignerCapabilities,
   SignerEffectBoundary,
   Nip46DecryptBoundary,
+  Nip46RequestBoundary,
   Nip07DiscoveryBoundary,
   SignetSigner,
   SignetAuthEvent,
