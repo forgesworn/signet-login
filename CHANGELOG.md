@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.2 (2026-11-18)
+
+### Bug Fixes
+
+- fence NIP-46 signing and encryption requests (#88)
+
+
+
 ## 0.23.1 (2026-11-15)
 
 ### Bug Fixes
