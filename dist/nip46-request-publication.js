@@ -1,8 +1,8 @@
 import { NostrConnect } from 'nostr-tools/kinds';
-/** Publish one already-signed decrypt request. This owns only its EVENT
+/** Publish one already-signed NIP-46 request. This owns only its EVENT
  * sockets, never the shared response subscription or signer connection.
  * No queue, reconnect or retry may outlive this request's permission. */
-export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Base) {
+export function publishNip46Request(event, relays, current, timeoutMs, Base) {
     const live = () => { try {
         return current() === true;
     }
@@ -10,15 +10,15 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
         return false;
     } };
     if (!live())
-        return Promise.reject(new Error('nip46-decrypt-no-longer-current'));
+        return Promise.reject(new Error('nip46-request-no-longer-current'));
     if (!Base || typeof Base.prototype.send !== 'function')
-        return Promise.reject(new Error('nip46-decrypt-websocket-unavailable'));
+        return Promise.reject(new Error('nip46-request-websocket-unavailable'));
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || relays.length < 1 || relays.length > 16)
-        return Promise.reject(new Error('nip46-decrypt-invalid-carrier'));
+        return Promise.reject(new Error('nip46-request-invalid-carrier'));
     const targets = [...new Set(relays)];
     const frame = JSON.stringify(['EVENT', event]);
     if (event.kind !== NostrConnect || frame.length > 1024 * 1024 || new TextEncoder().encode(frame).byteLength > 1024 * 1024)
-        return Promise.reject(new Error('nip46-decrypt-invalid-request'));
+        return Promise.reject(new Error('nip46-request-invalid-request'));
     const send = Base.prototype.send;
     const invoke = Reflect.apply;
     return new Promise((resolve, reject) => {
@@ -43,13 +43,13 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
                 resolve();
         };
         const permitted = () => active && live();
-        timer = setTimeout(() => finish(new Error('nip46-decrypt-publication-timeout')), timeoutMs);
+        timer = setTimeout(() => finish(new Error('nip46-request-publication-timeout')), timeoutMs);
         poll = setInterval(() => { if (!live())
-            finish(new Error('nip46-decrypt-no-longer-current')); }, 25);
+            finish(new Error('nip46-request-no-longer-current')); }, 25);
         for (const relay of targets) {
             // No await between the fresh decision and starting this socket.
             if (!permitted()) {
-                finish(new Error('nip46-decrypt-no-longer-current'));
+                finish(new Error('nip46-request-no-longer-current'));
                 break;
             }
             let socket;
@@ -59,7 +59,7 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
             }
             catch {
                 if (--remaining === 0)
-                    finish(new Error('nip46-decrypt-publication-failed'));
+                    finish(new Error('nip46-request-publication-failed'));
                 continue;
             }
             let sent = false, failed = false;
@@ -69,7 +69,7 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
                 failed = true;
                 close(socket);
                 if (--remaining === 0)
-                    finish(new Error('nip46-decrypt-publication-failed'));
+                    finish(new Error('nip46-request-publication-failed'));
             };
             // Keep the error observer until the socket closes, including an
             // abandoned Node ws handshake. No detached rejection is created.
@@ -85,7 +85,7 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
                 sent = true;
                 if (!permitted()) {
                     close(socket);
-                    finish(new Error('nip46-decrypt-no-longer-current'));
+                    finish(new Error('nip46-request-no-longer-current'));
                     return;
                 }
                 try {
@@ -101,7 +101,7 @@ export function publishNip46DecryptRequest(event, relays, current, timeoutMs, Ba
                 if (failed)
                     return;
                 if (!permitted()) {
-                    finish(new Error('nip46-decrypt-no-longer-current'));
+                    finish(new Error('nip46-request-no-longer-current'));
                     return;
                 }
                 if (typeof message.data !== 'string' || message.data.length > 64 * 1024)

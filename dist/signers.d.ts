@@ -71,6 +71,8 @@ interface Nip46SignerClient {
     nip44Encrypt(peerPubkey: string, plaintext: string): Promise<string>;
     nip44Decrypt(peerPubkey: string, ciphertext: string): Promise<string>;
     decryptNip44Guarded?(peerPubkey: string, ciphertext: string, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<string>;
+    encryptNip44Guarded?(peerPubkey: string, plaintext: string, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<string>;
+    signEventGuarded?(event: EventTemplate, current: () => boolean, websocketImplementation: typeof WebSocket): Promise<NostrEvent>;
     /**
      * Purpose-specific extension for Heartwood's Vennel rendezvous provision
      * operation. Keeping it here rather than exposing sendRequest prevents a
@@ -123,6 +125,7 @@ export declare class BunkerSignerImpl implements SignetSigner {
      */
     get reconnectBunkerUri(): string;
     signEvent(template: EventTemplate, boundary?: SignerEffectBoundary): Promise<NostrEvent>;
+    private signingTemplate;
     close(): Promise<void>;
 }
 /**
@@ -283,6 +286,7 @@ export declare class DeferredBunkerSigner implements SignetSigner {
     bunkerUri?: string | undefined, 
     /** Stable client key — exposed so persistence keeps the same NIP-46 client pubkey. */
     clientSecretKey?: Uint8Array | undefined, optimisticCapabilities?: boolean);
+    private invokeGuardedNip46;
     private matchesBinding;
     private refuse;
     private invokeBound;

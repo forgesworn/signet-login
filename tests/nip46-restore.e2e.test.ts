@@ -503,7 +503,7 @@ describe('NIP-46 NostrConnect restore E2E', () => {
     await pairedSigner.close();
   });
 
-  it('opens NIP-44 through the real guarded decrypt RPC and the explicitly selected socket route', async () => {
+  it('decrypts, encrypts and signs through the guarded RPCs on the selected socket route', async () => {
     relay = await LocalNostrRelay.start();
     const signerKey = generateSecretKey();
     testSigner = new TestNip46Signer(relay.url, signerKey); await testSigner.start();
@@ -515,15 +515,19 @@ describe('NIP-46 NostrConnect restore E2E', () => {
       send(data: string): void { frames.push(data); super.send(data); }
     }
     let starts = 0, live = true;
+    const boundary = {
+      websocketImplementation: SelectedSocket as unknown as typeof globalThis.WebSocket,
+      current: () => live,
+      async start<T>(provider: () => Promise<T>): Promise<T> {
+        if (!live) throw Error('Stale');
+        starts++;
+        const value = await provider();
+        if (!live) throw Error('Stale');
+        return value;
+      },
+    };
     try {
-      const result = await signer.nip46!.decryptNip44Guarded!(peer, ciphertext, {
-        websocketImplementation: SelectedSocket as unknown as typeof globalThis.WebSocket,
-        current: () => live,
-        async start<T>(provider: () => Promise<T>): Promise<T> {
-          if (!live) throw Error('Stale'); starts++; const value = await provider();
-          if (!live) throw Error('Stale'); return value;
-        },
-      });
+      const result = await signer.nip46!.decryptNip44Guarded!(peer, ciphertext, boundary);
       expect(result).toBe('Explicit remote receive'); expect(starts).toBe(1); expect(frames).toHaveLength(1);
       const frame = JSON.parse(frames[0]) as RelayEvent;
       expect(frame[0]).toBe('EVENT'); expect(frame).toHaveLength(2);
@@ -534,12 +538,26 @@ describe('NIP-46 NostrConnect restore E2E', () => {
       expect(requestEvent.tags).toEqual([['p', testSigner.pubkey]]);
       const request = JSON.parse(decrypt(requestEvent.content, getConversationKey(signerKey, requestEvent.pubkey))) as Nip46Request;
       expect(request.method).toBe('nip44_decrypt'); expect(request.params).toEqual([peer, ciphertext]);
+      const plaintext = 'Explicit remote reply';
+      const encrypted = await signer.nip46!.encryptNip44Guarded!(peer, plaintext, boundary);
+      expect(decrypt(encrypted, getConversationKey(peerKey, testSigner.pubkey))).toBe(plaintext);
+      const template = { kind: 13, content: encrypted, tags: [], created_at: Math.floor(Date.now() / 1000) };
+      const signed = await signer.nip46!.signEventGuarded!(template, boundary);
+      expect(verifyEvent(signed)).toBe(true);
+      expect(signed).toMatchObject({ ...template, pubkey: testSigner.pubkey });
+      expect(starts).toBe(3);
+      expect(frames).toHaveLength(3);
+      const methods = frames.map(data => {
+        const [, event] = JSON.parse(data) as RelayEvent;
+        const rpc = JSON.parse(decrypt(event.content, getConversationKey(signerKey, event.pubkey))) as Nip46Request;
+        return rpc.method;
+      });
+      expect(methods).toEqual(['nip44_decrypt', 'nip44_encrypt', 'sign_event']);
       live = false;
-      await expect(signer.nip46!.decryptNip44Guarded!(peer, ciphertext, {
-        websocketImplementation: SelectedSocket as unknown as typeof globalThis.WebSocket,
-        current: () => live, async start<T>(provider: () => Promise<T>) { if (!live) throw Error('Stale'); return provider(); },
-      })).rejects.toThrow('Stale');
-      expect(frames).toHaveLength(1);
+      await expect(signer.nip46!.decryptNip44Guarded!(peer, ciphertext, boundary)).rejects.toThrow('Stale');
+      await expect(signer.nip46!.encryptNip44Guarded!(peer, plaintext, boundary)).rejects.toThrow('Stale');
+      await expect(signer.nip46!.signEventGuarded!(template, boundary)).rejects.toThrow('Stale');
+      expect(frames).toHaveLength(3);
     } finally { await signer.close(); }
   });
 });

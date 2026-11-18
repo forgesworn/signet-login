@@ -1,31 +1,26 @@
-# Guarded NIP-46 decrypt request publication
-
-**Built and tested locally; unreleased.** A locked install on Node 24.15.0
-passed the compatibility dry run, TypeScript check, all 614 tests in 35 files,
-and the normal distribution build. The generated distribution is committed;
-the package version is unchanged. Candidate CI, normal release/consumer gates
-and actual KithMoot adoption remain required. No protected browser, external
-signer or physical-device acceptance is claimed.
+# Guarded NIP-46 request publication
 
 The existing `providerEffectBoundary === 1` gates a backend call. It explicitly
 does not guard NIP-46 transport-internal frames or retries. A client must not use
 that marker alone to enable remote decryption in a view whose revocation must
 prevent queued request publication.
 
-The optional `signer.nip46.decryptNip44Guarded(peer, ciphertext, boundary)` is a
-separate receive-only capability. `Nip46DecryptBoundary` extends the existing
-provider start/handoff contract with a synchronous `current()` check and a
-mandatory `websocketImplementation`. The embedding must supply the constructor
-for its selected, authorised route. There is no global/native clearnet fallback,
-no inferred authentication grant and no account-signing or message-encryption
-capability exposed by this method. Standard NIP-46 `nip44_decrypt` RPC events
-and the existing client key/identity are retained.
+Supporting signers expose three optional methods under `signer.nip46`.
 
-Only this decrypt request's EVENT publications use the new bounded carrier.
-Initial connection/login, the shared response subscription and its REQ/reconnect
-frames, other methods, management and existing NIP-04/NIP-44 calls remain on their
-existing path. This is not a whole-session or whole-mode network boundary.
-Requests already sent to a signer cannot be retracted.
+- `decryptNip44Guarded(peer, ciphertext, boundary)` issues `nip44_decrypt`.
+- `encryptNip44Guarded(peer, plaintext, boundary)` issues `nip44_encrypt`.
+- `signEventGuarded(template, boundary)` issues `sign_event`.
+
+`Nip46RequestBoundary` extends the provider start and handoff contract with
+a synchronous `current()` check and a mandatory `websocketImplementation`.
+Existing decrypt callers can keep using `Nip46DecryptBoundary`. The caller
+supplies the constructor for the authorised route. Each call uses the existing
+paired client key and the remote signer's normal approvals.
+
+The carrier covers the explicit request's EVENT publications. Initial login,
+the shared response subscription and its reconnect frames, and other calls
+use the existing connection. Requests already sent to a signer cannot be
+retracted.
 
 The new call snapshots its relay destinations, explicitly selected constructor
 and send callable. Its own sockets check both the originating permission and
@@ -44,7 +39,7 @@ response after the publisher has already received an ACK. The new path joins its
 owned publisher's bounded settlement before returning. It never closes the shared
 signer just because a receive pane closes.
 
-Live wrappers expose the method only for a supporting backend. A deferred signer
+Live wrappers expose the methods only for a supporting backend. A deferred signer
 checks its existing account/URI/client-key binding after connection and keeps that
 binding, the originating permission and selected transport in every later wire
 check. An unsupported or substituted upgrade fails; it never falls back to the
@@ -60,8 +55,3 @@ case decrypts actual NIP-44 through the explicit route and inspects the exact
 signed RPC. These cases passed in the local full-suite execution above.
 Synthetic lifecycle checks remain distinct from the real local WebSocket case;
 neither establishes independent external signer or supported-device acceptance.
-
-The frozen Vennel compatibility qualifiers, selected KithMoot source and all
-existing dispatch allowances remain unchanged. KithMoot still implements only
-NIP-07 for its new incoming account pane. SDK release, consumer pinning, actual
-remote-signer app composition and supported platforms remain required work.
