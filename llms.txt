@@ -14,6 +14,12 @@ bunker URIs, Android Amber (NIP-55), and an in-memory nsec/ncryptsec
 fallback, then returns a unified `SignetSigner` plus a signed kind-21236
 auth proof the server can verify.
 
+## ForgeSworn ecosystem
+
+- [ForgeSworn library guide](https://forgesworn.dev/llms.txt): Find related libraries, tools and integration guides by task and runtime.
+- [ForgeSworn on GitHub](https://github.com/forgesworn): Browse the organisation’s public repositories.
+- [Project source](https://github.com/forgesworn/signet-login): Canonical source repository, documentation and release information.
+
 ## Getting Started
 
 ```bash
