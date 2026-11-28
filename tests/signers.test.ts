@@ -586,6 +586,27 @@ describe('buildBunkerUriFromNostrConnectUri', () => {
     expect(() => buildBunkerUriFromNostrConnectUri(nostrConnectUri, 'not-hex')).toThrow(/invalid-signer-pubkey/);
   });
 
+  it('parses the invitation without relying on URL.hostname', () => {
+    // Chrome 124 leaves URL.hostname empty for nostrconnect:// URIs.
+    const hostname = vi.spyOn(URL.prototype, 'hostname', 'get').mockReturnValue('');
+    try {
+      const bunkerUri = buildBunkerUriFromNostrConnectUri(
+        `nostrconnect://${clientPubkey.toUpperCase()}/?relay=wss%3A%2F%2Frelay.example&secret=s`,
+        signerPubkey,
+      );
+      expect(bunkerUri).toMatch(/^bunker:\/\/b{64}\?relay=/);
+      expect(bunkerUri).toContain('secret=s');
+    } finally {
+      hostname.mockRestore();
+    }
+  });
+
+  it('rejects nostrconnect URIs whose authority is not a 64-character hex pubkey', () => {
+    expect(() =>
+      buildBunkerUriFromNostrConnectUri('nostrconnect://not-a-pubkey?relay=wss://relay.example&secret=s', signerPubkey),
+    ).toThrow(/invalid-nostrconnect-uri/);
+  });
+
   it('rejects nostrconnect URIs without relays', () => {
     expect(() =>
       buildBunkerUriFromNostrConnectUri(`nostrconnect://${clientPubkey}?secret=s`, signerPubkey),
