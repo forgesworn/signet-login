@@ -36,6 +36,8 @@ export type LoginPickerMethod =
   | 'local-signet'
   | 'remote-signet'
   | 'qr'
+  /** Android only: hand the sign-in request straight to Cambium (NIP-55). */
+  | 'cambium'
   | 'nostrconnect';
 
 /** Capability flags exposed by a signer. */
@@ -247,6 +249,16 @@ export interface LoginOptions {
    * Default: sign_event, nip44_encrypt, nip44_decrypt.
    */
   nostrConnectPerms?: string[];
+  /**
+   * Show a same-device Amber option on Android. It replaces the `nostrconnect`
+   * picker entry with an "Amber" entry that opens Amber through a NIP-46
+   * `nostrconnect://` intent, requests only the `sign_event:21236` login
+   * permission, and falls back to a QR code or URI under a disclosure. The
+   * generic `amber` entry stays as the NIP-55 "Android signer app". It takes
+   * effect only when `nostrconnect` is in `methods` and the browser is on
+   * Android; elsewhere it is ignored. Default: false.
+   */
+  amberNostrConnect?: boolean;
   /**
    * Receives detailed app-initiated NostrConnect progress events. Use this for
    * diagnostics, custom UI, and telemetry instead of scraping the built-in

@@ -147,6 +147,8 @@ export declare function createBunkerSignerFromNostrConnect(input: {
     abortSignal?: AbortSignal;
     timeoutMs?: number;
     onStatus?: NostrConnectStatusHandler;
+    /** The relay subscription is ready to receive a connection approval. */
+    onPairingReady?: () => void;
     /** Show a NIP-46 auth challenge page (`auth_url`); without it such requests fail with `nip46-auth-required`. */
     onauth?: (url: string) => void;
     /** Per-request response deadline; defaults to 15 seconds. */
@@ -188,6 +190,8 @@ export declare function isSupportedPairingUri(value: string): boolean;
 export declare function createBunkerSigner(input: {
     uri: string;
     clientSecretKey?: Uint8Array;
+    /** Aborting closes the half-open signer and rejects with `bunker-connect-aborted`. */
+    abortSignal?: AbortSignal;
     /**
      * Show a NIP-46 auth challenge page (`auth_url`). The request then waits up
      * to five minutes for the signer's real reply. Without it, a signer that

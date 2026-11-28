@@ -21,9 +21,10 @@ const QR_BUNKER_CONNECT_TIMEOUT_MS = 8000;
 // every platform — a stable order avoids the disorienting switch. The platform
 // only changes which option is highlighted (see renderPicker).
 const DEFAULT_PICKER_METHODS = ['nip07', 'amber', 'remote-signet', 'local-signet', 'bunker', 'nostrconnect', 'nsec'];
-const ALL_PICKER_METHODS = [...DEFAULT_PICKER_METHODS, 'redirect', 'qr'];
+const ALL_PICKER_METHODS = [...DEFAULT_PICKER_METHODS, 'redirect', 'qr', 'cambium'];
 const DEFAULT_ADVANCED_METHODS = ['bunker', 'nostrconnect', 'nsec'];
 const DEFAULT_NOSTR_CONNECT_PERMS = ['sign_event', 'nip44_encrypt', 'nip44_decrypt'];
+const LOGIN_EVENT_KIND = 21236;
 const LARGE_QR_SIZE_PX = 360;
 function escapeHtml(str) {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -57,18 +58,66 @@ function isDarkMode(theme) {
         return false;
     return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
+function androidLaunchFeedback(status, label, waiting) {
+    let timer;
+    const clear = () => {
+        if (timer !== undefined)
+            window.clearTimeout(timer);
+        timer = undefined;
+    };
+    const leftPage = () => {
+        if (timer === undefined || document.visibilityState !== 'hidden')
+            return;
+        clear();
+        status.textContent = waiting;
+    };
+    document.addEventListener('visibilitychange', leftPage);
+    return {
+        opening() {
+            clear();
+            status.textContent = `Opening ${label}…`;
+            timer = window.setTimeout(() => {
+                if (document.visibilityState === 'hidden') {
+                    leftPage();
+                    return;
+                }
+                status.textContent = `If ${label} didn’t open, check that it’s installed in this Android profile and try again.`;
+            }, 1800);
+        },
+        stop() {
+            clear();
+            document.removeEventListener('visibilitychange', leftPage);
+        },
+    };
+}
 function buildModalShell(theme) {
     const style = document.createElement('style');
-    style.textContent = '#signet-login-dialog::backdrop{background:rgba(0,0,0,0.7)}';
+    style.textContent = `
+    #signet-login-dialog::backdrop { background: rgba(0,0,0,0.7); }
+    #signet-login-dialog[open] { display: flex; flex-direction: column; }
+    #signet-login-dialog .signet-login-screen { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+    #signet-login-dialog [data-action="close"] { order: -1; align-self: flex-end; flex: none; }
+  `;
     document.head.appendChild(style);
     const dark = isDarkMode(theme);
     const bg = dark ? '#1a1a2e' : '#ffffff';
     const fg = dark ? '#e0e0e0' : '#1a1a2e';
     const dialog = document.createElement('dialog');
     dialog.id = 'signet-login-dialog';
-    dialog.style.cssText = `border:none;border-radius:16px;padding:32px;max-width:460px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);background:${bg};color:${fg};font-family:system-ui,-apple-system,sans-serif;`;
+    dialog.setAttribute('aria-label', 'Sign in');
+    dialog.style.cssText = `border:none;border-radius:16px;padding:32px;max-width:460px;max-height:calc(100dvh - 32px);overflow:hidden;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3);background:${bg};color:${fg};font-family:system-ui,-apple-system,sans-serif;box-sizing:border-box;`;
+    const screen = document.createElement('div');
+    screen.className = 'signet-login-screen';
+    dialog.appendChild(screen);
     document.body.appendChild(dialog);
     dialog.showModal();
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.dataset.action = 'close';
+    closeButton.setAttribute('aria-label', 'Close sign-in');
+    closeButton.textContent = '×';
+    closeButton.style.cssText = `${buttonStyle(dark)}width:auto;padding:8px 16px;`;
+    dialog.appendChild(closeButton);
     // Gamepad navigation. A booth/kiosk drives this modal with a gamepad, whose
     // host game dispatches *synthetic* Arrow / Enter / Escape KeyboardEvents on
     // `window` (isTrusted=false). Native <dialog> only moves focus with Tab, and
@@ -83,7 +132,7 @@ function buildModalShell(theme) {
         // A button inside a hidden row (the encrypted-key password reveal
         // before a ncryptsec is pasted) is not on screen either; its own
         // computed display does not say so.
-        if (b.closest('[hidden]'))
+        if (b.closest('[hidden],details:not([open])'))
             return false;
         const css = window.getComputedStyle(b);
         return css.display !== 'none' && css.visibility !== 'hidden';
@@ -102,7 +151,7 @@ function buildModalShell(theme) {
         if (btns.length === 0)
             return;
         selIndex = Math.min(Math.max(selIndex, 0), btns.length - 1);
-        btns[selIndex].focus();
+        btns[selIndex].focus({ preventScroll: true });
     };
     const keyNav = (e) => {
         if (!dialog.isConnected || !dialog.open)
@@ -144,7 +193,8 @@ function buildModalShell(theme) {
             e.stopImmediatePropagation();
             // Prefer Back (sub-screen → picker); fall back to Cancel.
             (dialog.querySelector('[data-action="back"]')
-                ?? dialog.querySelector('[data-action="cancel"],[data-choice="cancel"]'))?.click();
+                ?? dialog.querySelector('[data-action="cancel"],[data-choice="cancel"]')
+                ?? closeButton).click();
         }
     };
     // Capture phase: run BEFORE the host page's bubble-phase window keydown
@@ -158,10 +208,10 @@ function buildModalShell(theme) {
         selIndex = focused ? visibleButtons().indexOf(focused) : 0;
         showSel();
     });
-    mo.observe(dialog, { childList: true });
-    showSel();
+    mo.observe(screen, { childList: true });
     return {
         dialog,
+        screen,
         style,
         cleanupNav: () => { window.removeEventListener('keydown', keyNav, true); mo.disconnect(); },
     };
@@ -176,10 +226,10 @@ function tearDown(refs) {
     refs.style.remove();
 }
 function createFlowCancellation(refs, aborted) {
-    let cancelled = false;
+    const controller = new AbortController();
     let resolve;
     const promise = new Promise(yes => { resolve = yes; });
-    const cancel = () => { cancelled = true; resolve(null); };
+    const cancel = () => { controller.abort(); resolve(null); };
     const click = (event) => {
         const target = event.target;
         if (target instanceof Element && target.closest('[data-action="back"],[data-action="cancel"]'))
@@ -188,7 +238,7 @@ function createFlowCancellation(refs, aborted) {
     refs.dialog.addEventListener('click', click);
     refs.dialog.addEventListener('cancel', cancel);
     void aborted.then(cancel);
-    return { promise, get cancelled() { return cancelled; }, cleanup() {
+    return { promise, signal: controller.signal, get cancelled() { return controller.signal.aborted; }, cleanup() {
             refs.dialog.removeEventListener('click', click);
             refs.dialog.removeEventListener('cancel', cancel);
         } };
@@ -200,6 +250,32 @@ async function closeCancelledSigner(signer) {
     catch { /* Revocation cannot be waived. */ }
     const key = signer.clientSecretKey;
     key?.fill(0);
+}
+async function requestBunkerLoginProof(signer, opts, cancellation) {
+    try {
+        if (!cancellation.cancelled) {
+            const proof = await Promise.race([signer.signEvent({
+                    kind: LOGIN_EVENT_KIND,
+                    content: '',
+                    tags: [['challenge', opts.challenge], ['origin', opts.origin], ['app', opts.appName], ['alt', `Sign in to ${opts.appName}`]],
+                }), cancellation.promise]);
+            if (proof && !cancellation.cancelled)
+                return assertValidLoginAuthEvent(proof, {
+                    expectedChallenge: opts.challenge,
+                    expectedOrigin: opts.origin,
+                    expectedAppName: opts.appName,
+                    expectedPubkey: signer.pubkey,
+                });
+        }
+    }
+    catch (error) {
+        await closeCancelledSigner(signer);
+        if (cancellation.cancelled)
+            return null;
+        throw error;
+    }
+    await closeCancelledSigner(signer);
+    return null;
 }
 function createBackNavigationCancel() {
     let settled = false;
@@ -358,6 +434,7 @@ async function startCameraQrScanner(input) {
 const METHOD_META = {
     nip07: { icon: '🌐', title: 'Browser extension', hint: 'bark, Alby, nos2x' },
     amber: { icon: '🤖', title: 'Android signer app', hint: 'Cambium, Amber or any NIP-55 signer' },
+    cambium: { icon: '🔑', title: 'Cambium', hint: 'Open Cambium on this device' },
     'local-signet': { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },
     'remote-signet': { icon: '📱', title: 'Use your phone', hint: 'Scan with Signet' },
     redirect: { icon: '🪪', title: 'Use this device', hint: 'Open Signet here' },
@@ -371,9 +448,15 @@ const METHOD_META = {
  * remote-Signet option points at "another device" rather than "your phone",
  * since the phone is the device the user is already holding.
  */
-function resolveMethodMeta(method, mobile) {
+function resolveMethodMeta(method, opts) {
     const base = METHOD_META[method];
-    if (mobile && pickerMethodKey(method) === 'remote-signet') {
+    if (opts.amberNostrConnect && method === 'nostrconnect') {
+        return { ...base, title: 'Amber', hint: 'Open Amber on this device' };
+    }
+    if (opts.amberNostrConnect && method === 'amber') {
+        return { ...base, hint: 'Use any compatible signer on this device' };
+    }
+    if (opts.mobile && pickerMethodKey(method) === 'remote-signet') {
         return { ...base, title: 'Use another device' };
     }
     return base;
@@ -403,16 +486,16 @@ function routePickerChoice(choice) {
 function isMethodAvailable(method) {
     if (method === 'nip07')
         return hasNip07();
-    if (method === 'amber')
+    if (method === 'amber' || method === 'cambium')
         return isAndroid();
     return true;
 }
-function methodButtonHtml(method, dark, muted, primary, mobile) {
-    const meta = resolveMethodMeta(method, mobile);
+function methodButtonHtml(method, dark, muted, primary, opts) {
+    const meta = resolveMethodMeta(method, opts);
     const primaryAttr = primary ? ' data-primary="true"' : '';
     return `<button data-choice="${method}"${primaryAttr} style="${buttonStyle(dark, primary)}"><span style="font-size:1.2rem;">${meta.icon}</span><span><strong>${meta.title}</strong><br><span style="font-size:0.8rem;color:${primary ? 'rgba(255,255,255,0.8)' : muted};">${meta.hint}</span></span></button>`;
 }
-function renderPicker(refs, opts) {
+function renderPicker(refs, opts, aborted) {
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     const mobile = opts.mobile;
@@ -422,6 +505,8 @@ function renderPicker(refs, opts) {
         let advancedOpen = false;
         let availableMethods = opts.methods.filter(isMethodAvailable);
         const advancedSet = new Set(opts.advancedMethods.map(pickerMethodKey));
+        if (opts.amberNostrConnect)
+            advancedSet.delete('nostrconnect');
         // Highlight the platform-likely Signet option wherever it is shown; fall back
         // to the first method when neither Signet option is available in that group.
         const highlightKey = likelySignetKey(mobile);
@@ -447,11 +532,11 @@ function renderPicker(refs, opts) {
             advancedOpen || (advancedOpen = primaryMethods.length === 0);
             const showAdvanced = advancedOpen;
             const primaryHtml = primaryMethods
-                .map((method, index) => methodButtonHtml(method, dark, muted, primaryHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0, mobile))
+                .map((method, index) => methodButtonHtml(method, dark, muted, primaryHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0, opts))
                 .join('');
             const advancedHtml = showAdvanced
                 ? advancedMethods
-                    .map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && (advancedHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0), mobile))
+                    .map((method, index) => methodButtonHtml(method, dark, muted, primaryMethods.length === 0 && (advancedHasHighlight ? pickerMethodKey(method) === highlightKey : index === 0), opts))
                     .join('')
                 : '';
             const advancedToggle = advancedMethods.length > 0 && !showAdvanced
@@ -460,7 +545,7 @@ function renderPicker(refs, opts) {
             const empty = availableMethods.length === 0
                 ? `<p style="margin:0 0 12px;color:${muted};font-size:0.85rem;">No configured sign-in methods are available on this device.</p>`
                 : '';
-            refs.dialog.innerHTML = `
+            refs.screen.innerHTML = `
         <h2 style="margin:0 0 8px;font-size:1.3rem;">Sign in to ${escapeHtml(opts.appName)}</h2>
         <p style="margin:0 0 24px;color:${muted};font-size:0.9rem;">Choose how you want to sign in. Your keys never leave your control.</p>
         <div style="display:flex;flex-direction:column;">
@@ -496,6 +581,7 @@ function renderPicker(refs, opts) {
             refs.dialog.removeEventListener('cancel', cancel);
         };
         refs.dialog.addEventListener('cancel', cancel);
+        void aborted.then(cancel);
         if (opts.methods.includes('nip07')) {
             // NIP-07 has no standard provider-ready event. Check only while choosing;
             // detecting availability must never request a key or signature.
@@ -537,7 +623,7 @@ async function runNip07Flow(refs, opts, aborted) {
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     const fg = dark ? '#e0e0e0' : '#1a1a2e';
-    refs.dialog.innerHTML = `
+    refs.screen.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Waiting for your extension</h2>
     <p style="margin:0 0 20px;color:${muted};font-size:0.85rem;">Approve the sign-in prompt in bark, Alby, nos2x, Ditto, or whichever NIP-07 extension you use. Some extensions ask once to connect and again to sign the login proof.</p>
     <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin:0 0 24px;color:${fg};">
@@ -706,7 +792,7 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         params.append('relay', relay);
     params.append('sessionPubkey', sessionPubkey);
     const authUrl = `${opts.signetAppOrigin}/?${params.toString()}`;
-    refs.dialog.innerHTML = `
+    refs.screen.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">${sameDevice ? 'Open My Signet' : 'Sign in with Signet'}</h2>
     <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">${sameDevice ? 'Approve in My Signet and keep that tab open so it can sign for this app.' : 'Open the link on your phone, or scan the QR if rendered.'}</p>
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
@@ -895,11 +981,8 @@ async function runRedirectFlow(refs, opts, flowOpts = {}) {
         }
     });
 }
-async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
-    let cancelled = false;
-    void aborted.then(() => { cancelled = true; });
-    await Promise.resolve();
-    if (cancelled)
+async function buildSessionFromRedirectFlowResult(refs, result, opts, cancellation) {
+    if (cancellation.cancelled)
         return null;
     // Default: auth-only ephemeral signer (identity proof, no live signing).
     let signer = new EphemeralSigner(result.pubkey, result.authEvent);
@@ -912,7 +995,7 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
     // the relay handshake can finish.
     if (result.bunkerUri) {
         const clientSecretKey = await loadOrCreatePersistentClientSkFromStorage(opts.storage);
-        if (cancelled) {
+        if (cancellation.cancelled) {
             clientSecretKey.fill(0);
             return null;
         }
@@ -924,11 +1007,11 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
             const bunkerSigner = await createBunkerSigner({
                 uri: result.bunkerUri,
                 clientSecretKey,
+                abortSignal: cancellation.signal,
                 timeoutMs: QR_BUNKER_CONNECT_TIMEOUT_MS,
             });
-            if (cancelled) {
+            if (cancellation.cancelled) {
                 await closeCancelledSigner(bunkerSigner);
-                clientSecretKey.fill(0);
                 return null;
             }
             if (bunkerSigner.pubkey.toLowerCase() !== expected.toLowerCase()) {
@@ -947,7 +1030,7 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
         }
         catch (err) {
             clientSecretKey.fill(0);
-            if (cancelled)
+            if (cancellation.cancelled)
                 return null;
             // Bunker connect failed or timed out — signer offline, or a stale handoff
             // URI (the common cross-device failure: the producer re-handed a dead
@@ -974,6 +1057,7 @@ async function buildSessionFromRedirectFlowResult(refs, result, opts, aborted) {
 }
 // ── Paste bunker URI ──────────────────────────────────────────────────────────
 async function runBunkerFlow(refs, opts, aborted) {
+    const ac = new AbortController();
     let cancelled = false;
     void aborted.then(() => { cancelled = true; });
     const dark = isDarkMode(opts.theme);
@@ -983,7 +1067,7 @@ async function runBunkerFlow(refs, opts, aborted) {
     const scanButton = canUseCameraQrScanner()
         ? `<button data-action="scan" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Scan QR</button>`
         : '';
-    refs.dialog.innerHTML = `
+    refs.screen.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Paste bunker URI</h2>
     <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Connect to your NIP-46 bunker (Heartwood, nsecBunker, Amber, or any compatible signer).</p>
     <textarea id="signet-login-bunker-input" placeholder="bunker://..." rows="3" style="width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;resize:vertical;margin-bottom:12px;"></textarea>
@@ -1015,6 +1099,7 @@ async function runBunkerFlow(refs, opts, aborted) {
         let scanner = null;
         const cancel = () => {
             cancelled = true;
+            ac.abort();
             scanner?.stop();
             if (!active || !opts.storage?.required)
                 settle(null);
@@ -1094,7 +1179,7 @@ async function runBunkerFlow(refs, opts, aborted) {
                 return;
             }
             try {
-                const signer = await createBunkerSigner({ uri, clientSecretKey: sk,
+                const signer = await createBunkerSigner({ uri, clientSecretKey: sk, abortSignal: ac.signal,
                     ...(opts.storage?.required ? { timeoutMs: opts.timeout } : {}),
                     onauth: url => showAuthChallenge(status, url),
                 });
@@ -1159,6 +1244,8 @@ function nostrConnectStatusText(status) {
 async function runNostrConnectFlow(refs, opts, aborted) {
     let cancelled = false;
     void aborted.then(() => { cancelled = true; });
+    const openAmberFromChoice = opts.amberNostrConnect && !opts.preferredMethod
+        && navigator.userActivation?.isActive === true;
     const dark = isDarkMode(opts.theme);
     const muted = dark ? '#888' : '#666';
     // Persistent client key so the advertised client pubkey is stable across
@@ -1175,19 +1262,36 @@ async function runNostrConnectFlow(refs, opts, aborted) {
         clientPubkeyHex: clientPubkey,
         relayUrls: opts.relayUrls,
         secret,
-        perms: opts.nostrConnectPerms,
+        // Amber ignores unqualified sign_event requests. Request only the login
+        // permission so Amber can ask for approval on other operations as needed.
+        perms: opts.amberNostrConnect ? [`sign_event:${LOGIN_EVENT_KIND}`] : opts.nostrConnectPerms,
         appName: opts.appName,
         appUrl: opts.origin,
     });
-    refs.dialog.innerHTML = `
-    <h2 style="margin:0 0 8px;font-size:1.2rem;">Connect a Nostr signer</h2>
-    <p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan this with your signer (nsec.app, Amber, Keychat...), or copy/paste the URI below. The connection happens over your configured relay${opts.relayUrls.length > 1 ? 's' : ''}.</p>
+    const relayLabel = opts.relayUrls.length > 1 ? 'relays' : 'relay';
+    const amberIntent = opts.amberNostrConnect
+        ? `${uri.replace(/^nostrconnect:/, 'intent:')}#Intent;scheme=nostrconnect;package=com.greenart7c3.nostrsigner;B.closeApplication=false;end`
+        : null;
+    const instructions = amberIntent
+        ? `<p id="signet-login-amber-instructions" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">To approve sign-in when you connect, choose <strong>Manually approve each permission</strong> in Amber and allow event kind ${LOGIN_EVENT_KIND}.</p>`
+        : `<p style="margin:0 0 16px;color:${muted};font-size:0.85rem;">Scan this with your signer (nsec.app, Amber, Keychat...), or copy/paste the URI below. The connection happens over your configured ${relayLabel}.</p>`;
+    const pairing = `
     <div style="background:${dark ? '#0f0f1f' : '#f5f5f8'};border-radius:8px;padding:16px;margin-bottom:16px;">
       <canvas id="signet-login-nc-qr" width="${LARGE_QR_SIZE_PX}" height="${LARGE_QR_SIZE_PX}" style="display:block;width:${LARGE_QR_SIZE_PX}px;height:auto;max-width:100%;margin:0 auto 12px;background:#ffffff;border-radius:6px;box-sizing:border-box;"></canvas>
       <textarea id="signet-login-nc-uri" readonly rows="4" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="NostrConnect URI" style="width:100%;background:${dark ? '#050510' : '#ffffff'};color:${dark ? '#e7e7f0' : '#141427'};border:1px solid ${dark ? '#34344d' : '#d8dae3'};border-radius:6px;padding:8px;font-size:0.7rem;line-height:1.35;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;box-sizing:border-box;resize:vertical;margin:0 0 10px;overflow-wrap:anywhere;">${escapeHtml(uri)}</textarea>
       <button data-action="copy" style="${buttonStyle(dark)}width:auto;font-size:0.75rem;padding:6px 10px;margin:0 auto;display:block;">Copy URI</button>
     </div>
-    <p id="signet-login-nc-status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">Waiting for signer to connect…</p>
+  `;
+    const waiting = `<p id="signet-login-nc-status" role="status" style="margin:0 0 12px;color:${muted};font-size:0.85rem;">${amberIntent ? 'Preparing the connection to Amber…' : 'Waiting for signer to connect…'}</p>`;
+    refs.screen.innerHTML = `
+    <h2 style="margin:0 0 8px;font-size:1.2rem;">${amberIntent ? 'Connect Amber' : 'Connect a Nostr signer'}</h2>
+    ${instructions}
+    ${amberIntent
+        ? `<div id="signet-login-amber-pairing">
+          <a data-action="open-amber" aria-disabled="true" href="${escapeHtml(amberIntent)}" style="${buttonStyle(dark, true)}box-sizing:border-box;justify-content:center;text-align:center;">Open Amber</a>
+          <details style="margin:0 0 12px;"><summary style="cursor:pointer;">Pair with a QR code or URI</summary>${pairing}</details>
+        </div>${waiting}`
+        : `${pairing}${waiting}`}
     <div style="display:flex;gap:8px;justify-content:space-between;">
       <button data-action="back" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">← Back</button>
       <button data-action="cancel" style="${buttonStyle(dark)}width:auto;flex:0 0 auto;padding:8px 16px;">Cancel</button>
@@ -1203,6 +1307,19 @@ async function runNostrConnectFlow(refs, opts, aborted) {
             keepQrCanvasResponsive(qrCanvas);
     }
     const status = refs.dialog.querySelector('#signet-login-nc-status');
+    const heading = refs.screen.querySelector('h2');
+    const amberInstructions = refs.screen.querySelector('#signet-login-amber-instructions');
+    const amberPairing = refs.screen.querySelector('#signet-login-amber-pairing');
+    const openAmber = amberPairing?.querySelector('[data-action="open-amber"]');
+    const launch = openAmber && status ? androidLaunchFeedback(status, 'Amber', 'Waiting for you to connect in Amber…') : null;
+    let amberReady = false;
+    openAmber?.addEventListener('click', event => {
+        if (!amberReady) {
+            event.preventDefault();
+            return;
+        }
+        launch?.opening();
+    });
     const uriText = refs.dialog.querySelector('#signet-login-nc-uri');
     const selectUriText = () => {
         if (!uriText)
@@ -1251,6 +1368,7 @@ async function runNostrConnectFlow(refs, opts, aborted) {
             resolve(v);
         };
         const cancel = () => {
+            launch?.stop();
             cancelled = true;
             ac.abort();
             if (!active && !settled) {
@@ -1264,7 +1382,27 @@ async function runNostrConnectFlow(refs, opts, aborted) {
         refs.dialog.querySelector('[data-action="back"]')?.addEventListener('click', cancel);
         refs.dialog.querySelector('[data-action="cancel"]')?.addEventListener('click', cancel);
         const handleStatus = (event) => {
-            const text = nostrConnectStatusText(event);
+            if (cancelled)
+                return;
+            let text = nostrConnectStatusText(event);
+            if (amberInstructions && heading) {
+                if (event.type === 'relay-connected')
+                    text = null;
+                if (event.type === 'request-sent' && event.method === 'get_public_key') {
+                    launch?.stop();
+                    amberPairing?.remove();
+                    amberInstructions.textContent = 'Amber accepted the connection.';
+                    text = 'Preparing the sign-in request…';
+                }
+                if (event.type === 'request-sent' && event.method === 'sign_event') {
+                    heading.textContent = 'Approve sign-in in Amber';
+                    amberInstructions.textContent = 'Open Amber from your home screen and approve the sign-in under Incoming requests, or tap Amber’s notification.';
+                    text = 'Waiting for Amber to sign…';
+                }
+                // Relay migration is optional. Keep the login step visible while it runs.
+                if (event.method === 'switch_relays')
+                    text = null;
+            }
             if (status && text) {
                 status.textContent = text;
                 status.style.color = event.type === 'error' || event.type === 'timeout' ? '#d04848' : muted;
@@ -1276,7 +1414,20 @@ async function runNostrConnectFlow(refs, opts, aborted) {
             clientSecretKey: sk,
             abortSignal: ac.signal,
             timeoutMs: opts.timeout,
+            ...(amberIntent ? { requestTimeoutMs: opts.timeout } : {}),
             onStatus: handleStatus,
+            onPairingReady: () => {
+                if (!openAmber || amberReady || cancelled)
+                    return;
+                amberReady = true;
+                openAmber.removeAttribute('aria-disabled');
+                // The picker click may still authorise an Android intent after the
+                // relay subscribes. Keep the link available if that gesture expires.
+                if (openAmberFromChoice && navigator.userActivation?.isActive && document.visibilityState === 'visible')
+                    openAmber.click();
+                else if (status)
+                    status.textContent = 'Tap Open Amber to continue.';
+            },
             onauth: url => showAuthChallenge(status, url),
         })
             .then(async (signer) => {
@@ -1290,6 +1441,7 @@ async function runNostrConnectFlow(refs, opts, aborted) {
                 settle(signer);
         })
             .catch(err => {
+            launch?.stop();
             active = false;
             sk.fill(0);
             if (cancelled) {
@@ -1313,7 +1465,7 @@ async function runNsecFlow(refs, opts) {
     const inputBg = dark ? '#0f0f1f' : '#f5f5f8';
     const inputFg = dark ? '#e0e0e0' : '#1a1a2e';
     const fieldStyle = `width:100%;background:${inputBg};color:${inputFg};border:1px solid ${dark ? '#3a3a4e' : '#d0d0d0'};border-radius:8px;padding:10px;font-size:0.85rem;font-family:ui-monospace,monospace;box-sizing:border-box;margin-bottom:12px;`;
-    refs.dialog.innerHTML = `
+    refs.screen.innerHTML = `
     <h2 style="margin:0 0 8px;font-size:1.2rem;">Paste private key</h2>
     <p style="margin:0 0 12px;color:#d04848;font-size:0.85rem;font-weight:600;">⚠️ Last-resort method — only paste keys you can afford to lose.</p>
     <p style="margin:0 0 16px;color:${muted};font-size:0.8rem;line-height:1.4;">Held in memory for this session only. Cleared on page reload. Prefer a browser extension or bunker URI for any key with real value. A password-protected key (<code>ncryptsec1…</code>) is decrypted here in your browser and the password is not kept.</p>
@@ -1488,6 +1640,7 @@ function resolveOptions(opts) {
         relayUrl,
         relayUrls,
         nostrConnectPerms: opts.nostrConnectPerms ?? DEFAULT_NOSTR_CONNECT_PERMS,
+        amberNostrConnect: opts.amberNostrConnect === true && methodConfig.methods.includes('nostrconnect') && isAndroid(),
         theme: opts.theme ?? DEFAULTS.theme,
         timeout,
         signetAppOrigin: opts.signetAppOrigin ?? DEFAULTS.signetAppOrigin,
@@ -1535,27 +1688,28 @@ async function runLoginModal(opts) {
     // the caller's UI is left stuck behind a dead modal. Racing every
     // flow await against this lets the modal exit cleanly.
     let userAborted = false;
-    let abort;
+    let resolveAbort;
     const aborted = new Promise((resolve) => {
-        abort = resolve;
-        refs.dialog.addEventListener('cancel', event => { event.preventDefault(); userAborted = true; resolve(null); });
+        resolveAbort = resolve;
     });
+    const abort = () => { userAborted = true; resolveAbort(null); };
+    const nativeCancel = (event) => { event.preventDefault(); abort(); };
+    refs.dialog.addEventListener('cancel', nativeCancel);
+    refs.dialog.addEventListener('close', abort);
     // Cancel ends the whole login; Back alone returns to the picker. Captured
     // before the screen's own click handlers, which still run and clean up
     // their work, while every flow await settles through `aborted`.
     const cancelClick = (event) => {
         const target = event.target;
-        if (target instanceof Element && target.closest('[data-action="cancel"],[data-choice="cancel"]')) {
-            userAborted = true;
-            abort(null);
-        }
+        if (target instanceof Element && target.closest('[data-action="close"],[data-action="cancel"],[data-choice="cancel"]'))
+            abort();
     };
     refs.dialog.addEventListener('click', cancelClick, true);
     try {
         while (true) {
             const choice = resolved.preferredMethod
                 ? resolved.preferredMethod
-                : await Promise.race([renderPicker(refs, resolved), aborted]);
+                : await renderPicker(refs, resolved, aborted);
             const routeChoice = choice === null ? null : routePickerChoice(choice);
             if (resolved.storage?.required && routeChoice === 'nsec')
                 throw new Error('required-storage-nsec-is-memory-only');
@@ -1598,7 +1752,7 @@ async function runLoginModal(opts) {
                             return null;
                         continue;
                     }
-                    const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation.promise);
+                    const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation);
                     if (cancellation.cancelled && session) {
                         await closeCancelledSigner(session.signer);
                         return null;
@@ -1612,18 +1766,49 @@ async function runLoginModal(opts) {
                     }
                     return session;
                 }
-                if (routeChoice === 'amber') {
-                    // Same-tab navigation to a `nostrsigner:` URL. Android dispatches
-                    // it to Amber; the page comes back via callbackUrl with the signed
-                    // event in `?event=`. Picked up on next boot by handleRedirectCallback.
-                    await startAmberSignIn({
-                        appName: resolved.appName,
-                        challenge: resolved.challenge,
-                        origin: resolved.origin,
-                        ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
-                        ...(resolved.storage !== undefined ? { storage: resolved.storage } : {}),
+                if (routeChoice === 'amber' || routeChoice === 'cambium') {
+                    const dark = isDarkMode(resolved.theme);
+                    const cambium = routeChoice === 'cambium';
+                    const signerLabel = cambium ? 'Cambium' : 'your Android signer';
+                    refs.screen.innerHTML = `
+            <h2 style="margin:0 0 8px;font-size:1.2rem;">Approve in ${signerLabel}</h2>
+            <p data-android-signer-status role="status">Preparing the sign-in request…</p>
+            <a data-action="open-android-signer" aria-disabled="true" style="${buttonStyle(dark, true)}box-sizing:border-box;justify-content:center;text-align:center;">${cambium ? 'Open Cambium' : 'Open signer app'}</a>
+            <div style="display:flex;gap:8px;justify-content:space-between;">
+              <button data-action="back" style="${buttonStyle(dark)}width:auto;padding:8px 16px;">← Back</button>
+              <button data-action="cancel" style="${buttonStyle(dark)}width:auto;padding:8px 16px;">Cancel</button>
+            </div>
+          `;
+                    const status = refs.screen.querySelector('[data-android-signer-status]');
+                    const openSigner = refs.screen.querySelector('[data-action="open-android-signer"]');
+                    const launch = androidLaunchFeedback(status, signerLabel, `Waiting for approval in ${signerLabel}…`);
+                    openSigner.addEventListener('click', () => {
+                        if (openSigner.hasAttribute('href'))
+                            launch.opening();
                     });
-                    return null; // unreachable
+                    try {
+                        await startAmberSignIn({
+                            appName: resolved.appName,
+                            challenge: resolved.challenge,
+                            origin: resolved.origin,
+                            ...(resolved.redirectCallback !== undefined ? { redirectCallback: resolved.redirectCallback } : {}),
+                            ...(resolved.storage !== undefined ? { storage: resolved.storage } : {}),
+                        }, cancellation, url => {
+                            const request = cambium
+                                ? url.replace(/^nostrsigner:/, 'intent:') + '#Intent;scheme=nostrsigner;package=dev.forgesworn.cambium;end'
+                                : url;
+                            openSigner.href = request;
+                            openSigner.removeAttribute('aria-disabled');
+                            launch.opening();
+                            window.location.href = request;
+                        });
+                    }
+                    finally {
+                        launch.stop();
+                    }
+                    if (userAborted || resolved.preferredMethod)
+                        return null;
+                    continue;
                 }
                 if (routeChoice === 'qr') {
                     const result = await runRedirectFlow(refs, resolved, { cancelled: cancellation.promise });
@@ -1634,7 +1819,7 @@ async function runLoginModal(opts) {
                             return null;
                         continue;
                     }
-                    const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation.promise);
+                    const session = await buildSessionFromRedirectFlowResult(refs, result, resolved, cancellation);
                     if (cancellation.cancelled && session) {
                         await closeCancelledSigner(session.signer);
                         return null;
@@ -1648,97 +1833,36 @@ async function runLoginModal(opts) {
                     }
                     return session;
                 }
-                if (routeChoice === 'bunker') {
-                    const signer = await runBunkerFlow(refs, resolved, cancellation.promise);
-                    if (cancellation.cancelled && signer) {
-                        await closeCancelledSigner(signer);
-                        return null;
-                    }
-                    if (userAborted)
-                        return null;
+                if (routeChoice === 'bunker' || routeChoice === 'nostrconnect') {
+                    const signer = routeChoice === 'bunker'
+                        ? await runBunkerFlow(refs, resolved, cancellation.promise)
+                        : await runNostrConnectFlow(refs, resolved, cancellation.promise);
                     if (!signer) {
-                        if (resolved.preferredMethod)
-                            return null;
-                        continue;
-                    }
-                    // Sign a kind-21236 auth event so we have a uniform proof shape
-                    let authEvent;
-                    try {
-                        authEvent = assertValidLoginAuthEvent(await signer.signEvent({
-                            kind: 21236,
-                            content: '',
-                            tags: [
-                                ['challenge', resolved.challenge],
-                                ['origin', resolved.origin],
-                                ['app', resolved.appName],
-                            ],
-                        }), {
-                            expectedChallenge: resolved.challenge,
-                            expectedOrigin: resolved.origin,
-                            expectedAppName: resolved.appName,
-                            expectedPubkey: signer.pubkey,
-                        });
-                    }
-                    catch (error) {
-                        await closeCancelledSigner(signer);
-                        if (cancellation.cancelled)
-                            return null;
-                        throw error;
-                    }
-                    if (cancellation.cancelled) {
-                        await closeCancelledSigner(signer);
-                        return null;
-                    }
-                    return {
-                        pubkey: signer.pubkey,
-                        method: 'bunker',
-                        signer,
-                        authEvent,
-                    };
-                }
-                if (routeChoice === 'nostrconnect') {
-                    const signer = await runNostrConnectFlow(refs, resolved, cancellation.promise);
-                    if (cancellation.cancelled && signer) {
-                        await closeCancelledSigner(signer);
-                        return null;
-                    }
-                    if (userAborted)
-                        return null;
-                    if (!signer) {
-                        if (resolved.preferredMethod)
+                        if (userAborted || resolved.preferredMethod)
                             return null;
                         continue;
                     }
                     let authEvent;
                     try {
-                        authEvent = assertValidLoginAuthEvent(await signer.signEvent({
-                            kind: 21236,
-                            content: '',
-                            tags: [
-                                ['challenge', resolved.challenge],
-                                ['origin', resolved.origin],
-                                ['app', resolved.appName],
-                            ],
-                        }), {
-                            expectedChallenge: resolved.challenge,
-                            expectedOrigin: resolved.origin,
-                            expectedAppName: resolved.appName,
-                            expectedPubkey: signer.pubkey,
-                        });
+                        authEvent = await requestBunkerLoginProof(signer, resolved, cancellation);
                     }
                     catch (error) {
-                        await closeCancelledSigner(signer);
-                        if (cancellation.cancelled)
-                            return null;
-                        throw error;
+                        if (routeChoice !== 'nostrconnect' || !resolved.amberNostrConnect)
+                            throw error;
+                        const status = refs.screen.querySelector('#signet-login-nc-status');
+                        if (status) {
+                            status.textContent = error instanceof Error && error.message === 'nip46-sign_event-timeout'
+                                ? 'Amber did not answer in time. Close and reopen sign-in to start a fresh request.'
+                                : 'Amber did not complete this sign-in. Go back to try again or choose another signer.';
+                            status.style.color = '#d04848';
+                        }
+                        await cancellation.promise;
+                        authEvent = null;
                     }
-                    // Surfaces as 'bunker' since the session shape is identical to a
-                    // bunker URI session — same signer, same persistence path, same
-                    // capabilities. The picker choice routed us here; from this point
-                    // on the rest of the SDK doesn't care about the initiation direction.
-                    if (cancellation.cancelled) {
-                        await closeCancelledSigner(signer);
-                        return null;
+                    if (!authEvent) {
+                        if (userAborted || resolved.preferredMethod)
+                            return null;
+                        continue;
                     }
                     return {
                         pubkey: signer.pubkey,
@@ -1802,6 +1926,8 @@ async function runLoginModal(opts) {
         }
     }
     finally {
+        refs.dialog.removeEventListener('cancel', nativeCancel);
+        refs.dialog.removeEventListener('close', abort);
         refs.dialog.removeEventListener('click', cancelClick, true);
         tearDown(refs);
     }
