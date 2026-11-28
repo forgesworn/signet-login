@@ -65,6 +65,7 @@ A CDN IIFE build is also available; see the README's Install section.
 ## Optional
 
 - Full API and options reference: README.md
+- Android: `amberNostrConnect: true` shows a same-device Amber option over NIP-46 (live signer, default off); `'cambium'` in `methods` targets Cambium directly via NIP-55
 - Amber/NIP-55 policy: https://github.com/forgesworn/signet-login/blob/main/docs/amber-policy.md
 - Release process: https://github.com/forgesworn/signet-login/blob/main/docs/release-app.md
 - Changelog: https://github.com/forgesworn/signet-login/blob/main/CHANGELOG.md
