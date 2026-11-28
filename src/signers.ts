@@ -513,24 +513,25 @@ function retryableNip46PublishFailure(error: unknown): boolean {
     || error === 'connection failure: connection failed';
 }
 
+function parseNostrConnectUri(uri: string): { pubkey: string; params: URLSearchParams } {
+  // Chrome 124 leaves URL.hostname empty for nostrconnect:// URIs.
+  const match = /^nostrconnect:\/\/([0-9a-f]{64})\/?(?:\?([^#]*))?$/i.exec(uri.trim());
+  if (!match) throw new Error('invalid-nostrconnect-uri');
+  return { pubkey: match[1].toLowerCase(), params: new URLSearchParams(match[2]) };
+}
+
 function parseNostrConnectUriForClient(uri: string, clientPubkey: string): {
   relays: string[];
   secret: string;
 } {
-  let parsed: URL;
-  try {
-    parsed = new URL(uri);
-  } catch {
-    throw new Error('invalid-nostrconnect-uri');
-  }
-  if (parsed.protocol !== 'nostrconnect:') throw new Error('invalid-nostrconnect-uri');
-  if (parsed.hostname.toLowerCase() !== clientPubkey.toLowerCase()) throw new Error('nostrconnect-client-pubkey-mismatch');
-  const relays = parsed.searchParams.getAll('relay').map(relay => relay.trim()).filter(Boolean);
+  const { pubkey, params } = parseNostrConnectUri(uri);
+  if (pubkey !== clientPubkey.toLowerCase()) throw new Error('nostrconnect-client-pubkey-mismatch');
+  const relays = params.getAll('relay').map(relay => relay.trim()).filter(Boolean);
   if (relays.length === 0) throw new Error('relay-url-required');
   for (const relayUrl of relays) {
     if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
   }
-  const secret = parsed.searchParams.get('secret');
+  const secret = params.get('secret');
   if (!secret) throw new Error('nostrconnect-secret-required');
   return {
     relays: Array.from(new Set(relays)),
@@ -544,6 +545,7 @@ async function waitForNostrConnectApproval(input: {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   onStatus?: NostrConnectStatusHandler;
+  onPairingReady?: () => void;
 }): Promise<{ signerPubkey: string; relays: string[]; secret: string }> {
   const clientPubkey = getPublicKey(input.clientSecretKey);
   const { relays, secret } = parseNostrConnectUriForClient(input.uri, clientPubkey);
@@ -623,6 +625,13 @@ async function waitForNostrConnectApproval(input: {
       {
         maxWait: NIP46_REQUEST_TIMEOUT_MS,
         abort: input.abortSignal,
+        oneose() {
+          // The pool also reports end-of-stored-events on close. Check after
+          // its close handler so a failed subscription cannot launch a signer.
+          queueMicrotask(() => {
+            if (!settled && [...pool.listConnectionStatus().values()].some(Boolean)) input.onPairingReady?.();
+          });
+        },
         onevent(event) {
           const signerPubkey = /^[0-9a-f]{64}$/i.test(event.pubkey) ? event.pubkey.toLowerCase() : undefined;
           if (signerPubkey) {
@@ -1067,6 +1076,8 @@ export async function createBunkerSignerFromNostrConnect(input: {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   onStatus?: NostrConnectStatusHandler;
+  /** The relay subscription is ready to receive a connection approval. */
+  onPairingReady?: () => void;
   /** Show a NIP-46 auth challenge page (`auth_url`); without it such requests fail with `nip46-auth-required`. */
   onauth?: (url: string) => void;
   /** Per-request response deadline; defaults to 15 seconds. */
@@ -1081,6 +1092,7 @@ export async function createBunkerSignerFromNostrConnect(input: {
     abortSignal,
     timeoutMs,
     onStatus,
+    onPairingReady: input.onPairingReady,
   });
   if (!/^[0-9a-f]{64}$/i.test(signerPubkey)) throw new Error('invalid-pubkey-from-bunker');
 
@@ -1090,14 +1102,7 @@ export async function createBunkerSignerFromNostrConnect(input: {
     relays,
     secret,
   }, onStatus, input.requestTimeoutMs, undefined, input.onauth);
-  let pubkey: string;
-  try {
-    pubkey = await bunker.getPublicKey();
-    await bestEffortSwitchRelays(bunker);
-  } catch (err) {
-    await bunker.close().catch(() => {});
-    throw err;
-  }
+  const pubkey = await finishBunkerHandshake(bunker, () => bunker.getPublicKey(), abortSignal);
   return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, normalizedBunkerUri, clientSecretKey);
 }
 
@@ -1144,21 +1149,14 @@ export function buildNostrConnectUri(input: {
  */
 export function buildBunkerUriFromNostrConnectUri(nostrConnectUri: string, signerPubkeyHex: string): string {
   if (!/^[0-9a-f]{64}$/i.test(signerPubkeyHex)) throw new Error('invalid-signer-pubkey');
-  let parsed: URL;
-  try {
-    parsed = new URL(nostrConnectUri);
-  } catch {
-    throw new Error('invalid-nostrconnect-uri');
-  }
-  if (parsed.protocol !== 'nostrconnect:') throw new Error('invalid-nostrconnect-uri');
-
-  const relays = parsed.searchParams.getAll('relay').map(relay => relay.trim()).filter(Boolean);
+  const { params: invitation } = parseNostrConnectUri(nostrConnectUri);
+  const relays = invitation.getAll('relay').map(relay => relay.trim()).filter(Boolean);
   if (relays.length === 0) throw new Error('relay-url-required');
   for (const relayUrl of relays) {
     if (!/^wss?:\/\//.test(relayUrl)) throw new Error('invalid-relay-url');
   }
 
-  const secret = parsed.searchParams.get('secret');
+  const secret = invitation.get('secret');
   const params = new URLSearchParams();
   for (const relayUrl of relays) params.append('relay', relayUrl);
   if (secret) params.set('secret', secret);
@@ -1183,22 +1181,17 @@ export function isSupportedPairingUri(value: string): boolean {
  * settles when a matching response arrives on the subscription. If the remote
  * signer never replies (relay unreachable, or the bunker server is already gone
  * — e.g. signet-app's in-page NIP-46 server after a same-tab redirect navigated
- * it away), `connect()`/`getPublicKey()` hang forever. On timeout we close the
- * half-open signer (releasing its relay subscription) and reject so the caller
- * can fall back. `Promise.race` keeps a rejection handler attached to `p`, so a
- * late rejection from the abandoned handshake won't surface as unhandled.
+ * it away), `connect()`/`getPublicKey()` may take longer than the caller can
+ * wait. On timeout `finishBunkerHandshake` closes the half-open signer and
+ * releases its relay subscription before the caller falls back.
  */
 async function raceBunkerHandshake<T>(
   p: Promise<T>,
   ms: number,
-  bunker: { close: () => Promise<void> },
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      void bunker.close().catch(() => {});
-      reject(new Error('bunker-connect-timeout'));
-    }, ms);
+    timer = setTimeout(() => reject(new Error('bunker-connect-timeout')), ms);
   });
   try {
     return await Promise.race([p, timeout]);
@@ -1226,6 +1219,28 @@ async function bestEffortSwitchRelays(
   }
 }
 
+async function finishBunkerHandshake(
+  bunker: RobustBunkerClient,
+  handshake: () => Promise<string>,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  const abort = (): void => { void bunker.close().catch(() => {}); };
+  try {
+    if (abortSignal?.aborted) throw new Error('bunker-connect-aborted');
+    abortSignal?.addEventListener('abort', abort, { once: true });
+    const pubkey = await handshake();
+    if (!/^[0-9a-f]{64}$/i.test(pubkey)) throw new Error('invalid-pubkey-from-bunker');
+    await bestEffortSwitchRelays(bunker);
+    if (abortSignal?.aborted) throw new Error('bunker-connect-aborted');
+    return pubkey;
+  } catch (error) {
+    await bunker.close().catch(() => {});
+    throw error;
+  } finally {
+    abortSignal?.removeEventListener('abort', abort);
+  }
+}
+
 /**
  * Connect a bunker session from a `bunker://` URI or NIP-05 identifier. Pass
  * `clientSecretKey` to bind a stable client pubkey the signer can auto-approve
@@ -1236,6 +1251,8 @@ async function bestEffortSwitchRelays(
 export async function createBunkerSigner(input: {
   uri: string;
   clientSecretKey?: Uint8Array;
+  /** Aborting closes the half-open signer and rejects with `bunker-connect-aborted`. */
+  abortSignal?: AbortSignal;
   /**
    * Show a NIP-46 auth challenge page (`auth_url`). The request then waits up
    * to five minutes for the signer's real reply. Without it, a signer that
@@ -1269,24 +1286,15 @@ export async function createBunkerSigner(input: {
   if (sk.length !== 32) throw new Error('invalid-client-secret-key');
 
   const bunker = new RobustBunkerClient(sk, pointer, input.onStatus, input.requestTimeoutMs, { name: input.appName, url: input.appUrl }, input.onauth);
-  const handshake = (async (): Promise<string> => {
-    await bunker.connect();
-    return bunker.getPublicKey();
-  })();
-  let pubkey: string;
-  try {
-    pubkey = input.timeoutMs && input.timeoutMs > 0
-      ? await raceBunkerHandshake(handshake, input.timeoutMs, bunker)
-      : await handshake;
-  } catch (err) {
-    await bunker.close().catch(() => {});
-    throw err;
-  }
-  if (!/^[0-9a-f]{64}$/i.test(pubkey)) {
-    await bunker.close().catch(() => {});
-    throw new Error('invalid-pubkey-from-bunker');
-  }
-  await bestEffortSwitchRelays(bunker);
+  const pubkey = await finishBunkerHandshake(bunker, () => {
+    const handshake = (async (): Promise<string> => {
+      await bunker.connect();
+      return bunker.getPublicKey();
+    })();
+    return input.timeoutMs && input.timeoutMs > 0
+      ? raceBunkerHandshake(handshake, input.timeoutMs)
+      : handshake;
+  }, input.abortSignal);
 
   return new BunkerSignerImpl(pubkey.toLowerCase(), bunker, trimmed, sk);
 }

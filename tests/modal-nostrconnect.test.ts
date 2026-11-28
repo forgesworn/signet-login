@@ -94,12 +94,14 @@ describe('NostrConnect modal flow', () => {
       theme: 'dark',
       persist: false,
       preferredMethod: 'nostrconnect',
+      amberNostrConnect: true,
       relayUrl: 'wss://relay.example.com',
       relayUrls: ['wss://relay.primal.net', 'wss://relay.example.com'],
     });
 
     const qr = await waitForElement<HTMLCanvasElement>('#signet-login-nc-qr');
     await settleMicrotasks();
+    expect(document.querySelector('[data-action="open-amber"]')).toBeNull();
     expect(qr.width).toBe(360);
     expect(qr.height).toBe(360);
     expect(qr.style.width).toBe('360px');
@@ -139,6 +141,67 @@ describe('NostrConnect modal flow', () => {
 
     document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
     await expect(pending).resolves.toBeNull();
+  });
+
+  it('offers a direct Amber pairing on Android alongside the NIP-55 signer', async () => {
+    const agent = vi.spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Linux; Android 17) Mobile Chrome/157.0.0.0');
+    try {
+      const pending = login({
+        appName: 'Canary',
+        theme: 'light',
+        persist: false,
+        methods: ['amber', 'nostrconnect', 'bunker'],
+        advancedMethods: ['nostrconnect', 'bunker'],
+        amberNostrConnect: true,
+        relayUrl: 'wss://relay.example.com',
+      });
+      const amber = await waitForElement<HTMLButtonElement>('[data-choice="nostrconnect"]');
+      expect(amber.querySelector('strong')?.textContent).toBe('Amber');
+      expect(document.querySelector('[data-choice="amber"]')?.textContent).toContain('Android signer app');
+      expect(document.querySelector('[data-choice="bunker"]')).toBeNull();
+
+      amber.click();
+      const link = await waitForElement<HTMLAnchorElement>('[data-action="open-amber"]');
+      const uri = (await waitForElement<HTMLTextAreaElement>('#signet-login-nc-uri')).value;
+      expect(link.getAttribute('href')).toBe(
+        `${uri.replace('nostrconnect:', 'intent:')}#Intent;scheme=nostrconnect;package=com.greenart7c3.nostrsigner;B.closeApplication=false;end`,
+      );
+      expect(new URL(uri.replace('nostrconnect://', 'https://')).searchParams.get('perms')).toBe('sign_event:21236');
+      const call = vi.mocked(createBunkerSignerFromNostrConnect).mock.calls.at(-1)?.[0];
+      expect(call).toEqual(expect.objectContaining({ uri, requestTimeoutMs: 120_000 }));
+      const sent = (method: string, timestamp: number) => call?.onStatus?.({
+        type: 'request-sent',
+        phase: 'request',
+        method,
+        timestamp,
+        relays: ['wss://relay.example.com'],
+      });
+      const status = document.querySelector('[role="status"]');
+      const instructions = () => document.querySelector('#signet-login-amber-instructions')?.textContent;
+      expect(instructions()).toContain('Manually approve each permission');
+
+      sent('get_public_key', 1);
+      expect(link.isConnected).toBe(false);
+      expect(instructions()).toBe('Amber accepted the connection.');
+      expect(status?.textContent).toBe('Preparing the sign-in request…');
+
+      sent('sign_event', 2);
+      expect(document.querySelector('h2')?.textContent).toBe('Approve sign-in in Amber');
+      expect(instructions()).toContain('Amber’s notification');
+      expect(status?.textContent).toBe('Waiting for Amber to sign…');
+
+      // Relay chatter and the optional relay migration must not replace the login step.
+      call?.onStatus?.({ type: 'relay-connected', timestamp: 3, relays: ['wss://relay.example.com'] });
+      sent('switch_relays', 4);
+      expect(status?.textContent).toBe('Waiting for Amber to sign…');
+
+      document.querySelector<HTMLButtonElement>('[data-action="back"]')?.click();
+      (await waitForElement<HTMLButtonElement>('[data-choice="cancel"]')).click();
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      agent.mockRestore();
+    }
   });
 
   it('passes timeout and status events through the NostrConnect modal flow', async () => {

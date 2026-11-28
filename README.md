@@ -12,6 +12,8 @@ Published as `signet-login`.
 - **Connect a Nostr signer** via app-initiated NIP-46 / NostrConnect
 - **Paste or scan bunker URI** for Heartwood, nsecBunker, Amber, or compatible signers
 - **Android signer app** (Cambium, Amber or any NIP-55 signer): the page hands off and the signer's answer comes back by URL
+- **Cambium** on Android: a one-off NIP-55 request sent straight to Cambium
+- **Amber on this device** (opt-in `amberNostrConnect`): Amber pairs over NIP-46 from a same-device link, so the session can sign
 - **Paste private key** as an in-memory, advanced fallback only: an `nsec`, or a NIP-49 password-protected `ncryptsec` decrypted in the browser, with a show/hide toggle on the password field
 
 Returns a unified `SignetSigner` plus a signed kind-21236 auth proof your server can verify before granting privileges.
@@ -79,6 +81,7 @@ interface LoginOptions {
   relayUrl?: string;                            // default wss://relay.primal.net
   relayUrls?: string[];                         // repeated relay= params for NostrConnect; also carried (up to 3, relayUrl first) by the Signet QR/redirect link
   nostrConnectPerms?: string[];                 // default sign_event + NIP-44
+  amberNostrConnect?: boolean;                  // Android: same-device Amber via NIP-46; default false
   onNostrConnectStatus?: NostrConnectStatusHandler;
   theme?: 'light' | 'dark' | 'auto';            // default 'auto'
   timeout?: number;                             // default 120_000ms; clamped to [5k, 600k]
@@ -115,6 +118,7 @@ type LoginPickerMethod =
   | 'bunker'        // paste bunker://
   | 'nostrconnect'  // show nostrconnect:// QR
   | 'amber'         // Android NIP-55
+  | 'cambium'       // Android NIP-55, straight to Cambium
   | 'nsec';         // in-memory private key fallback (nsec or ncryptsec + password)
 
 interface SignetSession {
@@ -135,8 +139,9 @@ interface SignetSession {
 | `local-signet` (alias `redirect`) | `'redirect'`, or `'bunker'` if Signet hands back a `bunker://` URI that connects and matches the authenticated pubkey | `false`, or `true` after a bunker handoff |
 | `remote-signet` (alias `qr`) | `'redirect'`, or `'bunker'` after a matching bunker handoff, as above | `false`, or `true` after a bunker handoff |
 | `bunker` | `'bunker'` | `true` |
-| `nostrconnect` | `'bunker'` (same session shape as a pasted bunker URI) | `true` |
-| `amber` | `'amber'`, delivered by `handleRedirectCallback()` on the next page load; `login()` itself navigates away and returns no session | `false` |
+| `nostrconnect` | `'bunker'` (same session shape as a pasted bunker URI); with `amberNostrConnect` on Android it is shown as **Amber** | `true` |
+| `amber` | `'amber'`, delivered by `handleRedirectCallback()` in the tab the signer opens; `login()` itself returns no session (see [Android signers](#android-signers)) | `false` |
+| `cambium` | as `amber` | `false` |
 | `nsec` | `'nsec'` (memory only, never persisted) | `true` |
 
 The `local-signet` and `remote-signet` rows describe the picker's relay delivery (`mode: 'relay'`, the default). The picker waits for the `bunker://` handoff to connect, bounded at 8 seconds, before `login()` resolves, so it reports `'bunker'` only once the connect has succeeded and the pubkey matches. Otherwise the session is `'redirect'` and auth-only. `mode: 'redirect'` finishes in `handleRedirectCallback()` instead, which behaves differently: it labels a handoff `'bunker'` and, by default, connects in the background, so there `method` does not say whether signing works. See [`Signet.handleRedirectCallback(opts?)`](#signethandleredirectcallbackopts).
@@ -207,6 +212,8 @@ await fetch('/api/login', {
   body: JSON.stringify({ authEvent: session.authEvent }),
 });
 ```
+
+`createBunkerSigner` accepts an optional `abortSignal`: aborting closes the half-open signer and rejects with `bunker-connect-aborted`. `createBunkerSignerFromNostrConnect` accepts `onPairingReady`, called once the relay subscription can receive the signer's approval, which is the earliest safe moment to launch a signer app.
 
 Headless exports include `hasNip07`, `createNip07Signer`, `createBunkerSigner`, `createBunkerSignerFromNostrConnect`, `buildNostrConnectUri`, `buildBunkerUriFromNostrConnectUri`, `isBunkerUri`, `isNostrConnectUri`, `isSupportedPairingUri`, `createLocalSignerFromNsec`, `createLoginAuthEvent`, `createSessionFromSigner`, and `generateSecretKey`.
 
@@ -463,6 +470,24 @@ By default, logout keeps the persistent NIP-46 client key so a previously approv
 ```js
 await Signet.logout(session, { clearPersistentClientKey: true });
 ```
+
+### Android signers
+
+On Android the picker can hand sign-in to a signer app in three ways.
+
+- **`amber`** (shown as "Android signer app") sends a NIP-55 `nostrsigner:` request that any compatible signer can answer. The answer comes back as a callback URL.
+- **`cambium`** sends the same NIP-55 request as an Android intent addressed to Cambium (`dev.forgesworn.cambium`), so no chooser appears. Add `'cambium'` to `methods` to show it; it is hidden off Android.
+- **`nostrconnect` with `amberNostrConnect: true`** is shown as **Amber**. It opens Amber through a NIP-46 `nostrconnect://` intent (`package=com.greenart7c3.nostrsigner`) and requests only `sign_event:21236`, so the user can approve the login event. The QR code and URI stay available under "Pair with a QR code or URI". The result is a live bunker session (`method: 'bunker'`, `canSignEvents: true`), not an auth-only one. The option is ignored unless `nostrconnect` is in `methods` and the browser is on Android. The request deadline follows `timeout`.
+
+```ts
+await Signet.login({
+  appName: 'My app',
+  methods: ['nip07', 'amber', 'cambium', 'nostrconnect', 'bunker'],
+  amberNostrConnect: true,   // default false; existing integrations are unchanged
+});
+```
+
+For `amber` and `cambium`, the login screen stays open on an "Approve in ..." step with an **Open ...** link. It shows "Opening ..." progress, a retry hint if the app has not opened after about two seconds, and a waiting message once the page is hidden. Android may leave the original tab open after the signer returns in a new tab; the new tab consumes the answer through `handleRedirectCallback()`. Back returns to the picker and Cancel ends the login; either discards the pending request, as does closing the dialog. Call `handleRedirectCallback()` on app boot as before.
 
 ### `Signet.handleRedirectCallback(opts?)`
 

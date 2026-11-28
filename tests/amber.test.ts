@@ -6,15 +6,16 @@
  * doesn't actually navigate, and the round-trip path needs a real
  * Android device with Amber installed (smoke-tested manually).
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   amberCallbackUrl,
   buildAmberSignerUrl,
   consumeAmberCallback,
   isAndroid,
+  startAmberSignIn,
 } from '../src/amber.js';
-import { savePendingRedirect, clearPendingRedirect } from '../src/storage.js';
+import { savePendingRedirect, clearPendingRedirect, loadPendingRedirect } from '../src/storage.js';
 import { makeAuthEvent } from './helpers/auth-event.js';
 
 describe('isAndroid', () => {
@@ -310,5 +311,59 @@ describe('consumeAmberCallback', () => {
     window.history.replaceState({}, '', '/?signet_amber=1&error=denied&keep=this');
     consumeAmberCallback();
     expect(window.location.search).toBe('?keep=this');
+  });
+});
+
+describe('startAmberSignIn', () => {
+  const origin = 'https://example.com';
+  const challenge = 'b'.repeat(64);
+
+  function cancellation(cancelled = false) {
+    let resolve!: (value: null) => void;
+    const promise = new Promise<null>(done => { resolve = done; });
+    return { cancelled, promise, resolve: () => resolve(null) };
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    clearPendingRedirect();
+  });
+
+  it('saves pending state, hands the signer URL to the opener and clears state when the screen is left', async () => {
+    const flow = cancellation();
+    const open = vi.fn();
+    const run = startAmberSignIn({ appName: 'Test', challenge, origin }, flow, open);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open.mock.calls[0]![0]).toBe(buildAmberSignerUrl({ appName: 'Test', challenge, origin }));
+    expect(loadPendingRedirect()?.challenge).toBe(challenge);
+
+    flow.resolve();
+    await run;
+    expect(loadPendingRedirect()).toBeNull();
+  });
+
+  it('does not open the signer when the flow was already cancelled', async () => {
+    const open = vi.fn();
+    await startAmberSignIn({ appName: 'Test', challenge, origin }, cancellation(true), open);
+    expect(open).not.toHaveBeenCalled();
+    expect(loadPendingRedirect()).toBeNull();
+  });
+
+  it('leaves pending state alone when a newer sign-in has replaced it', async () => {
+    const flow = cancellation();
+    const open = vi.fn();
+    const run = startAmberSignIn({ appName: 'Test', challenge, origin }, flow, open);
+    await vi.waitFor(() => expect(open).toHaveBeenCalled());
+    savePendingRedirect({ challenge: 'c'.repeat(64), origin, appName: 'Test', createdAt: Date.now() });
+    flow.resolve();
+    await run;
+    expect(loadPendingRedirect()?.challenge).toBe('c'.repeat(64));
+  });
+
+  it('clears pending state when opening the signer throws', async () => {
+    const flow = cancellation();
+    await expect(startAmberSignIn({ appName: 'Test', challenge, origin }, flow, () => { throw new Error('boom'); }))
+      .rejects.toThrow('boom');
+    expect(loadPendingRedirect()).toBeNull();
   });
 });

@@ -52,12 +52,14 @@ export interface AmberStartOptions {
 export declare function amberCallbackUrl(page: string): string;
 export declare function buildAmberSignerUrl(opts: AmberStartOptions): string;
 /**
- * Persist pending state, navigate to Amber. Mirror of `startRedirect` but
- * the destination is a `nostrsigner:` URL handled by Amber rather than a
- * web URL handled by signet-app. The promise never resolves — the page is
- * gone before it can.
+ * Open the Android signer and wait for the user to leave the waiting screen.
+ * Android may leave this tab open even after handling the intent. The callback
+ * consumes the pending state in the tab the signer opens.
  */
-export declare function startAmberSignIn(opts: AmberStartOptions): Promise<never>;
+export declare function startAmberSignIn(opts: AmberStartOptions, cancellation: {
+    readonly cancelled: boolean;
+    promise: Promise<null>;
+}, open: (url: string) => void): Promise<void>;
 export type ConsumeAmberResult = {
     kind: 'session';
     session: SignetSession;

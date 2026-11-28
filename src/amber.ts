@@ -115,12 +115,14 @@ export function buildAmberSignerUrl(opts: AmberStartOptions): string {
 }
 
 /**
- * Persist pending state, navigate to Amber. Mirror of `startRedirect` but
- * the destination is a `nostrsigner:` URL handled by Amber rather than a
- * web URL handled by signet-app. The promise never resolves — the page is
- * gone before it can.
+ * Open the Android signer and wait for the user to leave the waiting screen.
+ * Android may leave this tab open even after handling the intent. The callback
+ * consumes the pending state in the tab the signer opens.
  */
-export async function startAmberSignIn(opts: AmberStartOptions): Promise<never> {
+export async function startAmberSignIn(opts: AmberStartOptions, cancellation: {
+  readonly cancelled: boolean;
+  promise: Promise<null>;
+}, open: (url: string) => void): Promise<void> {
   if (typeof window === 'undefined') {
     throw new Error('signet-login: amber mode requires a browser environment');
   }
@@ -130,9 +132,21 @@ export async function startAmberSignIn(opts: AmberStartOptions): Promise<never> 
     appName: opts.appName,
     createdAt: Date.now(),
   };
+  const signerUrl = buildAmberSignerUrl(opts);
   await savePendingRedirectToStorage(pending, opts.storage);
-  window.location.href = buildAmberSignerUrl(opts);
-  return new Promise<never>(() => { /* never resolves */ });
+  try {
+    if (!cancellation.cancelled) {
+      open(signerUrl);
+      await cancellation.promise;
+    }
+  } finally {
+    const current = opts.storage ? await loadPendingRedirectFromStorage(opts.storage) : loadPendingRedirect();
+    if (current?.challenge === pending.challenge && current.createdAt === pending.createdAt
+      && current.origin === pending.origin && current.appName === pending.appName) {
+      if (opts.storage) await clearPendingRedirectFromStorage(opts.storage, current);
+      else clearPendingRedirect();
+    }
+  }
 }
 
 function cleanupAmberCallbackUrl(): void {
