@@ -37,7 +37,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@forgesworn/qr": "0.2.0",
+    "@forgesworn/qr": "0.3.16",
     "@noble/curves": "^1.8.1",
     "@noble/hashes": "^1.7.1",
     "jsqr": "^1.4.0",
