@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.24.0 (2026-11-28)
+
+### Features
+
+- same-device Amber, Cambium hand-off and Android launch feedback (#93)
+
+
+
 ## 0.23.2 (2026-11-18)
 
 ### Bug Fixes
